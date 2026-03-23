@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: nana-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nana
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: nana-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      PORT: "8080"
+      ENV: development
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: nana
+      JWT_SECRET: dev-secret-change-me
+      JWT_EXPIRY_HOURS: "1"
+      REFRESH_TOKEN_EXPIRY_DAYS: "7"
+      CORS_ALLOWED_ORIGIN: http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: node:24-alpine
+    container_name: nana-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../frontend:/app
+      - frontend-node-modules:/app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://backend:8080
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  go-mod-cache:
+  go-build-cache:
+  frontend-node-modules:
