@@ -79,7 +79,13 @@ func main() {
 
 	// Wire dependencies — Tenants
 	tenantRepo := repository.NewTenantRepository(db)
-	tenantService := service.NewTenantService(tenantRepo)
+
+	// Wire dependencies — Contracts
+	contractRepo := repository.NewContractRepository(db)
+	contractService := service.NewContractService(contractRepo, roomRepo, tenantRepo, db)
+	contractHandler := handler.NewContractHandler(contractService)
+
+	tenantService := service.NewTenantService(tenantRepo, contractRepo)
 	tenantHandler := handler.NewTenantHandler(tenantService)
 
 	// Create Fiber app
@@ -123,6 +129,7 @@ func main() {
 	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
 	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))
 	tenantHandler.RegisterRoutes(admin.Group("/tenants"))
+	contractHandler.RegisterRoutes(admin.Group("/contracts"))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

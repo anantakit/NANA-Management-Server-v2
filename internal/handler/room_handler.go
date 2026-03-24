@@ -42,7 +42,7 @@ func (h *RoomHandler) List(c fiber.Ctx) error {
 	}
 
 	meta := dto.ComputeMeta(params.Page, params.Limit, total)
-	return SuccessWithMeta(c, "สำเร็จ", dto.ToRoomResponseList(rooms), meta)
+	return SuccessWithMeta(c, "สำเร็จ", dto.ToRoomWithContractResponseList(rooms), meta)
 }
 
 func (h *RoomHandler) GetByID(c fiber.Ctx) error {
@@ -55,7 +55,7 @@ func (h *RoomHandler) GetByID(c fiber.Ctx) error {
 	if err != nil {
 		return Error(c, err)
 	}
-	return Success(c, "สำเร็จ", dto.ToRoomResponse(*room))
+	return Success(c, "สำเร็จ", dto.ToRoomWithContractResponseList([]dto.RoomWithContract{*room})[0])
 }
 
 func (h *RoomHandler) Create(c fiber.Ctx) error {

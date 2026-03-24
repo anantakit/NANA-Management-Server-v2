@@ -14,8 +14,8 @@ import (
 )
 
 type RoomService interface {
-	ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]domain.Room, int64, error)
-	GetByID(ctx context.Context, id uuid.UUID) (*domain.Room, error)
+	ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error)
 	Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateRoomRequest) (*domain.Room, error)
 	Update(ctx context.Context, id uuid.UUID, req dto.UpdateRoomRequest) (*domain.Room, error)
 	Delete(ctx context.Context, id uuid.UUID) error
@@ -30,15 +30,15 @@ func NewRoomService(repo repository.RoomRepository, aptRepo repository.Apartment
 	return &roomService{repo: repo, aptRepo: aptRepo}
 }
 
-func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]domain.Room, int64, error) {
+func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
 		return nil, 0, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
-	return s.repo.FindByApartmentID(ctx, apartmentID, params)
+	return s.repo.FindByApartmentIDWithContracts(ctx, apartmentID, params)
 }
 
-func (s *roomService) GetByID(ctx context.Context, id uuid.UUID) (*domain.Room, error) {
-	room, err := s.repo.FindByID(ctx, id)
+func (s *roomService) GetByID(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error) {
+	room, err := s.repo.FindByIDWithContract(ctx, id)
 	if err != nil {
 		return nil, apperror.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}

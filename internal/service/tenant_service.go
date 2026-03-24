@@ -21,11 +21,12 @@ type TenantService interface {
 }
 
 type tenantService struct {
-	repo repository.TenantRepository
+	repo         repository.TenantRepository
+	contractRepo repository.ContractRepository
 }
 
-func NewTenantService(repo repository.TenantRepository) TenantService {
-	return &tenantService{repo: repo}
+func NewTenantService(repo repository.TenantRepository, contractRepo repository.ContractRepository) TenantService {
+	return &tenantService{repo: repo, contractRepo: contractRepo}
 }
 
 func (s *tenantService) List(ctx context.Context, params dto.PaginationParams) ([]domain.Tenant, int64, error) {
@@ -105,7 +106,13 @@ func (s *tenantService) Delete(ctx context.Context, id uuid.UUID) error {
 		return apperror.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
 	}
 
-	// TODO: check active contract when contract feature exists
+	hasActive, err := s.contractRepo.HasActiveByTenantID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("check active contract: %w", err)
+	}
+	if hasActive {
+		return apperror.ErrBadRequest.WithMessage("ไม่สามารถลบผู้เช่าที่มีสัญญาใช้งานอยู่")
+	}
 
 	return s.repo.Delete(ctx, id)
 }

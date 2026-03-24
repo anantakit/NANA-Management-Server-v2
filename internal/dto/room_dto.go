@@ -22,21 +22,56 @@ type UpdateRoomRequest struct {
 	Status      *string  `json:"status" validate:"omitempty,oneof=VACANT MAINTENANCE"`
 }
 
+type ActiveContractSummary struct {
+	ContractID             string  `json:"contract_id"`
+	TenantID               string  `json:"tenant_id"`
+	TenantName             string  `json:"tenant_name"`
+	TenantPhone            string  `json:"tenant_phone"`
+	MonthlyRent            float64 `json:"monthly_rent"`
+	DepositAmount          float64 `json:"deposit_amount"`
+	ElectricityRatePerUnit float64 `json:"electricity_rate_per_unit"`
+	WaterRatePerUnit       float64 `json:"water_rate_per_unit"`
+	StartDate              string  `json:"start_date"`
+	MinMonths              int     `json:"min_months"`
+	MoveOutDate            *string `json:"move_out_date"`
+}
+
 type RoomResponse struct {
-	ID          string  `json:"id"`
-	ApartmentID string  `json:"apartment_id"`
-	Number      string  `json:"number"`
-	Type        string  `json:"type"`
-	Floor       int     `json:"floor"`
-	BaseRent    float64 `json:"base_rent"`
-	BaseDeposit float64 `json:"base_deposit"`
-	Status      string  `json:"status"`
-	CreatedAt   string  `json:"created_at"`
-	UpdatedAt   string  `json:"updated_at"`
+	ID             string                  `json:"id"`
+	ApartmentID    string                  `json:"apartment_id"`
+	Number         string                  `json:"number"`
+	Type           string                  `json:"type"`
+	Floor          int                     `json:"floor"`
+	BaseRent       float64                 `json:"base_rent"`
+	BaseDeposit    float64                 `json:"base_deposit"`
+	Status         string                  `json:"status"`
+	ActiveContract *ActiveContractSummary  `json:"active_contract"`
+	CreatedAt      string                  `json:"created_at"`
+	UpdatedAt      string                  `json:"updated_at"`
+}
+
+// RoomWithContract holds room domain + optional active contract info.
+type RoomWithContract struct {
+	domain.Room
+	ContractID             *string
+	TenantID               *string
+	TenantName             *string
+	TenantPhone            *string
+	MonthlyRent            *int64
+	DepositAmount          *int64
+	ElectricityRatePerUnit *int64
+	WaterRatePerUnit       *int64
+	StartDate              *string
+	MinMonths              *int
+	MoveOutDate            *string
 }
 
 func ToRoomResponse(r domain.Room) RoomResponse {
-	return RoomResponse{
+	return toRoomResponseWithContract(RoomWithContract{Room: r})
+}
+
+func toRoomResponseWithContract(r RoomWithContract) RoomResponse {
+	resp := RoomResponse{
 		ID:          r.ID.String(),
 		ApartmentID: r.ApartmentID.String(),
 		Number:      r.Number,
@@ -48,12 +83,59 @@ func ToRoomResponse(r domain.Room) RoomResponse {
 		CreatedAt:   r.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:   r.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+
+	if r.ContractID != nil && *r.ContractID != "" {
+		resp.ActiveContract = &ActiveContractSummary{
+			ContractID:             *r.ContractID,
+			TenantID:               derefStr(r.TenantID),
+			TenantName:             derefStr(r.TenantName),
+			TenantPhone:            derefStr(r.TenantPhone),
+			MonthlyRent:            money.ToBaht(derefInt64(r.MonthlyRent)),
+			DepositAmount:          money.ToBaht(derefInt64(r.DepositAmount)),
+			ElectricityRatePerUnit: money.ToBaht(derefInt64(r.ElectricityRatePerUnit)),
+			WaterRatePerUnit:       money.ToBaht(derefInt64(r.WaterRatePerUnit)),
+			StartDate:              derefStr(r.StartDate),
+			MinMonths:              derefInt(r.MinMonths),
+			MoveOutDate:            r.MoveOutDate,
+		}
+	}
+
+	return resp
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefInt64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func derefInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func ToRoomResponseList(rooms []domain.Room) []RoomResponse {
 	result := make([]RoomResponse, len(rooms))
 	for i, r := range rooms {
 		result[i] = ToRoomResponse(r)
+	}
+	return result
+}
+
+func ToRoomWithContractResponseList(rooms []RoomWithContract) []RoomResponse {
+	result := make([]RoomResponse, len(rooms))
+	for i, r := range rooms {
+		result[i] = toRoomResponseWithContract(r)
 	}
 	return result
 }
