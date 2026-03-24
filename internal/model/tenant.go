@@ -12,11 +12,10 @@ import (
 type Tenant struct {
 	ID               uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
 	FullName         string         `gorm:"type:varchar(255);not null"`
-	IDCardNumber     string         `gorm:"type:varchar(20)"`
-	Phone            string         `gorm:"type:varchar(20)"`
-	Email            string         `gorm:"type:varchar(255)"`
-	EmergencyContact string         `gorm:"type:varchar(255)"`
-	EmergencyPhone   string         `gorm:"type:varchar(20)"`
+	IDCard           string         `gorm:"type:varchar(13);not null;uniqueIndex"`
+	Phone            string         `gorm:"type:varchar(20);not null"`
+	Address          string         `gorm:"type:text;not null;default:''"`
+	EmergencyContact string         `gorm:"type:varchar(255);not null;default:''"`
 	CreatedAt        time.Time      `gorm:"not null;default:now()"`
 	UpdatedAt        time.Time      `gorm:"not null;default:now()"`
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
@@ -35,11 +34,11 @@ func (t *Tenant) ToDomain() domain.Tenant {
 	return domain.Tenant{
 		ID:               t.ID,
 		FullName:         t.FullName,
-		IDCardNumber:     t.IDCardNumber,
+		IDCard:           t.IDCard,
 		Phone:            t.Phone,
-		Email:            t.Email,
+		Address:          t.Address,
 		EmergencyContact: t.EmergencyContact,
-		EmergencyPhone:   t.EmergencyPhone,
+
 		CreatedAt:        t.CreatedAt,
 		UpdatedAt:        t.UpdatedAt,
 	}
@@ -49,11 +48,10 @@ func TenantFromDomain(d domain.Tenant) Tenant {
 	return Tenant{
 		ID:               d.ID,
 		FullName:         d.FullName,
-		IDCardNumber:     d.IDCardNumber,
+		IDCard:           d.IDCard,
 		Phone:            d.Phone,
-		Email:            d.Email,
+		Address:          d.Address,
 		EmergencyContact: d.EmergencyContact,
-		EmergencyPhone:   d.EmergencyPhone,
 		CreatedAt:        d.CreatedAt,
 		UpdatedAt:        d.UpdatedAt,
 	}

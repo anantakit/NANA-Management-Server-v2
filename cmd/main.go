@@ -51,7 +51,7 @@ func main() {
 	}
 
 	// Seed data
-	if err := seed.Run(db); err != nil {
+	if err := seed.Run(db, cfg.Env); err != nil {
 		slog.Error("seed failed", "error", err)
 		os.Exit(1)
 	}
@@ -76,6 +76,11 @@ func main() {
 	roomRepo := repository.NewRoomRepository(db)
 	roomService := service.NewRoomService(roomRepo, aptRepo)
 	roomHandler := handler.NewRoomHandler(roomService)
+
+	// Wire dependencies — Tenants
+	tenantRepo := repository.NewTenantRepository(db)
+	tenantService := service.NewTenantService(tenantRepo)
+	tenantHandler := handler.NewTenantHandler(tenantService)
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
@@ -117,6 +122,7 @@ func main() {
 	aptHandler.RegisterRoutes(admin.Group("/apartments"))
 	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
 	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))
+	tenantHandler.RegisterRoutes(admin.Group("/tenants"))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

@@ -28,7 +28,7 @@ type roomSeed struct {
 	BaseDeposit int64
 }
 
-func Run(db *gorm.DB) error {
+func Run(db *gorm.DB, env string) error {
 	if err := seedApartments(db); err != nil {
 		return fmt.Errorf("seed apartments: %w", err)
 	}
@@ -38,6 +38,14 @@ func Run(db *gorm.DB) error {
 	if err := seedAdminUser(db); err != nil {
 		return fmt.Errorf("seed admin user: %w", err)
 	}
+
+	// Dev-only seed data
+	if env == "development" {
+		if err := seedDevTenants(db); err != nil {
+			return fmt.Errorf("seed dev tenants: %w", err)
+		}
+	}
+
 	slog.Info("seed data completed")
 	return nil
 }
@@ -222,5 +230,46 @@ func seedAdminUser(db *gorm.DB) error {
 	}
 
 	slog.Info("seeded admin user", "username", "admin")
+	return nil
+}
+
+// seedDevTenants seeds sample tenants for development only.
+func seedDevTenants(db *gorm.DB) error {
+	tenants := []struct {
+		FullName         string
+		IDCard           string
+		Phone            string
+		Address          string
+		EmergencyContact string
+	}{
+		{FullName: "สมชาย ใจดี", IDCard: "1100100100001", Phone: "0812345678", Address: "123 ถ.สุขุมวิท กรุงเทพฯ", EmergencyContact: "สมหญิง ใจดี 0898765432"},
+		{FullName: "สมหญิง รักสุข", IDCard: "1100100100002", Phone: "0823456789", Address: "456 ถ.พหลโยธิน กรุงเทพฯ", EmergencyContact: "สมศรี รักสุข 0867654321"},
+		{FullName: "วิชัย มั่งมี", IDCard: "1100100100003", Phone: "0834567890", Address: "789 ถ.รัชดา กรุงเทพฯ", EmergencyContact: "วิภา มั่งมี 0856543210"},
+		{FullName: "นภา สุขใจ", IDCard: "1100100100004", Phone: "0845678901", Address: "321 ถ.ลาดพร้าว กรุงเทพฯ", EmergencyContact: "นที สุขใจ 0845432109"},
+		{FullName: "ประเสริฐ ดีงาม", IDCard: "1100100100005", Phone: "0856789012", Address: "654 ถ.งามวงศ์วาน นนทบุรี", EmergencyContact: "ประภา ดีงาม 0834321098"},
+	}
+
+	for _, t := range tenants {
+		var count int64
+		if err := db.Model(&model.Tenant{}).Where("id_card = ?", t.IDCard).Count(&count).Error; err != nil {
+			return fmt.Errorf("check tenant %s: %w", t.FullName, err)
+		}
+		if count > 0 {
+			continue
+		}
+
+		tenant := model.Tenant{
+			FullName:         t.FullName,
+			IDCard:           t.IDCard,
+			Phone:            t.Phone,
+			Address:          t.Address,
+			EmergencyContact: t.EmergencyContact,
+		}
+		if err := db.Create(&tenant).Error; err != nil {
+			return fmt.Errorf("create tenant %s: %w", t.FullName, err)
+		}
+	}
+
+	slog.Info("seeded dev tenants", "count", len(tenants))
 	return nil
 }
