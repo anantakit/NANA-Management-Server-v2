@@ -51,7 +51,7 @@ services:
     working_dir: /app
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
-      - "3000:3000"
+      - "3001:3001"
     volumes:
       - ../frontend:/app
       - frontend-node-modules:/app/node_modules
