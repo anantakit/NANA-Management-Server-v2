@@ -41,7 +41,7 @@ func (h *ApartmentHandler) GetByID(c fiber.Ctx) error {
 	if err != nil {
 		return Error(c, err)
 	}
-	return Success(c, "สำเร็จ", dto.ToApartmentResponse(*apt))
+	return Success(c, "สำเร็จ", apt)
 }
 
 func (h *ApartmentHandler) Create(c fiber.Ctx) error {

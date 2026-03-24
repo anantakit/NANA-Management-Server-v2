@@ -15,7 +15,7 @@ import (
 
 type ApartmentService interface {
 	List(ctx context.Context) ([]dto.ApartmentResponse, error)
-	GetByID(ctx context.Context, id uuid.UUID) (*domain.Apartment, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*dto.ApartmentResponse, error)
 	Create(ctx context.Context, req dto.CreateApartmentRequest) (*domain.Apartment, error)
 	Update(ctx context.Context, id uuid.UUID, req dto.UpdateApartmentRequest) (*domain.Apartment, error)
 }
@@ -58,12 +58,24 @@ func (s *apartmentService) List(ctx context.Context) ([]dto.ApartmentResponse, e
 	return result, nil
 }
 
-func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*domain.Apartment, error) {
+func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*dto.ApartmentResponse, error) {
 	apt, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
-	return apt, nil
+
+	stats, err := s.repo.GetRoomStatsByApartmentIDs(ctx, []uuid.UUID{id})
+	if err != nil {
+		return nil, fmt.Errorf("get room stats: %w", err)
+	}
+
+	r := dto.ToApartmentResponse(*apt)
+	if st, ok := stats[id]; ok {
+		r.TotalRooms = st.Total
+		r.VacantRooms = st.Vacant
+		r.OccupiedRooms = st.Occupied
+	}
+	return &r, nil
 }
 
 func (s *apartmentService) Create(ctx context.Context, req dto.CreateApartmentRequest) (*domain.Apartment, error) {

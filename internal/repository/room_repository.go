@@ -43,6 +43,9 @@ func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid
 	}
 
 	col, order := dto.SafeSort(params.Sort, params.Order, []string{"number", "floor", "type", "status", "base_rent", "created_at"}, "number")
+	if params.Sort == "" {
+		order = "asc"
+	}
 	orderClause := fmt.Sprintf("%s %s", col, order)
 
 	var models []model.Room

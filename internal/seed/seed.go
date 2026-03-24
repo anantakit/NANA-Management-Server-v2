@@ -16,16 +16,16 @@ type apartmentSeed struct {
 	DisplayOrder           int
 	ElectricityRatePerUnit int64
 	WaterRatePerUnit       int64
+	Address                string
+	TaxID                  string
 }
 
 type roomSeed struct {
-	ApartmentName string
-	Prefix        string
-	Start         int
-	End           int
-	RoomType      domain.RoomType
-	Floor         int
-	BaseRent      int64
+	Number      string
+	Type        domain.RoomType
+	Floor       int
+	BaseRent    int64
+	BaseDeposit int64
 }
 
 func Run(db *gorm.DB) error {
@@ -44,10 +44,10 @@ func Run(db *gorm.DB) error {
 
 func seedApartments(db *gorm.DB) error {
 	apartments := []apartmentSeed{
-		{Name: "นานาคอร์ท", DisplayOrder: 1, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800},
-		{Name: "นานาเพลส", DisplayOrder: 2, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800},
-		{Name: "นานาแมนชั่น", DisplayOrder: 3, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800},
-		{Name: "อีซี่เพลส", DisplayOrder: 4, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800},
+		{Name: "นานาคอร์ท", DisplayOrder: 1, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "682 ม.1 Sripatana Rd", TaxID: "0105558123456"},
+		{Name: "นานาเพลส", DisplayOrder: 2, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "123 Sripatana Rd"},
+		{Name: "นานาแมนชั่น", DisplayOrder: 3, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "888", TaxID: "0105559987654"},
+		{Name: "อีซี่เพลส", DisplayOrder: 4, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "888", TaxID: "0105559987654"},
 	}
 
 	for _, a := range apartments {
@@ -64,6 +64,8 @@ func seedApartments(db *gorm.DB) error {
 			DisplayOrder:           a.DisplayOrder,
 			ElectricityRatePerUnit: a.ElectricityRatePerUnit,
 			WaterRatePerUnit:       a.WaterRatePerUnit,
+			Address:                a.Address,
+			TaxID:                  a.TaxID,
 		}
 		if err := db.Create(&apt).Error; err != nil {
 			return fmt.Errorf("create apartment %s: %w", a.Name, err)
@@ -75,63 +77,122 @@ func seedApartments(db *gorm.DB) error {
 }
 
 func seedRooms(db *gorm.DB) error {
-	rooms := []roomSeed{
-		// นานาคอร์ท
-		{ApartmentName: "นานาคอร์ท", Prefix: "A", Start: 101, End: 132, RoomType: domain.RoomTypeAir, Floor: 1, BaseRent: 300000},
-		{ApartmentName: "นานาคอร์ท", Prefix: "B", Start: 201, End: 210, RoomType: domain.RoomTypeAir, Floor: 2, BaseRent: 300000},
-		{ApartmentName: "นานาคอร์ท", Prefix: "C", Start: 301, End: 307, RoomType: domain.RoomTypeAir, Floor: 3, BaseRent: 300000},
-		{ApartmentName: "นานาคอร์ท", Prefix: "D", Start: 401, End: 422, RoomType: domain.RoomTypeFan, Floor: 4, BaseRent: 250000},
-		{ApartmentName: "นานาคอร์ท", Prefix: "E", Start: 501, End: 508, RoomType: domain.RoomTypeFan, Floor: 5, BaseRent: 250000},
-		// นานาแมนชั่น
-		{ApartmentName: "นานาแมนชั่น", Prefix: "", Start: 101, End: 156, RoomType: domain.RoomTypeAir, Floor: 0, BaseRent: 350000},
-		// นานาเพลส
-		{ApartmentName: "นานาเพลส", Prefix: "", Start: 1001, End: 1045, RoomType: domain.RoomTypeAir, Floor: 0, BaseRent: 350000},
+	roomsByApartment := map[string][]roomSeed{
+		"นานาคอร์ท": nanaCourt(),
+		"นานาเพลส":  nanaPlace(),
+		"นานาแมนชั่น": nanaMansion(),
+		// อีซี่เพลส — ยังไม่มีห้อง
 	}
 
-	for _, rs := range rooms {
+	for aptName, rooms := range roomsByApartment {
 		var apt model.Apartment
-		if err := db.Where("name = ?", rs.ApartmentName).First(&apt).Error; err != nil {
-			slog.Warn("apartment not found for room seed", "apartment", rs.ApartmentName)
+		if err := db.Where("name = ?", aptName).First(&apt).Error; err != nil {
+			slog.Warn("apartment not found for room seed", "apartment", aptName)
 			continue
 		}
 
-		for i := rs.Start; i <= rs.End; i++ {
-			number := fmt.Sprintf("%s%d", rs.Prefix, i)
-
+		created := 0
+		for _, rs := range rooms {
 			var count int64
-			if err := db.Model(&model.Room{}).Where("apartment_id = ? AND number = ?", apt.ID, number).Count(&count).Error; err != nil {
-				return fmt.Errorf("check room %s: %w", number, err)
+			if err := db.Model(&model.Room{}).Where("apartment_id = ? AND number = ?", apt.ID, rs.Number).Count(&count).Error; err != nil {
+				return fmt.Errorf("check room %s: %w", rs.Number, err)
 			}
 			if count > 0 {
 				continue
 			}
 
-			floor := rs.Floor
-			if floor == 0 {
-				floor = deriveFloor(i)
-			}
-
 			room := model.Room{
 				ApartmentID: apt.ID,
-				Number:      number,
-				Type:        string(rs.RoomType),
-				Floor:       floor,
+				Number:      rs.Number,
+				Type:        string(rs.Type),
+				Floor:       rs.Floor,
 				BaseRent:    rs.BaseRent,
-				BaseDeposit: rs.BaseRent,
+				BaseDeposit: rs.BaseDeposit,
 				Status:      string(domain.RoomStatusVacant),
 			}
 			if err := db.Create(&room).Error; err != nil {
-				return fmt.Errorf("create room %s: %w", number, err)
+				return fmt.Errorf("create room %s: %w", rs.Number, err)
 			}
+			created++
 		}
-		slog.Info("seeded rooms", "apartment", rs.ApartmentName, "prefix", rs.Prefix, "range", fmt.Sprintf("%d-%d", rs.Start, rs.End))
+		if created > 0 {
+			slog.Info("seeded rooms", "apartment", aptName, "count", created)
+		}
 	}
 
 	return nil
 }
 
-func deriveFloor(roomNumber int) int {
-	return roomNumber / 100
+// nanaCourt — นานาคอร์ท (71 rooms)
+func nanaCourt() []roomSeed {
+	var rooms []roomSeed
+
+	// A101-A111: air, rent=3000, deposit=3000 (floor 1)
+	rooms = append(rooms, rangeRooms("A", 101, 111, domain.RoomTypeAir, 1, 300000, 300000)...)
+	// A201-A211: fan, rent=2500, deposit=2000 (floor 2)
+	rooms = append(rooms, rangeRooms("A", 201, 211, domain.RoomTypeFan, 2, 250000, 200000)...)
+	// B101-B105: air, rent=3000, deposit=3000 (floor 1)
+	rooms = append(rooms, rangeRooms("B", 101, 105, domain.RoomTypeAir, 1, 300000, 300000)...)
+	// B201-B205: fan, rent=2500, deposit=2000 (floor 2)
+	rooms = append(rooms, rangeRooms("B", 201, 205, domain.RoomTypeFan, 2, 250000, 200000)...)
+	// C101-C102: air, rent=3000, deposit=3000 (floor 1)
+	rooms = append(rooms, rangeRooms("C", 101, 102, domain.RoomTypeAir, 1, 300000, 300000)...)
+	// C201-C205: fan, rent=2500, deposit=2000 (floor 2)
+	rooms = append(rooms, rangeRooms("C", 201, 205, domain.RoomTypeFan, 2, 250000, 200000)...)
+	// D101-D111: fan, rent=2500, deposit=2000 (floor 1)
+	rooms = append(rooms, rangeRooms("D", 101, 111, domain.RoomTypeFan, 1, 250000, 200000)...)
+	// D201-D211: fan, rent=2500, deposit=2000 (floor 2)
+	rooms = append(rooms, rangeRooms("D", 201, 211, domain.RoomTypeFan, 2, 250000, 200000)...)
+	// E101-E104: fan, rent=2500, deposit=2000 (floor 1)
+	rooms = append(rooms, rangeRooms("E", 101, 104, domain.RoomTypeFan, 1, 250000, 200000)...)
+	// E201-E204: fan, rent=2500, deposit=2000 (floor 2)
+	rooms = append(rooms, rangeRooms("E", 201, 204, domain.RoomTypeFan, 2, 250000, 200000)...)
+	// OFFICE: air, rent=3500, deposit=3500
+	rooms = append(rooms, roomSeed{Number: "OFFICE", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
+	// MART: air, rent=0, deposit=0
+	rooms = append(rooms, roomSeed{Number: "MART", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 0, BaseDeposit: 0})
+
+	return rooms
+}
+
+// nanaPlace — นานาเพลส (46 rooms, all air, rent=3500, deposit=3500)
+func nanaPlace() []roomSeed {
+	var rooms []roomSeed
+	// 0000
+	rooms = append(rooms, roomSeed{Number: "0000", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
+	// 1001-1020 (floor 1)
+	rooms = append(rooms, rangeRooms("", 1001, 1020, domain.RoomTypeAir, 1, 350000, 350000)...)
+	// 2001-2025 (floor 2)
+	rooms = append(rooms, rangeRooms("", 2001, 2025, domain.RoomTypeAir, 2, 350000, 350000)...)
+	return rooms
+}
+
+// nanaMansion — นานาแมนชั่น (57 rooms, all air, rent=3500, deposit=3500)
+func nanaMansion() []roomSeed {
+	var rooms []roomSeed
+	// MART
+	rooms = append(rooms, roomSeed{Number: "MART", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
+	// 101-114 (floor 1)
+	rooms = append(rooms, rangeRooms("", 101, 114, domain.RoomTypeAir, 1, 350000, 350000)...)
+	// 201-221 (floor 2)
+	rooms = append(rooms, rangeRooms("", 201, 221, domain.RoomTypeAir, 2, 350000, 350000)...)
+	// 301-321 (floor 3)
+	rooms = append(rooms, rangeRooms("", 301, 321, domain.RoomTypeAir, 3, 350000, 350000)...)
+	return rooms
+}
+
+func rangeRooms(prefix string, start, end int, roomType domain.RoomType, floor int, baseRent, baseDeposit int64) []roomSeed {
+	rooms := make([]roomSeed, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		rooms = append(rooms, roomSeed{
+			Number:      fmt.Sprintf("%s%d", prefix, i),
+			Type:        roomType,
+			Floor:       floor,
+			BaseRent:    baseRent,
+			BaseDeposit: baseDeposit,
+		})
+	}
+	return rooms
 }
 
 func seedAdminUser(db *gorm.DB) error {
