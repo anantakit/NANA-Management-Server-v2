@@ -32,3 +32,21 @@ paths:
 | POST | `/` | Add bank account (is_primary auto-clears others) |
 | PUT | `/:accountId` | Update bank account |
 | DELETE | `/:accountId` | Soft delete bank account |
+
+## Rooms (`/api/v1/apartments/:id/rooms`) — Admin only
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List rooms for apartment (paginated, search by number) |
+| GET | `/:roomId` | Get room by ID |
+| POST | `/` | Create room (number unique per apartment) |
+| PUT | `/:roomId` | Update room (status: VACANT↔MAINTENANCE only, OCCUPIED blocked) |
+| DELETE | `/:roomId` | Soft delete room (blocked if OCCUPIED) |
+
+## Tenants (`/api/v1/tenants`) — Admin only
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List tenants (paginated, search by name/idCard/phone) |
+| GET | `/:id` | Get tenant by ID |
+| POST | `/` | Create tenant (idCard 13 digits, unique) |
+| PUT | `/:id` | Update tenant (idCard uniqueness checked) |
+| DELETE | `/:id` | Soft delete tenant (TODO: block if active contract) |
