@@ -53,6 +53,7 @@ paths:
 - `db.WithContext(ctx)` on every query
 - Return domain models via `model.ToDomain()`
 - Max 400 lines, max 12 methods, CRUD only
+- **Update pattern**: use `db.Model(&m).Select("*").Omit("deleted_at").Updates(&m)` — NOT `Save()` which skips zero values (false, 0, "")
 
 ## Error Handling
 - `apperror.AppError`: Code, HTTPStatus, Message

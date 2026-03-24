@@ -63,7 +63,7 @@ func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 
 func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
 	m := model.UserFromDomain(*user)
-	if err := r.db.WithContext(ctx).Save(&m).Error; err != nil {
+	if err := r.db.WithContext(ctx).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
 	*user = m.ToDomain()

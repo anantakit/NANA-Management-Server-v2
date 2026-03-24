@@ -15,15 +15,8 @@ type Apartment struct {
 	DisplayOrder           int            `gorm:"not null;default:0"`
 	ElectricityRatePerUnit int64          `gorm:"not null;default:0"`
 	WaterRatePerUnit       int64          `gorm:"not null;default:0"`
-	AddressDetails         string         `gorm:"type:text;not null;default:''"`
-	ProvinceID             int            `gorm:"not null;default:0"`
-	DistrictID             int            `gorm:"not null;default:0"`
-	SubdistrictID          int            `gorm:"not null;default:0"`
+	Address                string         `gorm:"type:text;not null;default:''"`
 	TaxID                  string         `gorm:"type:varchar(20);not null;default:''"`
-	BankName               string         `gorm:"type:varchar(100);not null;default:''"`
-	BankAccountName        string         `gorm:"type:varchar(255);not null;default:''"`
-	BankAccountNumber      string         `gorm:"type:varchar(50);not null;default:''"`
-	PromptPayID            *string        `gorm:"column:promptpay_id;type:varchar(20)"`
 	CreatedAt              time.Time      `gorm:"not null;default:now()"`
 	UpdatedAt              time.Time      `gorm:"not null;default:now()"`
 	DeletedAt              gorm.DeletedAt `gorm:"index"`
@@ -45,15 +38,8 @@ func (a *Apartment) ToDomain() domain.Apartment {
 		DisplayOrder:           a.DisplayOrder,
 		ElectricityRatePerUnit: a.ElectricityRatePerUnit,
 		WaterRatePerUnit:       a.WaterRatePerUnit,
-		AddressDetails:         a.AddressDetails,
-		ProvinceID:             a.ProvinceID,
-		DistrictID:             a.DistrictID,
-		SubdistrictID:          a.SubdistrictID,
+		Address:                a.Address,
 		TaxID:                  a.TaxID,
-		BankName:               a.BankName,
-		BankAccountName:        a.BankAccountName,
-		BankAccountNumber:      a.BankAccountNumber,
-		PromptPayID:            a.PromptPayID,
 		CreatedAt:              a.CreatedAt,
 		UpdatedAt:              a.UpdatedAt,
 	}
@@ -66,16 +52,66 @@ func ApartmentFromDomain(d domain.Apartment) Apartment {
 		DisplayOrder:           d.DisplayOrder,
 		ElectricityRatePerUnit: d.ElectricityRatePerUnit,
 		WaterRatePerUnit:       d.WaterRatePerUnit,
-		AddressDetails:         d.AddressDetails,
-		ProvinceID:             d.ProvinceID,
-		DistrictID:             d.DistrictID,
-		SubdistrictID:          d.SubdistrictID,
+		Address:                d.Address,
 		TaxID:                  d.TaxID,
-		BankName:               d.BankName,
-		BankAccountName:        d.BankAccountName,
-		BankAccountNumber:      d.BankAccountNumber,
-		PromptPayID:            d.PromptPayID,
 		CreatedAt:              d.CreatedAt,
 		UpdatedAt:              d.UpdatedAt,
+	}
+}
+
+// ApartmentBankAccount
+
+type ApartmentBankAccount struct {
+	ID            uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	ApartmentID   uuid.UUID      `gorm:"type:uuid;not null"`
+	BankName      string         `gorm:"type:varchar(100);not null"`
+	AccountName   string         `gorm:"type:varchar(255);not null"`
+	AccountNumber string         `gorm:"type:varchar(50);not null"`
+	PromptPayID   *string        `gorm:"column:promptpay_id;type:varchar(20)"`
+	IsPrimary     bool           `gorm:"not null;default:false"`
+	Note          *string        `gorm:"type:text"`
+	CreatedAt     time.Time      `gorm:"not null;default:now()"`
+	UpdatedAt     time.Time      `gorm:"not null;default:now()"`
+	DeletedAt     gorm.DeletedAt `gorm:"index"`
+
+	Apartment *Apartment `gorm:"foreignKey:ApartmentID"`
+}
+
+func (ApartmentBankAccount) TableName() string { return "apartment_bank_accounts" }
+
+func (b *ApartmentBankAccount) BeforeCreate(tx *gorm.DB) error {
+	if b.ID == uuid.Nil {
+		b.ID = uuid.New()
+	}
+	return nil
+}
+
+func (b *ApartmentBankAccount) ToDomain() domain.ApartmentBankAccount {
+	return domain.ApartmentBankAccount{
+		ID:            b.ID,
+		ApartmentID:   b.ApartmentID,
+		BankName:      b.BankName,
+		AccountName:   b.AccountName,
+		AccountNumber: b.AccountNumber,
+		PromptPayID:   b.PromptPayID,
+		IsPrimary:     b.IsPrimary,
+		Note:          b.Note,
+		CreatedAt:     b.CreatedAt,
+		UpdatedAt:     b.UpdatedAt,
+	}
+}
+
+func ApartmentBankAccountFromDomain(d domain.ApartmentBankAccount) ApartmentBankAccount {
+	return ApartmentBankAccount{
+		ID:            d.ID,
+		ApartmentID:   d.ApartmentID,
+		BankName:      d.BankName,
+		AccountName:   d.AccountName,
+		AccountNumber: d.AccountNumber,
+		PromptPayID:   d.PromptPayID,
+		IsPrimary:     d.IsPrimary,
+		Note:          d.Note,
+		CreatedAt:     d.CreatedAt,
+		UpdatedAt:     d.UpdatedAt,
 	}
 }

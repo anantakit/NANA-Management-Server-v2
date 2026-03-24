@@ -1,0 +1,109 @@
+package service
+
+import (
+	"context"
+	"fmt"
+
+	"nana/internal/apperror"
+	"nana/internal/domain"
+	"nana/internal/dto"
+	"nana/internal/repository"
+
+	"github.com/google/uuid"
+)
+
+type BankAccountService interface {
+	ListByApartment(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error)
+	Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateBankAccountRequest) (*domain.ApartmentBankAccount, error)
+	Update(ctx context.Context, id uuid.UUID, req dto.UpdateBankAccountRequest) (*domain.ApartmentBankAccount, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+type bankAccountService struct {
+	repo    repository.BankAccountRepository
+	aptRepo repository.ApartmentRepository
+}
+
+func NewBankAccountService(repo repository.BankAccountRepository, aptRepo repository.ApartmentRepository) BankAccountService {
+	return &bankAccountService{repo: repo, aptRepo: aptRepo}
+}
+
+func (s *bankAccountService) ListByApartment(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error) {
+	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
+		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
+	}
+	return s.repo.FindByApartmentID(ctx, apartmentID)
+}
+
+func (s *bankAccountService) Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateBankAccountRequest) (*domain.ApartmentBankAccount, error) {
+	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
+		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
+	}
+
+	if req.IsPrimary {
+		if err := s.repo.ClearPrimary(ctx, apartmentID); err != nil {
+			return nil, fmt.Errorf("clear primary: %w", err)
+		}
+	}
+
+	account := domain.ApartmentBankAccount{
+		ApartmentID:   apartmentID,
+		BankName:      req.BankName,
+		AccountName:   req.AccountName,
+		AccountNumber: req.AccountNumber,
+		PromptPayID:   req.PromptPayID,
+		IsPrimary:     req.IsPrimary,
+		Note:          req.Note,
+	}
+
+	if err := s.repo.Create(ctx, &account); err != nil {
+		return nil, fmt.Errorf("create bank account: %w", err)
+	}
+
+	return &account, nil
+}
+
+func (s *bankAccountService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateBankAccountRequest) (*domain.ApartmentBankAccount, error) {
+	account, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, apperror.ErrNotFound.WithMessage("ไม่พบบัญชีธนาคาร")
+	}
+
+	if req.IsPrimary != nil && *req.IsPrimary && !account.IsPrimary {
+		if err := s.repo.ClearPrimary(ctx, account.ApartmentID); err != nil {
+			return nil, fmt.Errorf("clear primary: %w", err)
+		}
+	}
+
+	if req.BankName != nil {
+		account.BankName = *req.BankName
+	}
+	if req.AccountName != nil {
+		account.AccountName = *req.AccountName
+	}
+	if req.AccountNumber != nil {
+		account.AccountNumber = *req.AccountNumber
+	}
+	if req.PromptPayID != nil {
+		account.PromptPayID = req.PromptPayID
+	}
+	if req.IsPrimary != nil {
+		account.IsPrimary = *req.IsPrimary
+	}
+	if req.Note != nil {
+		account.Note = req.Note
+	}
+
+	if err := s.repo.Update(ctx, account); err != nil {
+		return nil, fmt.Errorf("update bank account: %w", err)
+	}
+
+	return account, nil
+}
+
+func (s *bankAccountService) Delete(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.repo.FindByID(ctx, id); err != nil {
+		return apperror.ErrNotFound.WithMessage("ไม่พบบัญชีธนาคาร")
+	}
+	return s.repo.Delete(ctx, id)
+}

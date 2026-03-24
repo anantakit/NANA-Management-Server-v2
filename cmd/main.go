@@ -10,6 +10,7 @@ import (
 
 	"nana/internal/config"
 	"nana/internal/database"
+	"nana/internal/domain"
 	"nana/internal/handler"
 	"nana/internal/logger"
 	"nana/internal/middleware"
@@ -55,13 +56,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wire dependencies
+	// Wire dependencies — Auth
 	userRepo := repository.NewUserRepository(db)
 	authService := service.NewAuthService(userRepo, cfg)
 	authHandler := handler.NewAuthHandler(authService, cfg)
-
-	// Start token cleanup goroutine
 	authService.StartTokenCleanup(1 * time.Hour)
+
+	// Wire dependencies — Apartments
+	aptRepo := repository.NewApartmentRepository(db)
+	aptService := service.NewApartmentService(aptRepo)
+	aptHandler := handler.NewApartmentHandler(aptService)
+
+	// Wire dependencies — Bank Accounts
+	bankRepo := repository.NewBankAccountRepository(db)
+	bankService := service.NewBankAccountService(bankRepo, aptRepo)
+	bankHandler := handler.NewBankAccountHandler(bankService)
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
@@ -97,6 +106,11 @@ func main() {
 
 	// Protected auth routes
 	authHandler.RegisterProtectedRoutes(protected.Group("/auth"))
+
+	// Admin-only routes
+	admin := protected.Group("", middleware.RequireRole(domain.UserRoleAdmin))
+	aptHandler.RegisterRoutes(admin.Group("/apartments"))
+	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
