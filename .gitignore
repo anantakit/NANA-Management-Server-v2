@@ -22,6 +22,9 @@ coverage.html
 # Dependencies
 /vendor/
 
+# Claude Code skills (personal tool config)
+.claude/skills/
+
 # IDE
 .idea/
 .vscode/
