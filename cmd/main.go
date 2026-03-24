@@ -72,6 +72,11 @@ func main() {
 	bankService := service.NewBankAccountService(bankRepo, aptRepo)
 	bankHandler := handler.NewBankAccountHandler(bankService)
 
+	// Wire dependencies — Rooms
+	roomRepo := repository.NewRoomRepository(db)
+	roomService := service.NewRoomService(roomRepo, aptRepo)
+	roomHandler := handler.NewRoomHandler(roomService)
+
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:       "Nana Rental Management",
@@ -111,6 +116,7 @@ func main() {
 	admin := protected.Group("", middleware.RequireRole(domain.UserRoleAdmin))
 	aptHandler.RegisterRoutes(admin.Group("/apartments"))
 	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
+	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
