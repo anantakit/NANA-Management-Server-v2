@@ -32,5 +32,5 @@ func ToUserResponse(u domain.User) UserResponse {
 
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password" validate:"required,min=1"`
-	NewPassword     string `json:"new_password" validate:"required,min=8"`
+	NewPassword     string `json:"new_password" validate:"required,min=8,containsany=0123456789"`
 }
