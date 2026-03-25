@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -56,11 +57,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cancellable context for background goroutines
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Transaction manager
+	txManager := database.NewTxManager(db)
+
 	// Wire dependencies — Auth
 	userRepo := repository.NewUserRepository(db)
 	authService := service.NewAuthService(userRepo, cfg)
 	authHandler := handler.NewAuthHandler(authService, cfg)
-	authService.StartTokenCleanup(1 * time.Hour)
+	authService.StartTokenCleanup(ctx, 1*time.Hour)
 
 	// Wire dependencies — Apartments
 	aptRepo := repository.NewApartmentRepository(db)
@@ -69,7 +77,7 @@ func main() {
 
 	// Wire dependencies — Bank Accounts
 	bankRepo := repository.NewBankAccountRepository(db)
-	bankService := service.NewBankAccountService(bankRepo, aptRepo)
+	bankService := service.NewBankAccountService(bankRepo, aptRepo, txManager)
 	bankHandler := handler.NewBankAccountHandler(bankService)
 
 	// Wire dependencies — Rooms
@@ -82,7 +90,7 @@ func main() {
 
 	// Wire dependencies — Contracts
 	contractRepo := repository.NewContractRepository(db)
-	contractService := service.NewContractService(contractRepo, roomRepo, tenantRepo, db)
+	contractService := service.NewContractService(contractRepo, roomRepo, tenantRepo, txManager)
 	contractHandler := handler.NewContractHandler(contractService)
 
 	tenantService := service.NewTenantService(tenantRepo, contractRepo)
@@ -146,6 +154,8 @@ func main() {
 
 	<-quit
 	slog.Info("shutting down server...")
+
+	cancel()
 
 	if err := app.Shutdown(); err != nil {
 		slog.Error("server shutdown error", "error", err)

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"nana/internal/apperror"
 	"nana/internal/dto"
 	"nana/internal/service"
 
@@ -46,6 +47,10 @@ func (h *RoomHandler) List(c fiber.Ctx) error {
 }
 
 func (h *RoomHandler) GetByID(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
 	roomID, err := uuid.Parse(c.Params("roomId"))
 	if err != nil {
 		return ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
@@ -54,6 +59,9 @@ func (h *RoomHandler) GetByID(c fiber.Ctx) error {
 	room, err := h.svc.GetByID(c.Context(), roomID)
 	if err != nil {
 		return Error(c, err)
+	}
+	if room.ApartmentID != apartmentID {
+		return Error(c, apperror.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้"))
 	}
 	return Success(c, "สำเร็จ", dto.ToRoomWithContractResponseList([]dto.RoomWithContract{*room})[0])
 }
@@ -77,6 +85,10 @@ func (h *RoomHandler) Create(c fiber.Ctx) error {
 }
 
 func (h *RoomHandler) Update(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
 	roomID, err := uuid.Parse(c.Params("roomId"))
 	if err != nil {
 		return ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
@@ -91,13 +103,29 @@ func (h *RoomHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return Error(c, err)
 	}
+	if room.ApartmentID != apartmentID {
+		return Error(c, apperror.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้"))
+	}
 	return Success(c, "อัปเดตห้องสำเร็จ", dto.ToRoomResponse(*room))
 }
 
 func (h *RoomHandler) Delete(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
 	roomID, err := uuid.Parse(c.Params("roomId"))
 	if err != nil {
 		return ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
+	}
+
+	// Verify room belongs to apartment
+	room, err := h.svc.GetByID(c.Context(), roomID)
+	if err != nil {
+		return Error(c, err)
+	}
+	if room.ApartmentID != apartmentID {
+		return Error(c, apperror.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้"))
 	}
 
 	if err := h.svc.Delete(c.Context(), roomID); err != nil {

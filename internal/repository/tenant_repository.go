@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/model"
@@ -32,7 +33,7 @@ func NewTenantRepository(db *gorm.DB) TenantRepository {
 
 func (r *tenantRepository) FindAll(ctx context.Context, params dto.PaginationParams) ([]domain.Tenant, int64, error) {
 	var total int64
-	query := r.db.WithContext(ctx).Model(&model.Tenant{})
+	query := database.DB(ctx, r.db).Model(&model.Tenant{})
 
 	if params.Search != "" {
 		search := "%" + params.Search + "%"
@@ -63,7 +64,7 @@ func (r *tenantRepository) FindAll(ctx context.Context, params dto.PaginationPar
 
 func (r *tenantRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	var m model.Tenant
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
 	d := m.ToDomain()
@@ -72,7 +73,7 @@ func (r *tenantRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.
 
 func (r *tenantRepository) Create(ctx context.Context, tenant *domain.Tenant) error {
 	m := model.TenantFromDomain(*tenant)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
 	*tenant = m.ToDomain()
@@ -81,7 +82,7 @@ func (r *tenantRepository) Create(ctx context.Context, tenant *domain.Tenant) er
 
 func (r *tenantRepository) Update(ctx context.Context, tenant *domain.Tenant) error {
 	m := model.TenantFromDomain(*tenant)
-	if err := r.db.WithContext(ctx).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
 	*tenant = m.ToDomain()
@@ -89,17 +90,17 @@ func (r *tenantRepository) Update(ctx context.Context, tenant *domain.Tenant) er
 }
 
 func (r *tenantRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	return r.db.WithContext(ctx).Delete(&model.Tenant{}, "id = ?", id).Error
+	return database.DB(ctx, r.db).Delete(&model.Tenant{}, "id = ?", id).Error
 }
 
 func (r *tenantRepository) ExistsByIDCard(ctx context.Context, idCard string) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.Tenant{}).Where("id_card = ?", idCard).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.Tenant{}).Where("id_card = ?", idCard).Count(&count).Error
 	return count > 0, err
 }
 
 func (r *tenantRepository) ExistsByIDCardExcluding(ctx context.Context, idCard string, excludeID uuid.UUID) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.Tenant{}).Where("id_card = ? AND id != ?", idCard, excludeID).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.Tenant{}).Where("id_card = ? AND id != ?", idCard, excludeID).Count(&count).Error
 	return count > 0, err
 }

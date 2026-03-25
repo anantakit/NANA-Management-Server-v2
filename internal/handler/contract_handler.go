@@ -63,7 +63,7 @@ func (h *ContractHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return Error(c, err)
 	}
-	return Created(c, "สร้างสัญญาสำเร็จ", dto.ToContractResponse(dto.ContractWithRelations{Contract: *contract}))
+	return Created(c, "สร้างสัญญาสำเร็จ", dto.ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Update(c fiber.Ctx) error {
@@ -81,7 +81,7 @@ func (h *ContractHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return Error(c, err)
 	}
-	return Success(c, "อัปเดตสัญญาสำเร็จ", dto.ToContractResponse(dto.ContractWithRelations{Contract: *contract}))
+	return Success(c, "อัปเดตสัญญาสำเร็จ", dto.ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Delete(c fiber.Ctx) error {

@@ -6,21 +6,20 @@ import (
 	"time"
 
 	"nana/internal/apperror"
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/model"
 	"nana/internal/money"
 	"nana/internal/repository"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 type ContractService interface {
 	List(ctx context.Context, params dto.ContractListParams) ([]dto.ContractWithRelations, int64, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*dto.ContractWithRelations, error)
-	Create(ctx context.Context, req dto.CreateContractRequest) (*domain.Contract, error)
-	Update(ctx context.Context, id uuid.UUID, req dto.UpdateContractRequest) (*domain.Contract, error)
+	Create(ctx context.Context, req dto.CreateContractRequest) (*dto.ContractWithRelations, error)
+	Update(ctx context.Context, id uuid.UUID, req dto.UpdateContractRequest) (*dto.ContractWithRelations, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
@@ -28,20 +27,20 @@ type contractService struct {
 	contractRepo repository.ContractRepository
 	roomRepo     repository.RoomRepository
 	tenantRepo   repository.TenantRepository
-	db           *gorm.DB
+	tx           database.TxManager
 }
 
 func NewContractService(
 	contractRepo repository.ContractRepository,
 	roomRepo repository.RoomRepository,
 	tenantRepo repository.TenantRepository,
-	db *gorm.DB,
+	tx database.TxManager,
 ) ContractService {
 	return &contractService{
 		contractRepo: contractRepo,
 		roomRepo:     roomRepo,
 		tenantRepo:   tenantRepo,
-		db:           db,
+		tx:           tx,
 	}
 }
 
@@ -57,7 +56,7 @@ func (s *contractService) GetByID(ctx context.Context, id uuid.UUID) (*dto.Contr
 	return contract, nil
 }
 
-func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequest) (*domain.Contract, error) {
+func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequest) (*dto.ContractWithRelations, error) {
 	tenantID, err := uuid.Parse(req.TenantID)
 	if err != nil {
 		return nil, apperror.ErrBadRequest.WithMessage("รหัสผู้เช่าไม่ถูกต้อง")
@@ -109,23 +108,23 @@ func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequ
 	}
 
 	// Transaction: create contract + update room status
-	txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.contractRepo.CreateTx(ctx, tx, &contract); err != nil {
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.contractRepo.Create(txCtx, &contract); err != nil {
 			return err
 		}
-		if err := tx.Model(&model.Room{}).Where("id = ?", roomID).Update("status", string(domain.RoomStatusOccupied)).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-	if txErr != nil {
-		return nil, fmt.Errorf("create contract: %w", txErr)
+		return s.roomRepo.UpdateStatus(txCtx, roomID, domain.RoomStatusOccupied)
+	}); err != nil {
+		return nil, fmt.Errorf("create contract: %w", err)
 	}
 
-	return &contract, nil
+	result, err := s.contractRepo.FindByID(ctx, contract.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch created contract: %w", err)
+	}
+	return result, nil
 }
 
-func (s *contractService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateContractRequest) (*domain.Contract, error) {
+func (s *contractService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateContractRequest) (*dto.ContractWithRelations, error) {
 	contract, err := s.contractRepo.FindByIDSimple(ctx, id)
 	if err != nil {
 		return nil, apperror.ErrNotFound.WithMessage("ไม่พบสัญญา")
@@ -165,7 +164,11 @@ func (s *contractService) Update(ctx context.Context, id uuid.UUID, req dto.Upda
 		return nil, fmt.Errorf("update contract: %w", err)
 	}
 
-	return contract, nil
+	result, err := s.contractRepo.FindByID(ctx, contract.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch updated contract: %w", err)
+	}
+	return result, nil
 }
 
 func (s *contractService) Delete(ctx context.Context, id uuid.UUID) error {

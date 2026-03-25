@@ -25,7 +25,7 @@ type AuthService interface {
 	Refresh(ctx context.Context, rawToken string) (*dto.LoginResponse, string, error)
 	Logout(ctx context.Context, userID uuid.UUID, rawToken string) error
 	ChangePassword(ctx context.Context, userID uuid.UUID, req dto.ChangePasswordRequest) error
-	StartTokenCleanup(interval time.Duration)
+	StartTokenCleanup(ctx context.Context, interval time.Duration)
 }
 
 type authService struct {
@@ -157,13 +157,18 @@ func (s *authService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 	return s.userRepo.RevokeAllUserTokens(ctx, userID)
 }
 
-func (s *authService) StartTokenCleanup(interval time.Duration) {
+func (s *authService) StartTokenCleanup(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			if err := s.userRepo.CleanupExpiredTokens(context.Background()); err != nil {
-				slog.Error("token cleanup failed", "error", err)
+		for {
+			select {
+			case <-ticker.C:
+				if err := s.userRepo.CleanupExpiredTokens(context.Background()); err != nil {
+					slog.Error("token cleanup failed", "error", err)
+				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()

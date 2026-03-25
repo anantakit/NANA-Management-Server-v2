@@ -46,13 +46,15 @@ paths:
 - All methods: `context.Context` as first param
 - Max 4 deps, max 500 lines, max 10 methods
 - Return `*apperror.AppError` for business errors
+- Cross-repo atomicity: inject `database.TxManager`, use `s.tx.RunInTx(ctx, func(txCtx) { ... })`
+- Do NOT import `gorm.io/gorm` or `model` package in services
 
 ### Repository (internal/repository/)
 - Interface first, then private struct
 - All methods: `context.Context` as first param
-- `db.WithContext(ctx)` on every query
+- `database.DB(ctx, r.db)` on every query (NOT `r.db.WithContext(ctx)`) — enables tx participation
 - Return domain models via `model.ToDomain()`
-- Max 400 lines, max 12 methods, CRUD only
+- Max 400 lines, max 12 methods, CRUD only — single entity per repo
 - **Update pattern**: use `db.Model(&m).Select("*").Omit("deleted_at").Updates(&m)` — NOT `Save()` which skips zero values (false, 0, "")
 
 ## Error Handling

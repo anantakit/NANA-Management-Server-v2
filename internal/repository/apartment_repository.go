@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/model"
 
@@ -37,7 +38,7 @@ func NewApartmentRepository(db *gorm.DB) ApartmentRepository {
 
 func (r *apartmentRepository) FindAll(ctx context.Context) ([]domain.Apartment, error) {
 	var models []model.Apartment
-	if err := r.db.WithContext(ctx).Order("display_order ASC, name ASC").Find(&models).Error; err != nil {
+	if err := database.DB(ctx, r.db).Order("display_order ASC, name ASC").Find(&models).Error; err != nil {
 		return nil, err
 	}
 	result := make([]domain.Apartment, len(models))
@@ -49,7 +50,7 @@ func (r *apartmentRepository) FindAll(ctx context.Context) ([]domain.Apartment, 
 
 func (r *apartmentRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Apartment, error) {
 	var m model.Apartment
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
 	d := m.ToDomain()
@@ -58,7 +59,7 @@ func (r *apartmentRepository) FindByID(ctx context.Context, id uuid.UUID) (*doma
 
 func (r *apartmentRepository) Create(ctx context.Context, apartment *domain.Apartment) error {
 	m := model.ApartmentFromDomain(*apartment)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
 	*apartment = m.ToDomain()
@@ -67,7 +68,7 @@ func (r *apartmentRepository) Create(ctx context.Context, apartment *domain.Apar
 
 func (r *apartmentRepository) Update(ctx context.Context, apartment *domain.Apartment) error {
 	m := model.ApartmentFromDomain(*apartment)
-	if err := r.db.WithContext(ctx).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
 	*apartment = m.ToDomain()
@@ -76,13 +77,13 @@ func (r *apartmentRepository) Update(ctx context.Context, apartment *domain.Apar
 
 func (r *apartmentRepository) ExistsByName(ctx context.Context, name string) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.Apartment{}).Where("name = ?", name).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.Apartment{}).Where("name = ?", name).Count(&count).Error
 	return count > 0, err
 }
 
 func (r *apartmentRepository) ExistsByNameExcluding(ctx context.Context, name string, excludeID uuid.UUID) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.Apartment{}).Where("name = ? AND id != ?", name, excludeID).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.Apartment{}).Where("name = ? AND id != ?", name, excludeID).Count(&count).Error
 	return count > 0, err
 }
 
@@ -98,7 +99,7 @@ func (r *apartmentRepository) GetRoomStatsByApartmentIDs(ctx context.Context, id
 	}
 
 	var rows []row
-	err := r.db.WithContext(ctx).
+	err := database.DB(ctx, r.db).
 		Table("rooms").
 		Select("apartment_id, status, COUNT(*) as count").
 		Where("apartment_id IN ? AND deleted_at IS NULL", ids).

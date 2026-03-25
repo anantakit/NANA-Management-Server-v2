@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/model"
@@ -17,7 +18,6 @@ type ContractRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*dto.ContractWithRelations, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*domain.Contract, error)
 	Create(ctx context.Context, contract *domain.Contract) error
-	CreateTx(ctx context.Context, tx *gorm.DB, contract *domain.Contract) error
 	Update(ctx context.Context, contract *domain.Contract) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	HasActiveByRoomID(ctx context.Context, roomID uuid.UUID) (bool, error)
@@ -35,7 +35,7 @@ func NewContractRepository(db *gorm.DB) ContractRepository {
 func (r *contractRepository) FindAll(ctx context.Context, params dto.ContractListParams) ([]dto.ContractWithRelations, int64, error) {
 	var total int64
 
-	query := r.db.WithContext(ctx).
+	query := database.DB(ctx, r.db).
 		Model(&model.Contract{}).
 		Joins("JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
 		Joins("JOIN rooms ON rooms.id = contracts.room_id AND rooms.deleted_at IS NULL").
@@ -110,7 +110,7 @@ func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*dto.C
 	}
 
 	var row joinRow
-	err := r.db.WithContext(ctx).
+	err := database.DB(ctx, r.db).
 		Model(&model.Contract{}).
 		Select(`contracts.*,
 			tenants.full_name AS tenant_name,
@@ -143,7 +143,7 @@ func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*dto.C
 
 func (r *contractRepository) FindByIDSimple(ctx context.Context, id uuid.UUID) (*domain.Contract, error) {
 	var m model.Contract
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
 	d := m.ToDomain()
@@ -152,16 +152,7 @@ func (r *contractRepository) FindByIDSimple(ctx context.Context, id uuid.UUID) (
 
 func (r *contractRepository) Create(ctx context.Context, contract *domain.Contract) error {
 	m := model.ContractFromDomain(*contract)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
-		return err
-	}
-	*contract = m.ToDomain()
-	return nil
-}
-
-func (r *contractRepository) CreateTx(ctx context.Context, tx *gorm.DB, contract *domain.Contract) error {
-	m := model.ContractFromDomain(*contract)
-	if err := tx.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
 	*contract = m.ToDomain()
@@ -170,7 +161,7 @@ func (r *contractRepository) CreateTx(ctx context.Context, tx *gorm.DB, contract
 
 func (r *contractRepository) Update(ctx context.Context, contract *domain.Contract) error {
 	m := model.ContractFromDomain(*contract)
-	if err := r.db.WithContext(ctx).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
 	*contract = m.ToDomain()
@@ -178,12 +169,12 @@ func (r *contractRepository) Update(ctx context.Context, contract *domain.Contra
 }
 
 func (r *contractRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	return r.db.WithContext(ctx).Delete(&model.Contract{}, "id = ?", id).Error
+	return database.DB(ctx, r.db).Delete(&model.Contract{}, "id = ?", id).Error
 }
 
 func (r *contractRepository) HasActiveByRoomID(ctx context.Context, roomID uuid.UUID) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).
+	err := database.DB(ctx, r.db).
 		Model(&model.Contract{}).
 		Where("room_id = ? AND status = ?", roomID, domain.ContractStatusActive).
 		Count(&count).Error
@@ -192,7 +183,7 @@ func (r *contractRepository) HasActiveByRoomID(ctx context.Context, roomID uuid.
 
 func (r *contractRepository) HasActiveByTenantID(ctx context.Context, tenantID uuid.UUID) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).
+	err := database.DB(ctx, r.db).
 		Model(&model.Contract{}).
 		Where("tenant_id = ? AND status = ?", tenantID, domain.ContractStatusActive).
 		Count(&count).Error

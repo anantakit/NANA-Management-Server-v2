@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"nana/internal/apperror"
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/repository"
@@ -22,10 +23,11 @@ type BankAccountService interface {
 type bankAccountService struct {
 	repo    repository.BankAccountRepository
 	aptRepo repository.ApartmentRepository
+	tx      database.TxManager
 }
 
-func NewBankAccountService(repo repository.BankAccountRepository, aptRepo repository.ApartmentRepository) BankAccountService {
-	return &bankAccountService{repo: repo, aptRepo: aptRepo}
+func NewBankAccountService(repo repository.BankAccountRepository, aptRepo repository.ApartmentRepository, tx database.TxManager) BankAccountService {
+	return &bankAccountService{repo: repo, aptRepo: aptRepo, tx: tx}
 }
 
 func (s *bankAccountService) ListByApartment(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error) {
@@ -40,12 +42,6 @@ func (s *bankAccountService) Create(ctx context.Context, apartmentID uuid.UUID, 
 		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
 
-	if req.IsPrimary {
-		if err := s.repo.ClearPrimary(ctx, apartmentID); err != nil {
-			return nil, fmt.Errorf("clear primary: %w", err)
-		}
-	}
-
 	account := domain.ApartmentBankAccount{
 		ApartmentID:   apartmentID,
 		BankName:      req.BankName,
@@ -56,8 +52,19 @@ func (s *bankAccountService) Create(ctx context.Context, apartmentID uuid.UUID, 
 		Note:          req.Note,
 	}
 
-	if err := s.repo.Create(ctx, &account); err != nil {
-		return nil, fmt.Errorf("create bank account: %w", err)
+	if req.IsPrimary {
+		if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+			if err := s.repo.ClearPrimary(txCtx, apartmentID); err != nil {
+				return err
+			}
+			return s.repo.Create(txCtx, &account)
+		}); err != nil {
+			return nil, fmt.Errorf("create bank account: %w", err)
+		}
+	} else {
+		if err := s.repo.Create(ctx, &account); err != nil {
+			return nil, fmt.Errorf("create bank account: %w", err)
+		}
 	}
 
 	return &account, nil
@@ -69,11 +76,7 @@ func (s *bankAccountService) Update(ctx context.Context, id uuid.UUID, req dto.U
 		return nil, apperror.ErrNotFound.WithMessage("ไม่พบบัญชีธนาคาร")
 	}
 
-	if req.IsPrimary != nil && *req.IsPrimary && !account.IsPrimary {
-		if err := s.repo.ClearPrimary(ctx, account.ApartmentID); err != nil {
-			return nil, fmt.Errorf("clear primary: %w", err)
-		}
-	}
+	changingToPrimary := req.IsPrimary != nil && *req.IsPrimary && !account.IsPrimary
 
 	if req.BankName != nil {
 		account.BankName = *req.BankName
@@ -94,8 +97,19 @@ func (s *bankAccountService) Update(ctx context.Context, id uuid.UUID, req dto.U
 		account.Note = req.Note
 	}
 
-	if err := s.repo.Update(ctx, account); err != nil {
-		return nil, fmt.Errorf("update bank account: %w", err)
+	if changingToPrimary {
+		if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+			if err := s.repo.ClearPrimary(txCtx, account.ApartmentID); err != nil {
+				return err
+			}
+			return s.repo.Update(txCtx, account)
+		}); err != nil {
+			return nil, fmt.Errorf("update bank account: %w", err)
+		}
+	} else {
+		if err := s.repo.Update(ctx, account); err != nil {
+			return nil, fmt.Errorf("update bank account: %w", err)
+		}
 	}
 
 	return account, nil

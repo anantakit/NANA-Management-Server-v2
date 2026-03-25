@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/model"
 
@@ -36,7 +37,7 @@ func NewUserRepository(db *gorm.DB) UserRepository {
 
 func (r *userRepository) FindByUsername(ctx context.Context, username string) (*domain.User, error) {
 	var m model.User
-	if err := r.db.WithContext(ctx).Where("username = ?", username).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("username = ?", username).First(&m).Error; err != nil {
 		return nil, err
 	}
 	u := m.ToDomain()
@@ -45,7 +46,7 @@ func (r *userRepository) FindByUsername(ctx context.Context, username string) (*
 
 func (r *userRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 	var m model.User
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
 	u := m.ToDomain()
@@ -54,7 +55,7 @@ func (r *userRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Us
 
 func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 	m := model.UserFromDomain(*user)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
 	*user = m.ToDomain()
@@ -63,7 +64,7 @@ func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 
 func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
 	m := model.UserFromDomain(*user)
-	if err := r.db.WithContext(ctx).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
 	*user = m.ToDomain()
@@ -72,13 +73,13 @@ func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
 
 func (r *userRepository) ExistsByUsername(ctx context.Context, username string) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.User{}).Where("username = ?", username).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.User{}).Where("username = ?", username).Count(&count).Error
 	return count > 0, err
 }
 
 func (r *userRepository) CreateRefreshToken(ctx context.Context, token *domain.RefreshToken) error {
 	m := model.RefreshTokenFromDomain(*token)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
 	*token = m.ToDomain()
@@ -87,7 +88,7 @@ func (r *userRepository) CreateRefreshToken(ctx context.Context, token *domain.R
 
 func (r *userRepository) FindRefreshTokenByHash(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
 	var m model.RefreshToken
-	if err := r.db.WithContext(ctx).Where("token_hash = ? AND revoked = false AND expires_at > ?", tokenHash, time.Now()).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("token_hash = ?", tokenHash).First(&m).Error; err != nil {
 		return nil, err
 	}
 	t := m.ToDomain()
@@ -95,17 +96,17 @@ func (r *userRepository) FindRefreshTokenByHash(ctx context.Context, tokenHash s
 }
 
 func (r *userRepository) RevokeRefreshToken(ctx context.Context, id uuid.UUID) error {
-	return r.db.WithContext(ctx).Model(&model.RefreshToken{}).Where("id = ?", id).Update("revoked", true).Error
+	return database.DB(ctx, r.db).Model(&model.RefreshToken{}).Where("id = ?", id).Update("revoked", true).Error
 }
 
 func (r *userRepository) RevokeTokenFamily(ctx context.Context, familyID uuid.UUID) error {
-	return r.db.WithContext(ctx).Model(&model.RefreshToken{}).Where("family_id = ?", familyID).Update("revoked", true).Error
+	return database.DB(ctx, r.db).Model(&model.RefreshToken{}).Where("family_id = ?", familyID).Update("revoked", true).Error
 }
 
 func (r *userRepository) RevokeAllUserTokens(ctx context.Context, userID uuid.UUID) error {
-	return r.db.WithContext(ctx).Model(&model.RefreshToken{}).Where("user_id = ?", userID).Update("revoked", true).Error
+	return database.DB(ctx, r.db).Model(&model.RefreshToken{}).Where("user_id = ?", userID).Update("revoked", true).Error
 }
 
 func (r *userRepository) CleanupExpiredTokens(ctx context.Context) error {
-	return r.db.WithContext(ctx).Where("expires_at < ? OR revoked = true", time.Now()).Delete(&model.RefreshToken{}).Error
+	return database.DB(ctx, r.db).Where("expires_at < ? OR revoked = true", time.Now()).Delete(&model.RefreshToken{}).Error
 }

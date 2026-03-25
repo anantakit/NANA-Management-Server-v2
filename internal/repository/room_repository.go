@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/model"
@@ -19,6 +20,7 @@ type RoomRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Room, error)
 	Create(ctx context.Context, room *domain.Room) error
 	Update(ctx context.Context, room *domain.Room) error
+	UpdateStatus(ctx context.Context, id uuid.UUID, status domain.RoomStatus) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ExistsByNumber(ctx context.Context, apartmentID uuid.UUID, number string) (bool, error)
 	ExistsByNumberExcluding(ctx context.Context, apartmentID uuid.UUID, number string, excludeID uuid.UUID) (bool, error)
@@ -34,7 +36,7 @@ func NewRoomRepository(db *gorm.DB) RoomRepository {
 
 func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]domain.Room, int64, error) {
 	var total int64
-	query := r.db.WithContext(ctx).Model(&model.Room{}).Where("apartment_id = ?", apartmentID)
+	query := database.DB(ctx, r.db).Model(&model.Room{}).Where("apartment_id = ?", apartmentID)
 
 	if params.Search != "" {
 		query = query.Where("number ILIKE ?", "%"+params.Search+"%")
@@ -64,7 +66,7 @@ func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid
 
 func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error) {
 	var total int64
-	countQuery := r.db.WithContext(ctx).Model(&model.Room{}).Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
+	countQuery := database.DB(ctx, r.db).Model(&model.Room{}).Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
 	if params.Search != "" {
 		countQuery = countQuery.Where("rooms.number ILIKE ?", "%"+params.Search+"%")
 	}
@@ -92,7 +94,7 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 		MoveOutDate            *string `gorm:"column:contract_move_out"`
 	}
 
-	query := r.db.WithContext(ctx).
+	query := database.DB(ctx, r.db).
 		Table("rooms").
 		Select(`rooms.*,
 			contracts.id::text AS contract_id,
@@ -156,7 +158,7 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 	}
 
 	var row joinRow
-	err := r.db.WithContext(ctx).
+	err := database.DB(ctx, r.db).
 		Table("rooms").
 		Select(`rooms.*,
 			contracts.id::text AS contract_id,
@@ -191,16 +193,16 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 		DepositAmount:          row.DepositAmount,
 		ElectricityRatePerUnit: row.ElectricityRatePerUnit,
 		WaterRatePerUnit:       row.WaterRatePerUnit,
-		StartDate:   row.StartDate,
-		MinMonths:   row.MinMonths,
-		MoveOutDate: row.MoveOutDate,
+		StartDate:              row.StartDate,
+		MinMonths:              row.MinMonths,
+		MoveOutDate:            row.MoveOutDate,
 	}
 	return &result, nil
 }
 
 func (r *roomRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Room, error) {
 	var m model.Room
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
 	d := m.ToDomain()
@@ -209,7 +211,7 @@ func (r *roomRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Ro
 
 func (r *roomRepository) Create(ctx context.Context, room *domain.Room) error {
 	m := model.RoomFromDomain(*room)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
 	*room = m.ToDomain()
@@ -218,25 +220,29 @@ func (r *roomRepository) Create(ctx context.Context, room *domain.Room) error {
 
 func (r *roomRepository) Update(ctx context.Context, room *domain.Room) error {
 	m := model.RoomFromDomain(*room)
-	if err := r.db.WithContext(ctx).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
+	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
 	*room = m.ToDomain()
 	return nil
 }
 
+func (r *roomRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.RoomStatus) error {
+	return database.DB(ctx, r.db).Model(&model.Room{}).Where("id = ?", id).Update("status", string(status)).Error
+}
+
 func (r *roomRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	return r.db.WithContext(ctx).Delete(&model.Room{}, "id = ?", id).Error
+	return database.DB(ctx, r.db).Delete(&model.Room{}, "id = ?", id).Error
 }
 
 func (r *roomRepository) ExistsByNumber(ctx context.Context, apartmentID uuid.UUID, number string) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.Room{}).Where("apartment_id = ? AND number = ?", apartmentID, number).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.Room{}).Where("apartment_id = ? AND number = ?", apartmentID, number).Count(&count).Error
 	return count > 0, err
 }
 
 func (r *roomRepository) ExistsByNumberExcluding(ctx context.Context, apartmentID uuid.UUID, number string, excludeID uuid.UUID) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&model.Room{}).Where("apartment_id = ? AND number = ? AND id != ?", apartmentID, number, excludeID).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&model.Room{}).Where("apartment_id = ? AND number = ? AND id != ?", apartmentID, number, excludeID).Count(&count).Error
 	return count > 0, err
 }
