@@ -1,7 +1,12 @@
 # Backend — Go + Fiber v3 + GORM
 
 > See root CLAUDE.md for API spec, domain model, auth rules.
-> Detailed standards in `.claude/rules/`.
+
+## Quick Reference Index
+| Resource | Path | Content |
+|----------|------|---------|
+| Coding Standards | `.claude/rules/coding-standards.md` | Layer rules, error handling, update patterns |
+| Shared Helpers | `.claude/rules/shared-helpers.md` | BindBody, response helpers, DI wiring |
 
 ## Stack
 Go 1.26+ / Fiber v3 (NOT v2) / GORM + PostgreSQL 17+ / slog / go-playground/validator/v10 / golang-jwt/jwt/v5 / google/uuid / pressly/goose/v3 (SQL only) / Module: `nana`

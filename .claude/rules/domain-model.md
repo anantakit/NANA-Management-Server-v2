@@ -28,18 +28,21 @@ Apartment 1──N Room 1──N Contract N──1 Tenant
 - UserRole: `admin`, `manager`
 
 ## Apartment Fields
-ID, Name, DisplayOrder, AddressDetails, ProvinceID, DistrictID, SubdistrictID
+ID, Name, DisplayOrder, Address (text), TaxID
 ElectricityRatePerUnit (int64 satang), WaterRatePerUnit (int64 satang)
-BankName, BankAccountName, BankAccountNumber, PromptPayID, TaxID
+
+## Apartment Bank Accounts (separate table)
+ID, ApartmentID (FK), BankName, AccountName, AccountNumber, PromptPayID, IsPrimary, Note
 
 ## Room Fields
 ID, ApartmentID (FK), Number, Type (RoomType), Floor
 BaseRent (int64 satang), BaseDeposit (int64 satang), Status (RoomStatus)
 
 ## Contract Fields
-ID, TenantID (FK), RoomID (FK), StartDate, MinMonths (1-6)
+ID, TenantID (FK), RoomID (FK), StartDate, MinMonths (default 6, min 1)
 MonthlyRent (int64 satang), DepositAmount (int64 satang)
-DepositStatus, Status (ContractStatus), EndDate (nullable)
+ElectricityRatePerUnit (int64 satang), WaterRatePerUnit (int64 satang)
+DepositStatus, Status (ContractStatus), EndDate (nullable), MoveOutDate (nullable)
 
 ## Bill Fields
 ID, ContractID (FK), RoomID (FK), BillingMonth (YYYY-MM), BillDate

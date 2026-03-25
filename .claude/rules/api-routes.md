@@ -36,11 +36,13 @@ paths:
 ## Rooms (`/api/v1/apartments/:id/rooms`) — Admin only
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | List rooms for apartment (paginated, search by number) |
-| GET | `/:roomId` | Get room by ID |
+| GET | `/` | List rooms with active contract summary (LEFT JOIN contracts+tenants) |
+| GET | `/:roomId` | Get room with active contract summary |
 | POST | `/` | Create room (number unique per apartment) |
 | PUT | `/:roomId` | Update room (status: VACANT↔MAINTENANCE only, OCCUPIED blocked) |
 | DELETE | `/:roomId` | Soft delete room (blocked if OCCUPIED) |
+
+Room response includes `active_contract`: contract_id, tenant_id, tenant_name, tenant_phone, monthly_rent, deposit_amount, electricity_rate_per_unit, water_rate_per_unit, start_date, min_months, move_out_date
 
 ## Tenants (`/api/v1/tenants`) — Admin only
 | Method | Path | Description |
@@ -49,4 +51,13 @@ paths:
 | GET | `/:id` | Get tenant by ID |
 | POST | `/` | Create tenant (idCard 13 digits, unique) |
 | PUT | `/:id` | Update tenant (idCard uniqueness checked) |
-| DELETE | `/:id` | Soft delete tenant (TODO: block if active contract) |
+| DELETE | `/:id` | Soft delete tenant (blocked if active contract) |
+
+## Contracts (`/api/v1/contracts`) — Admin only
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List contracts (paginated, filter by status/apartment_id, search tenant/room) |
+| GET | `/:contractId` | Get contract with tenant + room + apartment info (JOIN) |
+| POST | `/` | Create contract (room must be VACANT, auto-sets room OCCUPIED in transaction) |
+| PUT | `/:contractId` | Update contract (ACTIVE only: rent, deposit, rates, min_months, move_out_date) |
+| DELETE | `/:contractId` | Soft delete contract (blocked if ACTIVE) |
