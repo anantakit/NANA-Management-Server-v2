@@ -1,36 +1,38 @@
-package handler
+package bind
 
 import (
+	"nana/internal/shared/respond"
+
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v3"
 )
 
 var validate = validator.New()
 
-// BindBody parses the request body into dst and validates it.
+// Body parses the request body into dst and validates it.
 // Returns a validation error response if parsing or validation fails.
-func BindBody(c fiber.Ctx, dst any) error {
+func Body(c fiber.Ctx, dst any) error {
 	if err := c.Bind().Body(dst); err != nil {
-		return ValidationError(c, []string{"ข้อมูลไม่ถูกต้อง"})
+		return respond.ValidationError(c, []string{"ข้อมูลไม่ถูกต้อง"})
 	}
 
 	if err := validate.Struct(dst); err != nil {
 		errs := extractValidationErrors(err)
-		return ValidationError(c, errs)
+		return respond.ValidationError(c, errs)
 	}
 
 	return nil
 }
 
-// BindQuery parses query parameters into dst and validates it.
-func BindQuery(c fiber.Ctx, dst any) error {
+// Query parses query parameters into dst and validates it.
+func Query(c fiber.Ctx, dst any) error {
 	if err := c.Bind().Query(dst); err != nil {
-		return ValidationError(c, []string{"พารามิเตอร์ไม่ถูกต้อง"})
+		return respond.ValidationError(c, []string{"พารามิเตอร์ไม่ถูกต้อง"})
 	}
 
 	if err := validate.Struct(dst); err != nil {
 		errs := extractValidationErrors(err)
-		return ValidationError(c, errs)
+		return respond.ValidationError(c, errs)
 	}
 
 	return nil

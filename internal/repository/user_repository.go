@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"nana/internal/database"
+	"nana/internal/shared/database"
 	"nana/internal/domain"
 	"nana/internal/model"
 

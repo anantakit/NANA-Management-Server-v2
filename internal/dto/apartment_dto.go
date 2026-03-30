@@ -2,7 +2,7 @@ package dto
 
 import (
 	"nana/internal/domain"
-	"nana/internal/money"
+	"nana/internal/shared/money"
 )
 
 // Request DTOs

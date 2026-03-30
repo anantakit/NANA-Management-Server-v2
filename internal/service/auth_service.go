@@ -10,10 +10,10 @@ import (
 	"time"
 	"unicode"
 
-	"nana/internal/config"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/repository"
+	"nana/internal/shared/config"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"

@@ -3,6 +3,8 @@ package handler
 import (
 	"nana/internal/dto"
 	"nana/internal/service"
+	"nana/internal/shared/bind"
+	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -26,72 +28,72 @@ func (h *ContractHandler) RegisterRoutes(router fiber.Router) {
 
 func (h *ContractHandler) List(c fiber.Ctx) error {
 	var params dto.ContractListParams
-	if err := BindQuery(c, &params); err != nil {
+	if err := bind.Query(c, &params); err != nil {
 		return err
 	}
 	params.Normalize()
 
 	contracts, total, err := h.svc.List(c.Context(), params)
 	if err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
 
 	meta := dto.ComputeMeta(params.Page, params.Limit, total)
-	return SuccessWithMeta(c, "สำเร็จ", dto.ToContractResponseList(contracts), meta)
+	return respond.SuccessWithMeta(c, "สำเร็จ", dto.ToContractResponseList(contracts), meta)
 }
 
 func (h *ContractHandler) GetByID(c fiber.Ctx) error {
 	contractID, err := uuid.Parse(c.Params("contractId"))
 	if err != nil {
-		return ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
+		return respond.ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
 	}
 
 	contract, err := h.svc.GetByID(c.Context(), contractID)
 	if err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
-	return Success(c, "สำเร็จ", dto.ToContractResponse(*contract))
+	return respond.Success(c, "สำเร็จ", dto.ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Create(c fiber.Ctx) error {
 	var req dto.CreateContractRequest
-	if err := BindBody(c, &req); err != nil {
+	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
 
 	contract, err := h.svc.Create(c.Context(), req)
 	if err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
-	return Created(c, "สร้างสัญญาสำเร็จ", dto.ToContractResponse(*contract))
+	return respond.Created(c, "สร้างสัญญาสำเร็จ", dto.ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Update(c fiber.Ctx) error {
 	contractID, err := uuid.Parse(c.Params("contractId"))
 	if err != nil {
-		return ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
+		return respond.ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
 	}
 
 	var req dto.UpdateContractRequest
-	if err := BindBody(c, &req); err != nil {
+	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
 
 	contract, err := h.svc.Update(c.Context(), contractID, req)
 	if err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
-	return Success(c, "อัปเดตสัญญาสำเร็จ", dto.ToContractResponse(*contract))
+	return respond.Success(c, "อัปเดตสัญญาสำเร็จ", dto.ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Delete(c fiber.Ctx) error {
 	contractID, err := uuid.Parse(c.Params("contractId"))
 	if err != nil {
-		return ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
+		return respond.ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
 	}
 
 	if err := h.svc.Delete(c.Context(), contractID); err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
-	return Success(c, "ลบสัญญาสำเร็จ", nil)
+	return respond.Success(c, "ลบสัญญาสำเร็จ", nil)
 }

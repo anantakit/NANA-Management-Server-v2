@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/apperror"
 	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/money"
 	"nana/internal/repository"
+	"nana/internal/shared/money"
+	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
@@ -32,7 +32,7 @@ func NewRoomService(repo repository.RoomRepository, aptRepo repository.Apartment
 
 func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
-		return nil, 0, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
+		return nil, 0, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
 	return s.repo.FindByApartmentIDWithContracts(ctx, apartmentID, params)
 }
@@ -40,14 +40,14 @@ func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID
 func (s *roomService) GetByID(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error) {
 	room, err := s.repo.FindByIDWithContract(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบห้อง")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
 	return room, nil
 }
 
 func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateRoomRequest) (*domain.Room, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
 
 	exists, err := s.repo.ExistsByNumber(ctx, apartmentID, req.Number)
@@ -55,7 +55,7 @@ func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req dto
 		return nil, fmt.Errorf("check room number: %w", err)
 	}
 	if exists {
-		return nil, apperror.ErrConflict.WithMessage("เลขห้องซ้ำ")
+		return nil, respond.ErrConflict.WithMessage("เลขห้องซ้ำ")
 	}
 
 	room := domain.Room{
@@ -78,7 +78,7 @@ func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req dto
 func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRoomRequest) (*domain.Room, error) {
 	room, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบห้อง")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
 
 	if req.Number != nil && *req.Number != room.Number {
@@ -87,7 +87,7 @@ func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRo
 			return nil, fmt.Errorf("check room number: %w", err)
 		}
 		if exists {
-			return nil, apperror.ErrConflict.WithMessage("เลขห้องซ้ำ")
+			return nil, respond.ErrConflict.WithMessage("เลขห้องซ้ำ")
 		}
 		room.Number = *req.Number
 	}
@@ -107,7 +107,7 @@ func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRo
 		// Only allow VACANT and MAINTENANCE from manual update
 		// OCCUPIED is set automatically by contract creation (future feature)
 		if room.Status == domain.RoomStatusOccupied {
-			return nil, apperror.ErrBadRequest.WithMessage("ไม่สามารถเปลี่ยนสถานะห้องที่มีผู้เช่าอยู่")
+			return nil, respond.ErrBadRequest.WithMessage("ไม่สามารถเปลี่ยนสถานะห้องที่มีผู้เช่าอยู่")
 		}
 		room.Status = domain.RoomStatus(*req.Status)
 	}
@@ -122,11 +122,11 @@ func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRo
 func (s *roomService) Delete(ctx context.Context, id uuid.UUID) error {
 	room, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return apperror.ErrNotFound.WithMessage("ไม่พบห้อง")
+		return respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
 
 	if room.Status == domain.RoomStatusOccupied {
-		return apperror.ErrBadRequest.WithMessage("ไม่สามารถลบห้องที่มีผู้เช่าอยู่")
+		return respond.ErrBadRequest.WithMessage("ไม่สามารถลบห้องที่มีผู้เช่าอยู่")
 	}
 
 	return s.repo.Delete(ctx, id)

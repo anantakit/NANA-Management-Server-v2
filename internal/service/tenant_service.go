@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/apperror"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/repository"
+	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
@@ -36,7 +36,7 @@ func (s *tenantService) List(ctx context.Context, params dto.PaginationParams) (
 func (s *tenantService) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	tenant, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
 	}
 	return tenant, nil
 }
@@ -47,7 +47,7 @@ func (s *tenantService) Create(ctx context.Context, req dto.CreateTenantRequest)
 		return nil, fmt.Errorf("check id card: %w", err)
 	}
 	if exists {
-		return nil, apperror.ErrConflict.WithMessage("เลขบัตรประชาชนซ้ำ")
+		return nil, respond.ErrConflict.WithMessage("เลขบัตรประชาชนซ้ำ")
 	}
 
 	tenant := domain.Tenant{
@@ -68,7 +68,7 @@ func (s *tenantService) Create(ctx context.Context, req dto.CreateTenantRequest)
 func (s *tenantService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateTenantRequest) (*domain.Tenant, error) {
 	tenant, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
 	}
 
 	if req.IDCard != nil && *req.IDCard != tenant.IDCard {
@@ -77,7 +77,7 @@ func (s *tenantService) Update(ctx context.Context, id uuid.UUID, req dto.Update
 			return nil, fmt.Errorf("check id card: %w", err)
 		}
 		if exists {
-			return nil, apperror.ErrConflict.WithMessage("เลขบัตรประชาชนซ้ำ")
+			return nil, respond.ErrConflict.WithMessage("เลขบัตรประชาชนซ้ำ")
 		}
 		tenant.IDCard = *req.IDCard
 	}
@@ -103,7 +103,7 @@ func (s *tenantService) Update(ctx context.Context, id uuid.UUID, req dto.Update
 func (s *tenantService) Delete(ctx context.Context, id uuid.UUID) error {
 	_, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return apperror.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
+		return respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
 	}
 
 	hasActive, err := s.contractRepo.HasActiveByTenantID(ctx, id)
@@ -111,7 +111,7 @@ func (s *tenantService) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("check active contract: %w", err)
 	}
 	if hasActive {
-		return apperror.ErrBadRequest.WithMessage("ไม่สามารถลบผู้เช่าที่มีสัญญาใช้งานอยู่")
+		return respond.ErrBadRequest.WithMessage("ไม่สามารถลบผู้เช่าที่มีสัญญาใช้งานอยู่")
 	}
 
 	return s.repo.Delete(ctx, id)

@@ -1,7 +1,7 @@
 package middleware
 
 import (
-	"nana/internal/config"
+	"nana/internal/shared/config"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"

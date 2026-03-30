@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"nana/internal/apperror"
-	"nana/internal/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/money"
 	"nana/internal/repository"
+	"nana/internal/shared/database"
+	"nana/internal/shared/money"
+	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
@@ -51,7 +51,7 @@ func (s *contractService) List(ctx context.Context, params dto.ContractListParam
 func (s *contractService) GetByID(ctx context.Context, id uuid.UUID) (*dto.ContractWithRelations, error) {
 	contract, err := s.contractRepo.FindByID(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบสัญญา")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
 	}
 	return contract, nil
 }
@@ -59,25 +59,25 @@ func (s *contractService) GetByID(ctx context.Context, id uuid.UUID) (*dto.Contr
 func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequest) (*dto.ContractWithRelations, error) {
 	tenantID, err := uuid.Parse(req.TenantID)
 	if err != nil {
-		return nil, apperror.ErrBadRequest.WithMessage("รหัสผู้เช่าไม่ถูกต้อง")
+		return nil, respond.ErrBadRequest.WithMessage("รหัสผู้เช่าไม่ถูกต้อง")
 	}
 	roomID, err := uuid.Parse(req.RoomID)
 	if err != nil {
-		return nil, apperror.ErrBadRequest.WithMessage("รหัสห้องไม่ถูกต้อง")
+		return nil, respond.ErrBadRequest.WithMessage("รหัสห้องไม่ถูกต้อง")
 	}
 
 	// Verify tenant exists
 	if _, err := s.tenantRepo.FindByID(ctx, tenantID); err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
 	}
 
 	// Verify room exists and is VACANT
 	room, err := s.roomRepo.FindByID(ctx, roomID)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบห้อง")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
 	if room.Status != domain.RoomStatusVacant {
-		return nil, apperror.ErrBadRequest.WithMessage("ห้องนี้ไม่ว่าง ไม่สามารถสร้างสัญญาได้")
+		return nil, respond.ErrBadRequest.WithMessage("ห้องนี้ไม่ว่าง ไม่สามารถสร้างสัญญาได้")
 	}
 
 	// Check no active contract on this room
@@ -86,12 +86,12 @@ func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequ
 		return nil, fmt.Errorf("check active contract: %w", err)
 	}
 	if hasActive {
-		return nil, apperror.ErrConflict.WithMessage("ห้องนี้มีสัญญาที่ใช้งานอยู่แล้ว")
+		return nil, respond.ErrConflict.WithMessage("ห้องนี้มีสัญญาที่ใช้งานอยู่แล้ว")
 	}
 
 	startDate, err := time.Parse("2006-01-02", req.StartDate)
 	if err != nil {
-		return nil, apperror.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง")
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง")
 	}
 
 	contract := domain.Contract{
@@ -127,10 +127,10 @@ func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequ
 func (s *contractService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateContractRequest) (*dto.ContractWithRelations, error) {
 	contract, err := s.contractRepo.FindByIDSimple(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบสัญญา")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
 	}
 	if contract.Status != domain.ContractStatusActive {
-		return nil, apperror.ErrBadRequest.WithMessage("ไม่สามารถแก้ไขสัญญาที่ไม่ใช่สถานะใช้งาน")
+		return nil, respond.ErrBadRequest.WithMessage("ไม่สามารถแก้ไขสัญญาที่ไม่ใช่สถานะใช้งาน")
 	}
 
 	if req.MinMonths != nil {
@@ -154,7 +154,7 @@ func (s *contractService) Update(ctx context.Context, id uuid.UUID, req dto.Upda
 		} else {
 			t, err := time.Parse("2006-01-02", *req.MoveOutDate)
 			if err != nil {
-				return nil, apperror.ErrBadRequest.WithMessage("รูปแบบวันที่แจ้งย้ายออกไม่ถูกต้อง")
+				return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่แจ้งย้ายออกไม่ถูกต้อง")
 			}
 			contract.MoveOutDate = &t
 		}
@@ -174,10 +174,10 @@ func (s *contractService) Update(ctx context.Context, id uuid.UUID, req dto.Upda
 func (s *contractService) Delete(ctx context.Context, id uuid.UUID) error {
 	contract, err := s.contractRepo.FindByIDSimple(ctx, id)
 	if err != nil {
-		return apperror.ErrNotFound.WithMessage("ไม่พบสัญญา")
+		return respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
 	}
 	if contract.Status == domain.ContractStatusActive {
-		return apperror.ErrBadRequest.WithMessage("ไม่สามารถลบสัญญาที่ยังใช้งานอยู่")
+		return respond.ErrBadRequest.WithMessage("ไม่สามารถลบสัญญาที่ยังใช้งานอยู่")
 	}
 
 	return s.contractRepo.Delete(ctx, id)

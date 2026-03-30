@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 
-	"nana/internal/database"
+	"nana/internal/shared/database"
 	"nana/internal/domain"
 	"nana/internal/model"
 

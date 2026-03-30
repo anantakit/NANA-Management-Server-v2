@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/database"
+	"nana/internal/shared/database"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/model"

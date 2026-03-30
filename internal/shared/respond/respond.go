@@ -1,8 +1,6 @@
-package handler
+package respond
 
 import (
-	"nana/internal/apperror"
-
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -44,13 +42,13 @@ func SuccessWithMeta(c fiber.Ctx, message string, data any, meta any) error {
 	})
 }
 
-// Error delegates to centralized apperror.MapToHTTP for consistent error responses.
+// Error delegates to centralized MapToHTTP for consistent error responses.
 func Error(c fiber.Ctx, err error) error {
-	return apperror.MapToHTTP(c, err)
+	return MapToHTTP(c, err)
 }
 
 func ValidationError(c fiber.Ctx, errors []string) error {
-	return c.Status(fiber.StatusBadRequest).JSON(apperror.ErrorResponse{
+	return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 		Status:  "error",
 		Code:    "VALIDATION_ERROR",
 		Message: "ข้อมูลไม่ถูกต้อง",

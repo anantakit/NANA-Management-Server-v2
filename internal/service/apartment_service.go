@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/apperror"
 	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/money"
 	"nana/internal/repository"
+	"nana/internal/shared/money"
+	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
@@ -61,7 +61,7 @@ func (s *apartmentService) List(ctx context.Context) ([]dto.ApartmentResponse, e
 func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*dto.ApartmentResponse, error) {
 	apt, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
 
 	stats, err := s.repo.GetRoomStatsByApartmentIDs(ctx, []uuid.UUID{id})
@@ -84,7 +84,7 @@ func (s *apartmentService) Create(ctx context.Context, req dto.CreateApartmentRe
 		return nil, fmt.Errorf("check name: %w", err)
 	}
 	if exists {
-		return nil, apperror.ErrConflict.WithMessage("ชื่ออาคารซ้ำ")
+		return nil, respond.ErrConflict.WithMessage("ชื่ออาคารซ้ำ")
 	}
 
 	apt := domain.Apartment{
@@ -106,7 +106,7 @@ func (s *apartmentService) Create(ctx context.Context, req dto.CreateApartmentRe
 func (s *apartmentService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateApartmentRequest) (*domain.Apartment, error) {
 	apt, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		return nil, apperror.ErrNotFound.WithMessage("ไม่พบอาคาร")
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
 
 	if req.Name != nil && *req.Name != apt.Name {
@@ -115,7 +115,7 @@ func (s *apartmentService) Update(ctx context.Context, id uuid.UUID, req dto.Upd
 			return nil, fmt.Errorf("check name: %w", err)
 		}
 		if exists {
-			return nil, apperror.ErrConflict.WithMessage("ชื่ออาคารซ้ำ")
+			return nil, respond.ErrConflict.WithMessage("ชื่ออาคารซ้ำ")
 		}
 		apt.Name = *req.Name
 	}

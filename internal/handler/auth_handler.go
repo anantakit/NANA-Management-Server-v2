@@ -3,9 +3,11 @@ package handler
 import (
 	"time"
 
-	"nana/internal/config"
 	"nana/internal/dto"
 	"nana/internal/service"
+	"nana/internal/shared/config"
+	"nana/internal/shared/bind"
+	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -37,35 +39,35 @@ func (h *AuthHandler) RegisterProtectedRoutes(router fiber.Router) {
 
 func (h *AuthHandler) Login(c fiber.Ctx) error {
 	var req dto.LoginRequest
-	if err := BindBody(c, &req); err != nil {
+	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
 
 	resp, refreshToken, err := h.authService.Login(c.Context(), req)
 	if err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
 
 	h.setRefreshTokenCookie(c, refreshToken)
 
-	return Success(c, "เข้าสู่ระบบสำเร็จ", resp)
+	return respond.Success(c, "เข้าสู่ระบบสำเร็จ", resp)
 }
 
 func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 	rawToken := c.Cookies("refresh_token")
 	if rawToken == "" {
-		return Error(c, service.ErrTokenInvalid)
+		return respond.Error(c, service.ErrTokenInvalid)
 	}
 
 	resp, newRefreshToken, err := h.authService.Refresh(c.Context(), rawToken)
 	if err != nil {
 		h.clearRefreshTokenCookie(c)
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
 
 	h.setRefreshTokenCookie(c, newRefreshToken)
 
-	return Success(c, "รีเฟรชโทเค็นสำเร็จ", resp)
+	return respond.Success(c, "รีเฟรชโทเค็นสำเร็จ", resp)
 }
 
 func (h *AuthHandler) Logout(c fiber.Ctx) error {
@@ -76,27 +78,27 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 
 	h.clearRefreshTokenCookie(c)
 
-	return Success(c, "ออกจากระบบสำเร็จ", nil)
+	return respond.Success(c, "ออกจากระบบสำเร็จ", nil)
 }
 
 func (h *AuthHandler) ChangePassword(c fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(uuid.UUID)
 	if !ok {
-		return Error(c, service.ErrTokenInvalid)
+		return respond.Error(c, service.ErrTokenInvalid)
 	}
 
 	var req dto.ChangePasswordRequest
-	if err := BindBody(c, &req); err != nil {
+	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
 
 	if err := h.authService.ChangePassword(c.Context(), userID, req); err != nil {
-		return Error(c, err)
+		return respond.Error(c, err)
 	}
 
 	h.clearRefreshTokenCookie(c)
 
-	return Success(c, "เปลี่ยนรหัสผ่านสำเร็จ", nil)
+	return respond.Success(c, "เปลี่ยนรหัสผ่านสำเร็จ", nil)
 }
 
 func (h *AuthHandler) setRefreshTokenCookie(c fiber.Ctx, token string) {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"nana/internal/config"
+	"nana/internal/shared/config"
 
 	"github.com/pressly/goose/v3"
 	"gorm.io/driver/postgres"
