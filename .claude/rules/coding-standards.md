@@ -57,17 +57,103 @@ paths:
 - Max 400 lines, max 12 methods, CRUD only — single entity per repo
 - **Update pattern**: use `db.Model(&m).Select("*").Omit("deleted_at").Updates(&m)` — NOT `Save()` which skips zero values (false, 0, "")
 
+## Go Naming Conventions
+
+```go
+// Receivers — single letter matching type
+func (h *bookingHandler) Create(c fiber.Ctx) error {}   // handler: h
+func (s *bookingService) Create(ctx context.Context) {}  // service: s
+func (r *bookingRepository) FindByID(ctx context.Context) {} // repo: r
+
+// Constructors — return interface
+func NewRoomService(repo RoomRepository) RoomService {
+    return &roomService{repo: repo}
+}
+
+// Compile-time interface check
+var _ RoomService = (*roomService)(nil)
+
+// Constants — PascalCase name, SCREAMING value
+const ContractStatusActive ContractStatus = "ACTIVE"
+
+// Errors — exported with Err prefix
+var ErrBookingNotFound = apperror.ErrNotFound.WithMessage("ไม่พบการจอง")
+
+// Packages — lowercase, no underscore, no common/util/lib
+```
+
 ## Error Handling
+
 - `apperror.AppError`: Code, HTTPStatus, Message
 - `apperror.MapToHTTP(c, err)`: single centralized function
 - Predefined: ErrNotFound, ErrConflict, ErrBadRequest, ErrUnauthorized, ErrForbidden
 - Service errors: define in `service/errors.go` using `apperror.New()`
+- **Wrap with `%w`** (preserves `errors.Is/As` chain) — NOT `%v`
+- **Handle once** — wrap OR log, never both
+
+```go
+// ✅ wrap with %w
+return fmt.Errorf("create contract %s: %w", id, err)
+
+// ❌ breaks error chain
+return fmt.Errorf("create contract: %v", err)
+```
+
+## Query Anti-Patterns
+
+```go
+// ❌ N+1 query
+for _, b := range bookings {
+    b.Stays = repo.FindStays(b.ID)  // N queries!
+}
+// ✅ Preload
+db.Preload("RoomStays").Find(&bookings)
+
+// ❌ Unsafe sort — SQL injection
+db.Order(fmt.Sprintf("%s %s", userInput, userOrder))
+// ✅ SafeSort
+db.Order(dto.SafeSort(col, order, allowedCols, "created_at"))
+
+// ❌ BETWEEN for date ranges (inclusive both ends)
+db.Where("date BETWEEN ? AND ?", start, end)
+// ✅ Half-open interval for overlap check
+db.Where("check_in < ? AND check_out > ?", rangeEnd, rangeStart)
+
+// ❌ Read-then-write without lock — race condition
+room := repo.FindByID(id)
+if room.Status == VACANT { repo.UpdateStatus(id, OCCUPIED) }
+// ✅ Pessimistic lock in transaction
+tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&room)
+```
+
+## Testing Strategy (3-Layer)
+
+| Layer | What to test | Mocks? |
+|-------|-------------|--------|
+| **Domain** (pure) | Business logic, calculations | NO mocks — input → output |
+| **Service** (wiring) | Orchestration, correct call order | Mock repos (hand-written) |
+| **Handler** (outcome) | HTTP status, response shape | Mock service |
+
+```go
+// Domain test — pure, no mocks
+func TestContract_CalculateDeposit(t *testing.T) { ... }
+
+// Service test — hand-written mock, compile-time check
+type mockRoomRepo struct { findByIDFn func(...) }
+var _ RoomRepository = (*mockRoomRepo)(nil)
+
+// Handler test — test visible behavior
+```
+
+**ห้าม:** snapshot tests, `data-testid` as primary selector, `.only`/`.skip` in committed code
 
 ## Migrations
+
 - Goose SQL only in `internal/database/migrations/`
 - Naming: `00001_init.sql`, `00002_add_xxx.sql`
 - Embedded: `//go:embed migrations/*.sql`
 
 ## Config
+
 - Env vars with defaults, `Validate()` for production checks
 - DSN: `DATABASE_URL` takes priority over individual `DB_*` vars

@@ -34,8 +34,11 @@ ValidationError(c, []string{"field invalid"})  // 400 + validation errors
 
 ## DI Wiring Pattern (cmd/main.go)
 ```go
+txManager := database.NewTxManager(db)
+
 repo := repository.NewXxxRepository(db)
-svc := service.NewXxxService(repo)
+svc := service.NewXxxService(repo)                     // single-repo service
+svc := service.NewYyyService(repoA, repoB, txManager)  // cross-repo service
 h := handler.NewXxxHandler(svc)
 h.RegisterRoutes(v1.Group("/resources"))
 h.RegisterProtectedRoutes(protected.Group("/resources"))

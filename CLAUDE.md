@@ -8,6 +8,8 @@
 | Coding Standards | `.claude/rules/coding-standards.md` | Layer rules, error handling, update patterns |
 | Shared Helpers | `.claude/rules/shared-helpers.md` | BindBody, response helpers, DI wiring |
 | Transaction Pattern | `.claude/rules/transaction-pattern.md` | TxManager, cross-repo transactions, guidelines |
+| Domain Ownership | `.claude/rules/domain-ownership.md` | WHO owns what table, decision checklist — consult for every DDD decision |
+| Cross-Feature Patterns | `.claude/rules/cross-feature-patterns.md` | HOW to cross boundaries: ports, reads, logic leak, sharing rules |
 
 ## Stack
 Go 1.26+ / Fiber v3 (NOT v2) / GORM + PostgreSQL 17+ / slog / go-playground/validator/v10 / golang-jwt/jwt/v5 / google/uuid / pressly/goose/v3 (SQL only) / Module: `nana`
