@@ -1,8 +1,6 @@
-package handler
+package apartment
 
 import (
-	"nana/internal/dto"
-	"nana/internal/service"
 	"nana/internal/shared/bind"
 	"nana/internal/shared/respond"
 
@@ -11,10 +9,10 @@ import (
 )
 
 type BankAccountHandler struct {
-	svc service.BankAccountService
+	svc BankAccountService
 }
 
-func NewBankAccountHandler(svc service.BankAccountService) *BankAccountHandler {
+func NewBankAccountHandler(svc BankAccountService) *BankAccountHandler {
 	return &BankAccountHandler{svc: svc}
 }
 
@@ -35,7 +33,7 @@ func (h *BankAccountHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "สำเร็จ", dto.ToBankAccountResponseList(accounts))
+	return respond.Success(c, "สำเร็จ", ToBankAccountResponseList(accounts))
 }
 
 func (h *BankAccountHandler) Create(c fiber.Ctx) error {
@@ -44,7 +42,7 @@ func (h *BankAccountHandler) Create(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
 	}
 
-	var req dto.CreateBankAccountRequest
+	var req CreateBankAccountRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -53,7 +51,7 @@ func (h *BankAccountHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "เพิ่มบัญชีธนาคารสำเร็จ", dto.ToBankAccountResponse(*account))
+	return respond.Created(c, "เพิ่มบัญชีธนาคารสำเร็จ", ToBankAccountResponse(*account))
 }
 
 func (h *BankAccountHandler) Update(c fiber.Ctx) error {
@@ -62,7 +60,7 @@ func (h *BankAccountHandler) Update(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสบัญชีไม่ถูกต้อง"})
 	}
 
-	var req dto.UpdateBankAccountRequest
+	var req UpdateBankAccountRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -71,7 +69,7 @@ func (h *BankAccountHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตบัญชีธนาคารสำเร็จ", dto.ToBankAccountResponse(*account))
+	return respond.Success(c, "อัปเดตบัญชีธนาคารสำเร็จ", ToBankAccountResponse(*account))
 }
 
 func (h *BankAccountHandler) Delete(c fiber.Ctx) error {

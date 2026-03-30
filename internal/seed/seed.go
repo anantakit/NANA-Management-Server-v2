@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"nana/internal/apartment"
 	"nana/internal/domain"
 	"nana/internal/model"
 
@@ -60,14 +61,14 @@ func seedApartments(db *gorm.DB) error {
 
 	for _, a := range apartments {
 		var count int64
-		if err := db.Model(&model.Apartment{}).Where("name = ?", a.Name).Count(&count).Error; err != nil {
+		if err := db.Model(&apartment.Apartment{}).Where("name = ?", a.Name).Count(&count).Error; err != nil {
 			return fmt.Errorf("check apartment %s: %w", a.Name, err)
 		}
 		if count > 0 {
 			continue
 		}
 
-		apt := model.Apartment{
+		apt := apartment.Apartment{
 			Name:                   a.Name,
 			DisplayOrder:           a.DisplayOrder,
 			ElectricityRatePerUnit: a.ElectricityRatePerUnit,
@@ -93,7 +94,7 @@ func seedRooms(db *gorm.DB) error {
 	}
 
 	for aptName, rooms := range roomsByApartment {
-		var apt model.Apartment
+		var apt apartment.Apartment
 		if err := db.Where("name = ?", aptName).First(&apt).Error; err != nil {
 			slog.Warn("apartment not found for room seed", "apartment", aptName)
 			continue

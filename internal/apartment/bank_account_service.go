@@ -1,12 +1,10 @@
-package service
+package apartment
 
 import (
 	"context"
 	"fmt"
 
 	"nana/internal/domain"
-	"nana/internal/dto"
-	"nana/internal/repository"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
@@ -15,18 +13,18 @@ import (
 
 type BankAccountService interface {
 	ListByApartment(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error)
-	Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateBankAccountRequest) (*domain.ApartmentBankAccount, error)
-	Update(ctx context.Context, id uuid.UUID, req dto.UpdateBankAccountRequest) (*domain.ApartmentBankAccount, error)
+	Create(ctx context.Context, apartmentID uuid.UUID, req CreateBankAccountRequest) (*domain.ApartmentBankAccount, error)
+	Update(ctx context.Context, id uuid.UUID, req UpdateBankAccountRequest) (*domain.ApartmentBankAccount, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 type bankAccountService struct {
-	repo    repository.BankAccountRepository
-	aptRepo repository.ApartmentRepository
+	repo    BankAccountRepository
+	aptRepo ApartmentRepository
 	tx      database.TxManager
 }
 
-func NewBankAccountService(repo repository.BankAccountRepository, aptRepo repository.ApartmentRepository, tx database.TxManager) BankAccountService {
+func NewBankAccountService(repo BankAccountRepository, aptRepo ApartmentRepository, tx database.TxManager) BankAccountService {
 	return &bankAccountService{repo: repo, aptRepo: aptRepo, tx: tx}
 }
 
@@ -37,7 +35,7 @@ func (s *bankAccountService) ListByApartment(ctx context.Context, apartmentID uu
 	return s.repo.FindByApartmentID(ctx, apartmentID)
 }
 
-func (s *bankAccountService) Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateBankAccountRequest) (*domain.ApartmentBankAccount, error) {
+func (s *bankAccountService) Create(ctx context.Context, apartmentID uuid.UUID, req CreateBankAccountRequest) (*domain.ApartmentBankAccount, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
@@ -70,7 +68,7 @@ func (s *bankAccountService) Create(ctx context.Context, apartmentID uuid.UUID, 
 	return &account, nil
 }
 
-func (s *bankAccountService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateBankAccountRequest) (*domain.ApartmentBankAccount, error) {
+func (s *bankAccountService) Update(ctx context.Context, id uuid.UUID, req UpdateBankAccountRequest) (*domain.ApartmentBankAccount, error) {
 	account, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบบัญชีธนาคาร")

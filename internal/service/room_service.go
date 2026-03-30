@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/apartment"
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/repository"
@@ -23,10 +24,10 @@ type RoomService interface {
 
 type roomService struct {
 	repo    repository.RoomRepository
-	aptRepo repository.ApartmentRepository
+	aptRepo apartment.ApartmentRepository
 }
 
-func NewRoomService(repo repository.RoomRepository, aptRepo repository.ApartmentRepository) RoomService {
+func NewRoomService(repo repository.RoomRepository, aptRepo apartment.ApartmentRepository) RoomService {
 	return &roomService{repo: repo, aptRepo: aptRepo}
 }
 

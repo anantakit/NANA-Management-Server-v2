@@ -1,11 +1,10 @@
-package repository
+package apartment
 
 import (
 	"context"
 
-	"nana/internal/shared/database"
 	"nana/internal/domain"
-	"nana/internal/model"
+	"nana/internal/shared/database"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -29,7 +28,7 @@ func NewBankAccountRepository(db *gorm.DB) BankAccountRepository {
 }
 
 func (r *bankAccountRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error) {
-	var models []model.ApartmentBankAccount
+	var models []ApartmentBankAccount
 	if err := database.DB(ctx, r.db).Where("apartment_id = ?", apartmentID).Order("is_primary DESC, created_at ASC").Find(&models).Error; err != nil {
 		return nil, err
 	}
@@ -41,7 +40,7 @@ func (r *bankAccountRepository) FindByApartmentID(ctx context.Context, apartment
 }
 
 func (r *bankAccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.ApartmentBankAccount, error) {
-	var m model.ApartmentBankAccount
+	var m ApartmentBankAccount
 	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
@@ -50,7 +49,7 @@ func (r *bankAccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*do
 }
 
 func (r *bankAccountRepository) Create(ctx context.Context, account *domain.ApartmentBankAccount) error {
-	m := model.ApartmentBankAccountFromDomain(*account)
+	m := ApartmentBankAccountFromDomain(*account)
 	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
 		return err
 	}
@@ -59,7 +58,7 @@ func (r *bankAccountRepository) Create(ctx context.Context, account *domain.Apar
 }
 
 func (r *bankAccountRepository) Update(ctx context.Context, account *domain.ApartmentBankAccount) error {
-	m := model.ApartmentBankAccountFromDomain(*account)
+	m := ApartmentBankAccountFromDomain(*account)
 	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
 		return err
 	}
@@ -68,11 +67,11 @@ func (r *bankAccountRepository) Update(ctx context.Context, account *domain.Apar
 }
 
 func (r *bankAccountRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	return database.DB(ctx, r.db).Delete(&model.ApartmentBankAccount{}, "id = ?", id).Error
+	return database.DB(ctx, r.db).Delete(&ApartmentBankAccount{}, "id = ?", id).Error
 }
 
 func (r *bankAccountRepository) ClearPrimary(ctx context.Context, apartmentID uuid.UUID) error {
-	return database.DB(ctx, r.db).Model(&model.ApartmentBankAccount{}).
+	return database.DB(ctx, r.db).Model(&ApartmentBankAccount{}).
 		Where("apartment_id = ? AND is_primary = true", apartmentID).
 		Update("is_primary", false).Error
 }

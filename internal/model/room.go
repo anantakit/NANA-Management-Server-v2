@@ -3,6 +3,7 @@ package model
 import (
 	"time"
 
+	"nana/internal/apartment"
 	"nana/internal/domain"
 
 	"github.com/google/uuid"
@@ -22,7 +23,7 @@ type Room struct {
 	UpdatedAt   time.Time      `gorm:"not null;default:now()"`
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 
-	Apartment *Apartment `gorm:"foreignKey:ApartmentID"`
+	Apartment *apartment.Apartment `gorm:"foreignKey:ApartmentID"`
 }
 
 func (Room) TableName() string { return "rooms" }

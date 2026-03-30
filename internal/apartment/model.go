@@ -1,4 +1,4 @@
-package model
+package apartment
 
 import (
 	"time"
@@ -74,7 +74,7 @@ type ApartmentBankAccount struct {
 	UpdatedAt     time.Time      `gorm:"not null;default:now()"`
 	DeletedAt     gorm.DeletedAt `gorm:"index"`
 
-	Apartment *Apartment `gorm:"foreignKey:ApartmentID"`
+	ApartmentRef *Apartment `gorm:"foreignKey:ApartmentID"`
 }
 
 func (ApartmentBankAccount) TableName() string { return "apartment_bank_accounts" }

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"nana/internal/apartment"
 	"nana/internal/domain"
 	"nana/internal/handler"
 	"nana/internal/repository"
@@ -71,14 +72,14 @@ func main() {
 	authService.StartTokenCleanup(ctx, 1*time.Hour)
 
 	// Wire dependencies — Apartments
-	aptRepo := repository.NewApartmentRepository(db)
-	aptService := service.NewApartmentService(aptRepo)
-	aptHandler := handler.NewApartmentHandler(aptService)
+	aptRepo := apartment.NewApartmentRepository(db)
+	aptService := apartment.NewApartmentService(aptRepo)
+	aptHandler := apartment.NewApartmentHandler(aptService)
 
 	// Wire dependencies — Bank Accounts
-	bankRepo := repository.NewBankAccountRepository(db)
-	bankService := service.NewBankAccountService(bankRepo, aptRepo, txManager)
-	bankHandler := handler.NewBankAccountHandler(bankService)
+	bankRepo := apartment.NewBankAccountRepository(db)
+	bankService := apartment.NewBankAccountService(bankRepo, aptRepo, txManager)
+	bankHandler := apartment.NewBankAccountHandler(bankService)
 
 	// Wire dependencies — Rooms
 	roomRepo := repository.NewRoomRepository(db)

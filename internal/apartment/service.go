@@ -1,12 +1,10 @@
-package service
+package apartment
 
 import (
 	"context"
 	"fmt"
 
 	"nana/internal/domain"
-	"nana/internal/dto"
-	"nana/internal/repository"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
@@ -14,21 +12,21 @@ import (
 )
 
 type ApartmentService interface {
-	List(ctx context.Context) ([]dto.ApartmentResponse, error)
-	GetByID(ctx context.Context, id uuid.UUID) (*dto.ApartmentResponse, error)
-	Create(ctx context.Context, req dto.CreateApartmentRequest) (*domain.Apartment, error)
-	Update(ctx context.Context, id uuid.UUID, req dto.UpdateApartmentRequest) (*domain.Apartment, error)
+	List(ctx context.Context) ([]ApartmentResponse, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*ApartmentResponse, error)
+	Create(ctx context.Context, req CreateApartmentRequest) (*domain.Apartment, error)
+	Update(ctx context.Context, id uuid.UUID, req UpdateApartmentRequest) (*domain.Apartment, error)
 }
 
 type apartmentService struct {
-	repo repository.ApartmentRepository
+	repo ApartmentRepository
 }
 
-func NewApartmentService(repo repository.ApartmentRepository) ApartmentService {
+func NewApartmentService(repo ApartmentRepository) ApartmentService {
 	return &apartmentService{repo: repo}
 }
 
-func (s *apartmentService) List(ctx context.Context) ([]dto.ApartmentResponse, error) {
+func (s *apartmentService) List(ctx context.Context) ([]ApartmentResponse, error) {
 	apartments, err := s.repo.FindAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("find apartments: %w", err)
@@ -44,9 +42,9 @@ func (s *apartmentService) List(ctx context.Context) ([]dto.ApartmentResponse, e
 		return nil, fmt.Errorf("get room stats: %w", err)
 	}
 
-	result := make([]dto.ApartmentResponse, len(apartments))
+	result := make([]ApartmentResponse, len(apartments))
 	for i, a := range apartments {
-		r := dto.ToApartmentResponse(a)
+		r := ToApartmentResponse(a)
 		if s, ok := stats[a.ID]; ok {
 			r.TotalRooms = s.Total
 			r.VacantRooms = s.Vacant
@@ -58,7 +56,7 @@ func (s *apartmentService) List(ctx context.Context) ([]dto.ApartmentResponse, e
 	return result, nil
 }
 
-func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*dto.ApartmentResponse, error) {
+func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*ApartmentResponse, error) {
 	apt, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
@@ -69,7 +67,7 @@ func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*dto.Apar
 		return nil, fmt.Errorf("get room stats: %w", err)
 	}
 
-	r := dto.ToApartmentResponse(*apt)
+	r := ToApartmentResponse(*apt)
 	if st, ok := stats[id]; ok {
 		r.TotalRooms = st.Total
 		r.VacantRooms = st.Vacant
@@ -78,7 +76,7 @@ func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*dto.Apar
 	return &r, nil
 }
 
-func (s *apartmentService) Create(ctx context.Context, req dto.CreateApartmentRequest) (*domain.Apartment, error) {
+func (s *apartmentService) Create(ctx context.Context, req CreateApartmentRequest) (*domain.Apartment, error) {
 	exists, err := s.repo.ExistsByName(ctx, req.Name)
 	if err != nil {
 		return nil, fmt.Errorf("check name: %w", err)
@@ -103,7 +101,7 @@ func (s *apartmentService) Create(ctx context.Context, req dto.CreateApartmentRe
 	return &apt, nil
 }
 
-func (s *apartmentService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateApartmentRequest) (*domain.Apartment, error) {
+func (s *apartmentService) Update(ctx context.Context, id uuid.UUID, req UpdateApartmentRequest) (*domain.Apartment, error) {
 	apt, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")

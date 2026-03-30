@@ -1,8 +1,6 @@
-package handler
+package apartment
 
 import (
-	"nana/internal/dto"
-	"nana/internal/service"
 	"nana/internal/shared/bind"
 	"nana/internal/shared/respond"
 
@@ -11,10 +9,10 @@ import (
 )
 
 type ApartmentHandler struct {
-	svc service.ApartmentService
+	svc ApartmentService
 }
 
-func NewApartmentHandler(svc service.ApartmentService) *ApartmentHandler {
+func NewApartmentHandler(svc ApartmentService) *ApartmentHandler {
 	return &ApartmentHandler{svc: svc}
 }
 
@@ -47,7 +45,7 @@ func (h *ApartmentHandler) GetByID(c fiber.Ctx) error {
 }
 
 func (h *ApartmentHandler) Create(c fiber.Ctx) error {
-	var req dto.CreateApartmentRequest
+	var req CreateApartmentRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -56,7 +54,7 @@ func (h *ApartmentHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างอาคารสำเร็จ", dto.ToApartmentResponse(*apt))
+	return respond.Created(c, "สร้างอาคารสำเร็จ", ToApartmentResponse(*apt))
 }
 
 func (h *ApartmentHandler) Update(c fiber.Ctx) error {
@@ -65,7 +63,7 @@ func (h *ApartmentHandler) Update(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
 	}
 
-	var req dto.UpdateApartmentRequest
+	var req UpdateApartmentRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -74,5 +72,5 @@ func (h *ApartmentHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตอาคารสำเร็จ", dto.ToApartmentResponse(*apt))
+	return respond.Success(c, "อัปเดตอาคารสำเร็จ", ToApartmentResponse(*apt))
 }
