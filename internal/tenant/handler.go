@@ -1,8 +1,8 @@
 package tenant
 
 import (
-	"nana/internal/dto"
 	"nana/internal/shared/bind"
+	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
@@ -26,7 +26,7 @@ func (h *TenantHandler) RegisterRoutes(router fiber.Router) {
 }
 
 func (h *TenantHandler) List(c fiber.Ctx) error {
-	var params dto.PaginationParams
+	var params pagination.PaginationParams
 	if err := bind.Query(c, &params); err != nil {
 		return err
 	}
@@ -37,7 +37,7 @@ func (h *TenantHandler) List(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	meta := dto.ComputeMeta(params.Page, params.Limit, total)
+	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
 	return respond.SuccessWithMeta(c, "สำเร็จ", ToTenantResponseList(tenants), meta)
 }
 

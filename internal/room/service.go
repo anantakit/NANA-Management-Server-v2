@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/dto"
 	"nana/internal/shared/money"
+	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
 
 type RoomService interface {
-	ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error)
+	ListByApartment(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]RoomWithContract, int64, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*RoomWithContract, error)
 	Create(ctx context.Context, apartmentID uuid.UUID, req CreateRoomRequest) (*Room, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateRoomRequest) (*Room, error)
@@ -28,7 +28,7 @@ func NewRoomService(repo RoomRepository, aptRepo ApartmentQuerier) RoomService {
 	return &roomService{repo: repo, aptRepo: aptRepo}
 }
 
-func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error) {
+func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]RoomWithContract, int64, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
 		return nil, 0, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}

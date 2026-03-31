@@ -1,9 +1,8 @@
-package handler
+package contract
 
 import (
-	"nana/internal/dto"
-	"nana/internal/service"
 	"nana/internal/shared/bind"
+	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
@@ -11,10 +10,10 @@ import (
 )
 
 type ContractHandler struct {
-	svc service.ContractService
+	svc ContractService
 }
 
-func NewContractHandler(svc service.ContractService) *ContractHandler {
+func NewContractHandler(svc ContractService) *ContractHandler {
 	return &ContractHandler{svc: svc}
 }
 
@@ -27,7 +26,7 @@ func (h *ContractHandler) RegisterRoutes(router fiber.Router) {
 }
 
 func (h *ContractHandler) List(c fiber.Ctx) error {
-	var params dto.ContractListParams
+	var params ContractListParams
 	if err := bind.Query(c, &params); err != nil {
 		return err
 	}
@@ -38,8 +37,8 @@ func (h *ContractHandler) List(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	meta := dto.ComputeMeta(params.Page, params.Limit, total)
-	return respond.SuccessWithMeta(c, "สำเร็จ", dto.ToContractResponseList(contracts), meta)
+	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
+	return respond.SuccessWithMeta(c, "สำเร็จ", ToContractResponseList(contracts), meta)
 }
 
 func (h *ContractHandler) GetByID(c fiber.Ctx) error {
@@ -52,11 +51,11 @@ func (h *ContractHandler) GetByID(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "สำเร็จ", dto.ToContractResponse(*contract))
+	return respond.Success(c, "สำเร็จ", ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Create(c fiber.Ctx) error {
-	var req dto.CreateContractRequest
+	var req CreateContractRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -65,7 +64,7 @@ func (h *ContractHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างสัญญาสำเร็จ", dto.ToContractResponse(*contract))
+	return respond.Created(c, "สร้างสัญญาสำเร็จ", ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Update(c fiber.Ctx) error {
@@ -74,7 +73,7 @@ func (h *ContractHandler) Update(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสสัญญาไม่ถูกต้อง"})
 	}
 
-	var req dto.UpdateContractRequest
+	var req UpdateContractRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -83,7 +82,7 @@ func (h *ContractHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตสัญญาสำเร็จ", dto.ToContractResponse(*contract))
+	return respond.Success(c, "อัปเดตสัญญาสำเร็จ", ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Delete(c fiber.Ctx) error {

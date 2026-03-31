@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/dto"
+	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
 
 type TenantService interface {
-	List(ctx context.Context, params dto.PaginationParams) ([]Tenant, int64, error)
+	List(ctx context.Context, params pagination.PaginationParams) ([]Tenant, int64, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*Tenant, error)
 	Create(ctx context.Context, req CreateTenantRequest) (*Tenant, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateTenantRequest) (*Tenant, error)
@@ -27,7 +27,7 @@ func NewTenantService(repo TenantRepository, contractChecker ContractChecker) Te
 	return &tenantService{repo: repo, contractChecker: contractChecker}
 }
 
-func (s *tenantService) List(ctx context.Context, params dto.PaginationParams) ([]Tenant, int64, error) {
+func (s *tenantService) List(ctx context.Context, params pagination.PaginationParams) ([]Tenant, int64, error) {
 	return s.repo.FindAll(ctx, params)
 }
 

@@ -1,4 +1,4 @@
-package dto
+package pagination
 
 import (
 	"math"

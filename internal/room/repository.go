@@ -4,16 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/dto"
 	"nana/internal/shared/database"
+	"nana/internal/shared/pagination"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type RoomRepository interface {
-	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]Room, int64, error)
-	FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error)
+	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]Room, int64, error)
+	FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]RoomWithContract, int64, error)
 	FindByIDWithContract(ctx context.Context, id uuid.UUID) (*RoomWithContract, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*Room, error)
 	Create(ctx context.Context, room *Room) error
@@ -32,7 +32,7 @@ func NewRoomRepository(db *gorm.DB) RoomRepository {
 	return &roomRepository{db: db}
 }
 
-func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]Room, int64, error) {
+func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]Room, int64, error) {
 	var total int64
 	query := database.DB(ctx, r.db).Model(&Room{}).Where("apartment_id = ?", apartmentID)
 
@@ -44,7 +44,7 @@ func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid
 		return nil, 0, err
 	}
 
-	col, order := dto.SafeSort(params.Sort, params.Order, []string{"number", "floor", "type", "status", "base_rent", "created_at"}, "number")
+	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"number", "floor", "type", "status", "base_rent", "created_at"}, "number")
 	if params.Sort == "" {
 		order = "asc"
 	}
@@ -57,7 +57,7 @@ func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid
 	return rooms, total, nil
 }
 
-func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error) {
+func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]RoomWithContract, int64, error) {
 	var total int64
 	countQuery := database.DB(ctx, r.db).Model(&Room{}).Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
 	if params.Search != "" {
@@ -67,7 +67,7 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 		return nil, 0, err
 	}
 
-	col, order := dto.SafeSort(params.Sort, params.Order, []string{"number", "floor", "type", "status", "base_rent", "created_at"}, "number")
+	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"number", "floor", "type", "status", "base_rent", "created_at"}, "number")
 	if params.Sort == "" {
 		order = "asc"
 	}

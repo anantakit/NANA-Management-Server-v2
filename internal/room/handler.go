@@ -1,8 +1,8 @@
 package room
 
 import (
-	"nana/internal/dto"
 	"nana/internal/shared/bind"
+	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
@@ -31,7 +31,7 @@ func (h *RoomHandler) List(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
 	}
 
-	var params dto.PaginationParams
+	var params pagination.PaginationParams
 	if err := bind.Query(c, &params); err != nil {
 		return err
 	}
@@ -42,7 +42,7 @@ func (h *RoomHandler) List(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	meta := dto.ComputeMeta(params.Page, params.Limit, total)
+	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
 	return respond.SuccessWithMeta(c, "สำเร็จ", ToRoomWithContractResponseList(rooms), meta)
 }
 

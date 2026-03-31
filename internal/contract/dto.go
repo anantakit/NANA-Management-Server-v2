@@ -1,8 +1,9 @@
-package dto
+package contract
 
 import (
 	"nana/internal/domain"
 	"nana/internal/shared/money"
+	"nana/internal/shared/pagination"
 
 	"github.com/google/uuid"
 )
@@ -28,7 +29,7 @@ type UpdateContractRequest struct {
 }
 
 type ContractListParams struct {
-	PaginationParams
+	pagination.PaginationParams
 	Status      string `query:"status" validate:"omitempty,oneof=ACTIVE ENDED TERMINATED"`
 	ApartmentID string `query:"apartment_id" validate:"omitempty,uuid"`
 }

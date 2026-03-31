@@ -11,11 +11,9 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/auth"
-	"nana/internal/handler"
-	"nana/internal/repository"
+	"nana/internal/contract"
 	"nana/internal/room"
 	"nana/internal/seed"
-	"nana/internal/service"
 	"nana/internal/tenant"
 	"nana/internal/shared/config"
 	"nana/internal/shared/database"
@@ -93,9 +91,9 @@ func main() {
 	tenantRepo := tenant.NewTenantRepository(db)
 
 	// Wire dependencies — Contracts
-	contractRepo := repository.NewContractRepository(db)
-	contractService := service.NewContractService(contractRepo, roomRepo, tenantRepo, txManager)
-	contractHandler := handler.NewContractHandler(contractService)
+	contractRepo := contract.NewContractRepository(db)
+	contractService := contract.NewContractService(contractRepo, roomRepo, roomRepo, tenantRepo, txManager)
+	contractHandler := contract.NewContractHandler(contractService)
 
 	tenantService := tenant.NewTenantService(tenantRepo, contractRepo)
 	tenantHandler := tenant.NewTenantHandler(tenantService)

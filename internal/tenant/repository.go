@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/dto"
 	"nana/internal/shared/database"
+	"nana/internal/shared/pagination"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type TenantRepository interface {
-	FindAll(ctx context.Context, params dto.PaginationParams) ([]Tenant, int64, error)
+	FindAll(ctx context.Context, params pagination.PaginationParams) ([]Tenant, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*Tenant, error)
 	Create(ctx context.Context, tenant *Tenant) error
 	Update(ctx context.Context, tenant *Tenant) error
@@ -29,7 +29,7 @@ func NewTenantRepository(db *gorm.DB) TenantRepository {
 	return &tenantRepository{db: db}
 }
 
-func (r *tenantRepository) FindAll(ctx context.Context, params dto.PaginationParams) ([]Tenant, int64, error) {
+func (r *tenantRepository) FindAll(ctx context.Context, params pagination.PaginationParams) ([]Tenant, int64, error) {
 	var total int64
 	query := database.DB(ctx, r.db).Model(&Tenant{})
 
@@ -42,7 +42,7 @@ func (r *tenantRepository) FindAll(ctx context.Context, params dto.PaginationPar
 		return nil, 0, err
 	}
 
-	col, order := dto.SafeSort(params.Sort, params.Order, []string{"full_name", "id_card", "created_at"}, "full_name")
+	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"full_name", "id_card", "created_at"}, "full_name")
 	if params.Sort == "" {
 		order = "asc"
 	}

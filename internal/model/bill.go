@@ -3,6 +3,7 @@ package model
 import (
 	"time"
 
+	"nana/internal/contract"
 	"nana/internal/domain"
 	"nana/internal/room"
 
@@ -29,7 +30,7 @@ type Bill struct {
 	CreatedAt         time.Time `gorm:"not null;default:now()"`
 	UpdatedAt         time.Time `gorm:"not null;default:now()"`
 
-	Contract *Contract `gorm:"foreignKey:ContractID"`
+	Contract *contract.Contract `gorm:"foreignKey:ContractID"`
 	Room     *room.Room `gorm:"foreignKey:RoomID"`
 }
 
