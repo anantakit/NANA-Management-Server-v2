@@ -6,8 +6,7 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/auth"
-	"nana/internal/domain"
-	"nana/internal/model"
+	"nana/internal/room"
 	"nana/internal/shared/role"
 	"nana/internal/tenant"
 
@@ -26,7 +25,7 @@ type apartmentSeed struct {
 
 type roomSeed struct {
 	Number      string
-	Type        domain.RoomType
+	Type        room.RoomType
 	Floor       int
 	BaseRent    int64
 	BaseDeposit int64
@@ -106,21 +105,21 @@ func seedRooms(db *gorm.DB) error {
 		created := 0
 		for _, rs := range rooms {
 			var count int64
-			if err := db.Model(&model.Room{}).Where("apartment_id = ? AND number = ?", apt.ID, rs.Number).Count(&count).Error; err != nil {
+			if err := db.Model(&room.Room{}).Where("apartment_id = ? AND number = ?", apt.ID, rs.Number).Count(&count).Error; err != nil {
 				return fmt.Errorf("check room %s: %w", rs.Number, err)
 			}
 			if count > 0 {
 				continue
 			}
 
-			room := model.Room{
+			room := room.Room{
 				ApartmentID: apt.ID,
 				Number:      rs.Number,
-				Type:        string(rs.Type),
+				Type:        rs.Type,
 				Floor:       rs.Floor,
 				BaseRent:    rs.BaseRent,
 				BaseDeposit: rs.BaseDeposit,
-				Status:      string(domain.RoomStatusVacant),
+				Status:      room.RoomStatusVacant,
 			}
 			if err := db.Create(&room).Error; err != nil {
 				return fmt.Errorf("create room %s: %w", rs.Number, err)
@@ -140,29 +139,29 @@ func nanaCourt() []roomSeed {
 	var rooms []roomSeed
 
 	// A101-A111: air, rent=3000, deposit=3000 (floor 1)
-	rooms = append(rooms, rangeRooms("A", 101, 111, domain.RoomTypeAir, 1, 300000, 300000)...)
+	rooms = append(rooms, rangeRooms("A", 101, 111, room.RoomTypeAir, 1, 300000, 300000)...)
 	// A201-A211: fan, rent=2500, deposit=2000 (floor 2)
-	rooms = append(rooms, rangeRooms("A", 201, 211, domain.RoomTypeFan, 2, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("A", 201, 211, room.RoomTypeFan, 2, 250000, 200000)...)
 	// B101-B105: air, rent=3000, deposit=3000 (floor 1)
-	rooms = append(rooms, rangeRooms("B", 101, 105, domain.RoomTypeAir, 1, 300000, 300000)...)
+	rooms = append(rooms, rangeRooms("B", 101, 105, room.RoomTypeAir, 1, 300000, 300000)...)
 	// B201-B205: fan, rent=2500, deposit=2000 (floor 2)
-	rooms = append(rooms, rangeRooms("B", 201, 205, domain.RoomTypeFan, 2, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("B", 201, 205, room.RoomTypeFan, 2, 250000, 200000)...)
 	// C101-C102: air, rent=3000, deposit=3000 (floor 1)
-	rooms = append(rooms, rangeRooms("C", 101, 102, domain.RoomTypeAir, 1, 300000, 300000)...)
+	rooms = append(rooms, rangeRooms("C", 101, 102, room.RoomTypeAir, 1, 300000, 300000)...)
 	// C201-C205: fan, rent=2500, deposit=2000 (floor 2)
-	rooms = append(rooms, rangeRooms("C", 201, 205, domain.RoomTypeFan, 2, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("C", 201, 205, room.RoomTypeFan, 2, 250000, 200000)...)
 	// D101-D111: fan, rent=2500, deposit=2000 (floor 1)
-	rooms = append(rooms, rangeRooms("D", 101, 111, domain.RoomTypeFan, 1, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("D", 101, 111, room.RoomTypeFan, 1, 250000, 200000)...)
 	// D201-D211: fan, rent=2500, deposit=2000 (floor 2)
-	rooms = append(rooms, rangeRooms("D", 201, 211, domain.RoomTypeFan, 2, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("D", 201, 211, room.RoomTypeFan, 2, 250000, 200000)...)
 	// E101-E104: fan, rent=2500, deposit=2000 (floor 1)
-	rooms = append(rooms, rangeRooms("E", 101, 104, domain.RoomTypeFan, 1, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("E", 101, 104, room.RoomTypeFan, 1, 250000, 200000)...)
 	// E201-E204: fan, rent=2500, deposit=2000 (floor 2)
-	rooms = append(rooms, rangeRooms("E", 201, 204, domain.RoomTypeFan, 2, 250000, 200000)...)
+	rooms = append(rooms, rangeRooms("E", 201, 204, room.RoomTypeFan, 2, 250000, 200000)...)
 	// OFFICE: air, rent=3500, deposit=3500
-	rooms = append(rooms, roomSeed{Number: "OFFICE", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
+	rooms = append(rooms, roomSeed{Number: "OFFICE", Type: room.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
 	// MART: air, rent=0, deposit=0
-	rooms = append(rooms, roomSeed{Number: "MART", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 0, BaseDeposit: 0})
+	rooms = append(rooms, roomSeed{Number: "MART", Type: room.RoomTypeAir, Floor: 1, BaseRent: 0, BaseDeposit: 0})
 
 	return rooms
 }
@@ -171,11 +170,11 @@ func nanaCourt() []roomSeed {
 func nanaPlace() []roomSeed {
 	var rooms []roomSeed
 	// 0000
-	rooms = append(rooms, roomSeed{Number: "0000", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
+	rooms = append(rooms, roomSeed{Number: "0000", Type: room.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
 	// 1001-1020 (floor 1)
-	rooms = append(rooms, rangeRooms("", 1001, 1020, domain.RoomTypeAir, 1, 350000, 350000)...)
+	rooms = append(rooms, rangeRooms("", 1001, 1020, room.RoomTypeAir, 1, 350000, 350000)...)
 	// 2001-2025 (floor 2)
-	rooms = append(rooms, rangeRooms("", 2001, 2025, domain.RoomTypeAir, 2, 350000, 350000)...)
+	rooms = append(rooms, rangeRooms("", 2001, 2025, room.RoomTypeAir, 2, 350000, 350000)...)
 	return rooms
 }
 
@@ -183,17 +182,17 @@ func nanaPlace() []roomSeed {
 func nanaMansion() []roomSeed {
 	var rooms []roomSeed
 	// MART
-	rooms = append(rooms, roomSeed{Number: "MART", Type: domain.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
+	rooms = append(rooms, roomSeed{Number: "MART", Type: room.RoomTypeAir, Floor: 1, BaseRent: 350000, BaseDeposit: 350000})
 	// 101-114 (floor 1)
-	rooms = append(rooms, rangeRooms("", 101, 114, domain.RoomTypeAir, 1, 350000, 350000)...)
+	rooms = append(rooms, rangeRooms("", 101, 114, room.RoomTypeAir, 1, 350000, 350000)...)
 	// 201-221 (floor 2)
-	rooms = append(rooms, rangeRooms("", 201, 221, domain.RoomTypeAir, 2, 350000, 350000)...)
+	rooms = append(rooms, rangeRooms("", 201, 221, room.RoomTypeAir, 2, 350000, 350000)...)
 	// 301-321 (floor 3)
-	rooms = append(rooms, rangeRooms("", 301, 321, domain.RoomTypeAir, 3, 350000, 350000)...)
+	rooms = append(rooms, rangeRooms("", 301, 321, room.RoomTypeAir, 3, 350000, 350000)...)
 	return rooms
 }
 
-func rangeRooms(prefix string, start, end int, roomType domain.RoomType, floor int, baseRent, baseDeposit int64) []roomSeed {
+func rangeRooms(prefix string, start, end int, roomType room.RoomType, floor int, baseRent, baseDeposit int64) []roomSeed {
 	rooms := make([]roomSeed, 0, end-start+1)
 	for i := start; i <= end; i++ {
 		rooms = append(rooms, roomSeed{

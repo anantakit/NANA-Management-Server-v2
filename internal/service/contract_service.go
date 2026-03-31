@@ -8,6 +8,7 @@ import (
 	"nana/internal/domain"
 	"nana/internal/dto"
 	"nana/internal/repository"
+	roomPkg "nana/internal/room"
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
@@ -26,14 +27,14 @@ type ContractService interface {
 
 type contractService struct {
 	contractRepo repository.ContractRepository
-	roomRepo     repository.RoomRepository
+	roomRepo     roomPkg.RoomRepository
 	tenantRepo   tenant.TenantRepository
 	tx           database.TxManager
 }
 
 func NewContractService(
 	contractRepo repository.ContractRepository,
-	roomRepo repository.RoomRepository,
+	roomRepo roomPkg.RoomRepository,
 	tenantRepo tenant.TenantRepository,
 	tx database.TxManager,
 ) ContractService {
@@ -77,7 +78,7 @@ func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequ
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
-	if room.Status != domain.RoomStatusVacant {
+	if room.Status != roomPkg.RoomStatusVacant {
 		return nil, respond.ErrBadRequest.WithMessage("ห้องนี้ไม่ว่าง ไม่สามารถสร้างสัญญาได้")
 	}
 
@@ -113,7 +114,7 @@ func (s *contractService) Create(ctx context.Context, req dto.CreateContractRequ
 		if err := s.contractRepo.Create(txCtx, &contract); err != nil {
 			return err
 		}
-		return s.roomRepo.UpdateStatus(txCtx, roomID, domain.RoomStatusOccupied)
+		return s.roomRepo.UpdateStatus(txCtx, roomID, roomPkg.RoomStatusOccupied)
 	}); err != nil {
 		return nil, fmt.Errorf("create contract: %w", err)
 	}

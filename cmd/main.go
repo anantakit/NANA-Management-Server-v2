@@ -13,6 +13,7 @@ import (
 	"nana/internal/auth"
 	"nana/internal/handler"
 	"nana/internal/repository"
+	"nana/internal/room"
 	"nana/internal/seed"
 	"nana/internal/service"
 	"nana/internal/tenant"
@@ -84,9 +85,9 @@ func main() {
 	bankHandler := apartment.NewBankAccountHandler(bankService)
 
 	// Wire dependencies — Rooms
-	roomRepo := repository.NewRoomRepository(db)
-	roomService := service.NewRoomService(roomRepo, aptRepo)
-	roomHandler := handler.NewRoomHandler(roomService)
+	roomRepo := room.NewRoomRepository(db)
+	roomService := room.NewRoomService(roomRepo, aptRepo)
+	roomHandler := room.NewRoomHandler(roomService)
 
 	// Wire dependencies — Tenants
 	tenantRepo := tenant.NewTenantRepository(db)

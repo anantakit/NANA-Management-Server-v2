@@ -22,8 +22,8 @@ paths:
 
 | Feature มี... | แยก? | ตัวอย่าง |
 |----------------|------|----------|
-| Business logic (lifecycle, state transition, calculation) | ✅ YES | contract, room |
-| แค่ CRUD, ไม่มี logic ใน struct | ❌ NO — GORM model = domain | auth, apartment, tenant |
+| Business logic (lifecycle, state transition, calculation) | ✅ YES | contract |
+| แค่ CRUD, ไม่มี logic ใน struct | ❌ NO — GORM model = domain | auth, apartment, tenant, room |
 
 ```
 ✅ แยกเมื่อ: มี domain methods (ValidateForCreate, CalculateDeposit, CanTransition)

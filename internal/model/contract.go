@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"nana/internal/domain"
+	"nana/internal/room"
 	"nana/internal/tenant"
 
 	"github.com/google/uuid"
@@ -29,7 +30,7 @@ type Contract struct {
 	DeletedAt              gorm.DeletedAt `gorm:"index"`
 
 	Tenant *tenant.Tenant `gorm:"foreignKey:TenantID"`
-	Room   *Room   `gorm:"foreignKey:RoomID"`
+	Room   *room.Room `gorm:"foreignKey:RoomID"`
 }
 
 func (Contract) TableName() string { return "contracts" }

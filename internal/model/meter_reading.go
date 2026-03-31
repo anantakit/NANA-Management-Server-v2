@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"nana/internal/domain"
+	"nana/internal/room"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -20,7 +21,7 @@ type MeterReading struct {
 	ReadBy              *uuid.UUID `gorm:"type:uuid"`
 	CreatedAt           time.Time  `gorm:"not null;default:now()"`
 
-	Room *Room `gorm:"foreignKey:RoomID"`
+	Room *room.Room `gorm:"foreignKey:RoomID"`
 }
 
 func (MeterReading) TableName() string { return "meter_readings" }

@@ -104,15 +104,15 @@ Workflow owner เท่านั้น — feature ที่ trigger การ�
 | แค่ CRUD, struct เป็น data container | ❌ NO — GORM model = domain |
 
 ```
-✅ contract, room → แยก domain + model (มี behavior)
-❌ auth, apartment, tenant → GORM model ตรง (ไม่มี behavior)
+✅ contract → แยก domain + model (มี behavior)
+❌ auth, apartment, tenant, room → GORM model ตรง (ไม่มี behavior)
 ```
 
 ### Q7: ควรอยู่ domain/ หรือ shared/?
 
 | เป็น... | ที่อยู่ |
 |---------|--------|
-| Business entity ที่มี logic (contract, room) | `domain/` |
+| Business entity ที่มี logic (contract) | `domain/` |
 | Cross-cutting concern (role, pagination, errors) | `shared/` |
 | Data container ที่ไม่มี logic | feature package โดยตรง |
 

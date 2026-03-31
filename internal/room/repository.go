@@ -1,26 +1,24 @@
-package repository
+package room
 
 import (
 	"context"
 	"fmt"
 
-	"nana/internal/shared/database"
-	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/model"
+	"nana/internal/shared/database"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type RoomRepository interface {
-	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]domain.Room, int64, error)
-	FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error)
-	FindByIDWithContract(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*domain.Room, error)
-	Create(ctx context.Context, room *domain.Room) error
-	Update(ctx context.Context, room *domain.Room) error
-	UpdateStatus(ctx context.Context, id uuid.UUID, status domain.RoomStatus) error
+	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]Room, int64, error)
+	FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error)
+	FindByIDWithContract(ctx context.Context, id uuid.UUID) (*RoomWithContract, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*Room, error)
+	Create(ctx context.Context, room *Room) error
+	Update(ctx context.Context, room *Room) error
+	UpdateStatus(ctx context.Context, id uuid.UUID, status RoomStatus) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ExistsByNumber(ctx context.Context, apartmentID uuid.UUID, number string) (bool, error)
 	ExistsByNumberExcluding(ctx context.Context, apartmentID uuid.UUID, number string, excludeID uuid.UUID) (bool, error)
@@ -34,9 +32,9 @@ func NewRoomRepository(db *gorm.DB) RoomRepository {
 	return &roomRepository{db: db}
 }
 
-func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]domain.Room, int64, error) {
+func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]Room, int64, error) {
 	var total int64
-	query := database.DB(ctx, r.db).Model(&model.Room{}).Where("apartment_id = ?", apartmentID)
+	query := database.DB(ctx, r.db).Model(&Room{}).Where("apartment_id = ?", apartmentID)
 
 	if params.Search != "" {
 		query = query.Where("number ILIKE ?", "%"+params.Search+"%")
@@ -52,21 +50,16 @@ func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid
 	}
 	orderClause := fmt.Sprintf("%s %s", col, order)
 
-	var models []model.Room
-	if err := query.Order(orderClause).Offset(params.Offset()).Limit(params.Limit).Find(&models).Error; err != nil {
+	var rooms []Room
+	if err := query.Order(orderClause).Offset(params.Offset()).Limit(params.Limit).Find(&rooms).Error; err != nil {
 		return nil, 0, err
 	}
-
-	result := make([]domain.Room, len(models))
-	for i, m := range models {
-		result[i] = m.ToDomain()
-	}
-	return result, total, nil
+	return rooms, total, nil
 }
 
-func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error) {
+func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error) {
 	var total int64
-	countQuery := database.DB(ctx, r.db).Model(&model.Room{}).Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
+	countQuery := database.DB(ctx, r.db).Model(&Room{}).Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
 	if params.Search != "" {
 		countQuery = countQuery.Where("rooms.number ILIKE ?", "%"+params.Search+"%")
 	}
@@ -80,7 +73,7 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 	}
 
 	type joinRow struct {
-		model.Room
+		Room
 		ContractID             *string `gorm:"column:contract_id"`
 		TenantID               *string `gorm:"column:tenant_id_str"`
 		TenantName             *string `gorm:"column:tenant_name"`
@@ -121,10 +114,10 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 		return nil, 0, err
 	}
 
-	result := make([]dto.RoomWithContract, len(rows))
+	result := make([]RoomWithContract, len(rows))
 	for i, row := range rows {
-		result[i] = dto.RoomWithContract{
-			Room:                   row.Room.ToDomain(),
+		result[i] = RoomWithContract{
+			Room:                   row.Room,
 			ContractID:             row.ContractID,
 			TenantID:               row.TenantID,
 			TenantName:             row.TenantName,
@@ -141,9 +134,9 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 	return result, total, nil
 }
 
-func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error) {
+func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID) (*RoomWithContract, error) {
 	type joinRow struct {
-		model.Room
+		Room
 		ContractID             *string `gorm:"column:contract_id"`
 		TenantID               *string `gorm:"column:tenant_id_str"`
 		TenantName             *string `gorm:"column:tenant_name"`
@@ -183,8 +176,8 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 		return nil, gorm.ErrRecordNotFound
 	}
 
-	result := dto.RoomWithContract{
-		Room:                   row.Room.ToDomain(),
+	result := RoomWithContract{
+		Room:                   row.Room,
 		ContractID:             row.ContractID,
 		TenantID:               row.TenantID,
 		TenantName:             row.TenantName,
@@ -200,49 +193,38 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 	return &result, nil
 }
 
-func (r *roomRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.Room, error) {
-	var m model.Room
+func (r *roomRepository) FindByID(ctx context.Context, id uuid.UUID) (*Room, error) {
+	var m Room
 	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
-	d := m.ToDomain()
-	return &d, nil
+	return &m, nil
 }
 
-func (r *roomRepository) Create(ctx context.Context, room *domain.Room) error {
-	m := model.RoomFromDomain(*room)
-	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
-		return err
-	}
-	*room = m.ToDomain()
-	return nil
+func (r *roomRepository) Create(ctx context.Context, room *Room) error {
+	return database.DB(ctx, r.db).Create(room).Error
 }
 
-func (r *roomRepository) Update(ctx context.Context, room *domain.Room) error {
-	m := model.RoomFromDomain(*room)
-	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
-		return err
-	}
-	*room = m.ToDomain()
-	return nil
+func (r *roomRepository) Update(ctx context.Context, room *Room) error {
+	return database.DB(ctx, r.db).Model(room).Select("*").Omit("deleted_at").Updates(room).Error
 }
 
-func (r *roomRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.RoomStatus) error {
-	return database.DB(ctx, r.db).Model(&model.Room{}).Where("id = ?", id).Update("status", string(status)).Error
+func (r *roomRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status RoomStatus) error {
+	return database.DB(ctx, r.db).Model(&Room{}).Where("id = ?", id).Update("status", string(status)).Error
 }
 
 func (r *roomRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	return database.DB(ctx, r.db).Delete(&model.Room{}, "id = ?", id).Error
+	return database.DB(ctx, r.db).Delete(&Room{}, "id = ?", id).Error
 }
 
 func (r *roomRepository) ExistsByNumber(ctx context.Context, apartmentID uuid.UUID, number string) (bool, error) {
 	var count int64
-	err := database.DB(ctx, r.db).Model(&model.Room{}).Where("apartment_id = ? AND number = ?", apartmentID, number).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&Room{}).Where("apartment_id = ? AND number = ?", apartmentID, number).Count(&count).Error
 	return count > 0, err
 }
 
 func (r *roomRepository) ExistsByNumberExcluding(ctx context.Context, apartmentID uuid.UUID, number string, excludeID uuid.UUID) (bool, error) {
 	var count int64
-	err := database.DB(ctx, r.db).Model(&model.Room{}).Where("apartment_id = ? AND number = ? AND id != ?", apartmentID, number, excludeID).Count(&count).Error
+	err := database.DB(ctx, r.db).Model(&Room{}).Where("apartment_id = ? AND number = ? AND id != ?", apartmentID, number, excludeID).Count(&count).Error
 	return count > 0, err
 }

@@ -1,8 +1,7 @@
-package handler
+package room
 
 import (
 	"nana/internal/dto"
-	"nana/internal/service"
 	"nana/internal/shared/bind"
 	"nana/internal/shared/respond"
 
@@ -11,10 +10,10 @@ import (
 )
 
 type RoomHandler struct {
-	svc service.RoomService
+	svc RoomService
 }
 
-func NewRoomHandler(svc service.RoomService) *RoomHandler {
+func NewRoomHandler(svc RoomService) *RoomHandler {
 	return &RoomHandler{svc: svc}
 }
 
@@ -44,7 +43,7 @@ func (h *RoomHandler) List(c fiber.Ctx) error {
 	}
 
 	meta := dto.ComputeMeta(params.Page, params.Limit, total)
-	return respond.SuccessWithMeta(c, "สำเร็จ", dto.ToRoomWithContractResponseList(rooms), meta)
+	return respond.SuccessWithMeta(c, "สำเร็จ", ToRoomWithContractResponseList(rooms), meta)
 }
 
 func (h *RoomHandler) GetByID(c fiber.Ctx) error {
@@ -64,7 +63,7 @@ func (h *RoomHandler) GetByID(c fiber.Ctx) error {
 	if room.ApartmentID != apartmentID {
 		return respond.Error(c, respond.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้"))
 	}
-	return respond.Success(c, "สำเร็จ", dto.ToRoomWithContractResponseList([]dto.RoomWithContract{*room})[0])
+	return respond.Success(c, "สำเร็จ", ToRoomWithContractResponseList([]RoomWithContract{*room})[0])
 }
 
 func (h *RoomHandler) Create(c fiber.Ctx) error {
@@ -73,7 +72,7 @@ func (h *RoomHandler) Create(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
 	}
 
-	var req dto.CreateRoomRequest
+	var req CreateRoomRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -82,7 +81,7 @@ func (h *RoomHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างห้องสำเร็จ", dto.ToRoomResponse(*room))
+	return respond.Created(c, "สร้างห้องสำเร็จ", ToRoomResponse(*room))
 }
 
 func (h *RoomHandler) Update(c fiber.Ctx) error {
@@ -95,7 +94,7 @@ func (h *RoomHandler) Update(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
 	}
 
-	var req dto.UpdateRoomRequest
+	var req UpdateRoomRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -107,7 +106,7 @@ func (h *RoomHandler) Update(c fiber.Ctx) error {
 	if room.ApartmentID != apartmentID {
 		return respond.Error(c, respond.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้"))
 	}
-	return respond.Success(c, "อัปเดตห้องสำเร็จ", dto.ToRoomResponse(*room))
+	return respond.Success(c, "อัปเดตห้องสำเร็จ", ToRoomResponse(*room))
 }
 
 func (h *RoomHandler) Delete(c fiber.Ctx) error {

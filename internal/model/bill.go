@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"nana/internal/domain"
+	"nana/internal/room"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -29,7 +30,7 @@ type Bill struct {
 	UpdatedAt         time.Time `gorm:"not null;default:now()"`
 
 	Contract *Contract `gorm:"foreignKey:ContractID"`
-	Room     *Room     `gorm:"foreignKey:RoomID"`
+	Room     *room.Room `gorm:"foreignKey:RoomID"`
 }
 
 func (Bill) TableName() string { return "bills" }

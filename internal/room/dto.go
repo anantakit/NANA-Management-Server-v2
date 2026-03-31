@@ -1,7 +1,6 @@
-package dto
+package room
 
 import (
-	"nana/internal/domain"
 	"nana/internal/shared/money"
 )
 
@@ -37,22 +36,22 @@ type ActiveContractSummary struct {
 }
 
 type RoomResponse struct {
-	ID             string                  `json:"id"`
-	ApartmentID    string                  `json:"apartment_id"`
-	Number         string                  `json:"number"`
-	Type           string                  `json:"type"`
-	Floor          int                     `json:"floor"`
-	BaseRent       float64                 `json:"base_rent"`
-	BaseDeposit    float64                 `json:"base_deposit"`
-	Status         string                  `json:"status"`
-	ActiveContract *ActiveContractSummary  `json:"active_contract"`
-	CreatedAt      string                  `json:"created_at"`
-	UpdatedAt      string                  `json:"updated_at"`
+	ID             string                 `json:"id"`
+	ApartmentID    string                 `json:"apartment_id"`
+	Number         string                 `json:"number"`
+	Type           string                 `json:"type"`
+	Floor          int                    `json:"floor"`
+	BaseRent       float64                `json:"base_rent"`
+	BaseDeposit    float64                `json:"base_deposit"`
+	Status         string                 `json:"status"`
+	ActiveContract *ActiveContractSummary `json:"active_contract"`
+	CreatedAt      string                 `json:"created_at"`
+	UpdatedAt      string                 `json:"updated_at"`
 }
 
-// RoomWithContract holds room domain + optional active contract info.
+// RoomWithContract holds room + optional active contract info (from JOIN).
 type RoomWithContract struct {
-	domain.Room
+	Room
 	ContractID             *string
 	TenantID               *string
 	TenantName             *string
@@ -66,7 +65,7 @@ type RoomWithContract struct {
 	MoveOutDate            *string
 }
 
-func ToRoomResponse(r domain.Room) RoomResponse {
+func ToRoomResponse(r Room) RoomResponse {
 	return toRoomResponseWithContract(RoomWithContract{Room: r})
 }
 
@@ -124,7 +123,7 @@ func derefInt(v *int) int {
 	return *v
 }
 
-func ToRoomResponseList(rooms []domain.Room) []RoomResponse {
+func ToRoomResponseList(rooms []Room) []RoomResponse {
 	result := make([]RoomResponse, len(rooms))
 	for i, r := range rooms {
 		result[i] = ToRoomResponse(r)

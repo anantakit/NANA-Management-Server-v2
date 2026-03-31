@@ -1,13 +1,10 @@
-package service
+package room
 
 import (
 	"context"
 	"fmt"
 
-	"nana/internal/apartment"
-	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/repository"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
@@ -15,30 +12,30 @@ import (
 )
 
 type RoomService interface {
-	ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error)
-	GetByID(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error)
-	Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateRoomRequest) (*domain.Room, error)
-	Update(ctx context.Context, id uuid.UUID, req dto.UpdateRoomRequest) (*domain.Room, error)
+	ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*RoomWithContract, error)
+	Create(ctx context.Context, apartmentID uuid.UUID, req CreateRoomRequest) (*Room, error)
+	Update(ctx context.Context, id uuid.UUID, req UpdateRoomRequest) (*Room, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 type roomService struct {
-	repo    repository.RoomRepository
-	aptRepo apartment.ApartmentRepository
+	repo    RoomRepository
+	aptRepo ApartmentQuerier
 }
 
-func NewRoomService(repo repository.RoomRepository, aptRepo apartment.ApartmentRepository) RoomService {
+func NewRoomService(repo RoomRepository, aptRepo ApartmentQuerier) RoomService {
 	return &roomService{repo: repo, aptRepo: aptRepo}
 }
 
-func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]dto.RoomWithContract, int64, error) {
+func (s *roomService) ListByApartment(ctx context.Context, apartmentID uuid.UUID, params dto.PaginationParams) ([]RoomWithContract, int64, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
 		return nil, 0, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
 	return s.repo.FindByApartmentIDWithContracts(ctx, apartmentID, params)
 }
 
-func (s *roomService) GetByID(ctx context.Context, id uuid.UUID) (*dto.RoomWithContract, error) {
+func (s *roomService) GetByID(ctx context.Context, id uuid.UUID) (*RoomWithContract, error) {
 	room, err := s.repo.FindByIDWithContract(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
@@ -46,7 +43,7 @@ func (s *roomService) GetByID(ctx context.Context, id uuid.UUID) (*dto.RoomWithC
 	return room, nil
 }
 
-func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req dto.CreateRoomRequest) (*domain.Room, error) {
+func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req CreateRoomRequest) (*Room, error) {
 	if _, err := s.aptRepo.FindByID(ctx, apartmentID); err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")
 	}
@@ -59,14 +56,14 @@ func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req dto
 		return nil, respond.ErrConflict.WithMessage("เลขห้องซ้ำ")
 	}
 
-	room := domain.Room{
+	room := Room{
 		ApartmentID: apartmentID,
 		Number:      req.Number,
-		Type:        domain.RoomType(req.Type),
+		Type:        RoomType(req.Type),
 		Floor:       req.Floor,
 		BaseRent:    money.ToSatang(req.BaseRent),
 		BaseDeposit: money.ToSatang(req.BaseDeposit),
-		Status:      domain.RoomStatusVacant,
+		Status:      RoomStatusVacant,
 	}
 
 	if err := s.repo.Create(ctx, &room); err != nil {
@@ -76,7 +73,7 @@ func (s *roomService) Create(ctx context.Context, apartmentID uuid.UUID, req dto
 	return &room, nil
 }
 
-func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRoomRequest) (*domain.Room, error) {
+func (s *roomService) Update(ctx context.Context, id uuid.UUID, req UpdateRoomRequest) (*Room, error) {
 	room, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
@@ -93,7 +90,7 @@ func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRo
 		room.Number = *req.Number
 	}
 	if req.Type != nil {
-		room.Type = domain.RoomType(*req.Type)
+		room.Type = RoomType(*req.Type)
 	}
 	if req.Floor != nil {
 		room.Floor = *req.Floor
@@ -106,11 +103,11 @@ func (s *roomService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateRo
 	}
 	if req.Status != nil {
 		// Only allow VACANT and MAINTENANCE from manual update
-		// OCCUPIED is set automatically by contract creation (future feature)
-		if room.Status == domain.RoomStatusOccupied {
+		// OCCUPIED is set automatically by contract creation
+		if room.Status == RoomStatusOccupied {
 			return nil, respond.ErrBadRequest.WithMessage("ไม่สามารถเปลี่ยนสถานะห้องที่มีผู้เช่าอยู่")
 		}
-		room.Status = domain.RoomStatus(*req.Status)
+		room.Status = RoomStatus(*req.Status)
 	}
 
 	if err := s.repo.Update(ctx, room); err != nil {
@@ -126,7 +123,7 @@ func (s *roomService) Delete(ctx context.Context, id uuid.UUID) error {
 		return respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
 
-	if room.Status == domain.RoomStatusOccupied {
+	if room.Status == RoomStatusOccupied {
 		return respond.ErrBadRequest.WithMessage("ไม่สามารถลบห้องที่มีผู้เช่าอยู่")
 	}
 

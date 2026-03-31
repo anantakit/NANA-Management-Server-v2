@@ -18,7 +18,7 @@ A's Service (workflow owner) → Port Interface (in A/port.go) → B's Repositor
 ```go
 // contract/port.go
 type RoomStatusUpdater interface {
-    UpdateStatus(ctx context.Context, id uuid.UUID, status domain.RoomStatus) error
+    UpdateStatus(ctx context.Context, id uuid.UUID, status room.RoomStatus) error
 }
 
 // contract/service.go

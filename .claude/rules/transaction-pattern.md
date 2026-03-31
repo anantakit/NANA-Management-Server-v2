@@ -52,14 +52,14 @@ func (s *roomService) Create(ctx context.Context, ...) error {
 func (s *contractService) Create(ctx context.Context, ...) error {
     // Validation ก่อน transaction (ลด lock time)
     room, _ := s.roomRepo.FindByID(ctx, roomID)
-    if room.Status != domain.RoomStatusVacant { return ... }
+    if room.Status != roomPkg.RoomStatusVacant { return ... }
 
     // Transaction: หลาย repo ใน tx เดียว
     err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
         if err := s.contractRepo.Create(txCtx, &contract); err != nil {
             return err
         }
-        return s.roomRepo.UpdateStatus(txCtx, roomID, domain.RoomStatusOccupied)
+        return s.roomRepo.UpdateStatus(txCtx, roomID, roomPkg.RoomStatusOccupied)
     })
     if err != nil {
         return fmt.Errorf("create contract: %w", err)
@@ -97,7 +97,7 @@ contractSvc := service.NewContractService(contractRepo, roomRepo, tenantRepo, tx
 bankAcctSvc := service.NewBankAccountService(bankRepo, aptRepo, txManager)
 
 // Service ที่ไม่ต้อง — ไม่ต้อง inject
-roomSvc := service.NewRoomService(roomRepo, aptRepo)
+roomSvc := room.NewRoomService(roomRepo, aptRepo)
 ```
 
 ## Future Use Cases
