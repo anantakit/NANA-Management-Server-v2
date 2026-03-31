@@ -1,7 +1,5 @@
 package apartment
 
-import "nana/internal/domain"
-
 type CreateBankAccountRequest struct {
 	BankName      string  `json:"bank_name" validate:"required,min=1,max=100"`
 	AccountName   string  `json:"account_name" validate:"required,min=1,max=255"`
@@ -33,7 +31,7 @@ type BankAccountResponse struct {
 	UpdatedAt     string  `json:"updated_at"`
 }
 
-func ToBankAccountResponse(b domain.ApartmentBankAccount) BankAccountResponse {
+func ToBankAccountResponse(b ApartmentBankAccount) BankAccountResponse {
 	return BankAccountResponse{
 		ID:            b.ID.String(),
 		ApartmentID:   b.ApartmentID.String(),
@@ -48,7 +46,7 @@ func ToBankAccountResponse(b domain.ApartmentBankAccount) BankAccountResponse {
 	}
 }
 
-func ToBankAccountResponseList(accounts []domain.ApartmentBankAccount) []BankAccountResponse {
+func ToBankAccountResponseList(accounts []ApartmentBankAccount) []BankAccountResponse {
 	result := make([]BankAccountResponse, len(accounts))
 	for i, a := range accounts {
 		result[i] = ToBankAccountResponse(a)

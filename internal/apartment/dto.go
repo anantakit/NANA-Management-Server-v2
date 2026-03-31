@@ -1,7 +1,6 @@
 package apartment
 
 import (
-	"nana/internal/domain"
 	"nana/internal/shared/money"
 )
 
@@ -42,7 +41,7 @@ type ApartmentResponse struct {
 	UpdatedAt              string  `json:"updated_at"`
 }
 
-func ToApartmentResponse(a domain.Apartment) ApartmentResponse {
+func ToApartmentResponse(a Apartment) ApartmentResponse {
 	return ApartmentResponse{
 		ID:                     a.ID.String(),
 		Name:                   a.Name,
@@ -56,7 +55,7 @@ func ToApartmentResponse(a domain.Apartment) ApartmentResponse {
 	}
 }
 
-func ToApartmentResponseList(apartments []domain.Apartment) []ApartmentResponse {
+func ToApartmentResponseList(apartments []Apartment) []ApartmentResponse {
 	result := make([]ApartmentResponse, len(apartments))
 	for i, a := range apartments {
 		result[i] = ToApartmentResponse(a)

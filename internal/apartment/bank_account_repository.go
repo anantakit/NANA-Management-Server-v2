@@ -3,7 +3,6 @@ package apartment
 import (
 	"context"
 
-	"nana/internal/domain"
 	"nana/internal/shared/database"
 
 	"github.com/google/uuid"
@@ -11,10 +10,10 @@ import (
 )
 
 type BankAccountRepository interface {
-	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*domain.ApartmentBankAccount, error)
-	Create(ctx context.Context, account *domain.ApartmentBankAccount) error
-	Update(ctx context.Context, account *domain.ApartmentBankAccount) error
+	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ApartmentBankAccount, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*ApartmentBankAccount, error)
+	Create(ctx context.Context, account *ApartmentBankAccount) error
+	Update(ctx context.Context, account *ApartmentBankAccount) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ClearPrimary(ctx context.Context, apartmentID uuid.UUID) error
 }
@@ -27,43 +26,28 @@ func NewBankAccountRepository(db *gorm.DB) BankAccountRepository {
 	return &bankAccountRepository{db: db}
 }
 
-func (r *bankAccountRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]domain.ApartmentBankAccount, error) {
-	var models []ApartmentBankAccount
-	if err := database.DB(ctx, r.db).Where("apartment_id = ?", apartmentID).Order("is_primary DESC, created_at ASC").Find(&models).Error; err != nil {
+func (r *bankAccountRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ApartmentBankAccount, error) {
+	var result []ApartmentBankAccount
+	if err := database.DB(ctx, r.db).Where("apartment_id = ?", apartmentID).Order("is_primary DESC, created_at ASC").Find(&result).Error; err != nil {
 		return nil, err
-	}
-	result := make([]domain.ApartmentBankAccount, len(models))
-	for i, m := range models {
-		result[i] = m.ToDomain()
 	}
 	return result, nil
 }
 
-func (r *bankAccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.ApartmentBankAccount, error) {
+func (r *bankAccountRepository) FindByID(ctx context.Context, id uuid.UUID) (*ApartmentBankAccount, error) {
 	var m ApartmentBankAccount
 	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
-	d := m.ToDomain()
-	return &d, nil
+	return &m, nil
 }
 
-func (r *bankAccountRepository) Create(ctx context.Context, account *domain.ApartmentBankAccount) error {
-	m := ApartmentBankAccountFromDomain(*account)
-	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
-		return err
-	}
-	*account = m.ToDomain()
-	return nil
+func (r *bankAccountRepository) Create(ctx context.Context, account *ApartmentBankAccount) error {
+	return database.DB(ctx, r.db).Create(account).Error
 }
 
-func (r *bankAccountRepository) Update(ctx context.Context, account *domain.ApartmentBankAccount) error {
-	m := ApartmentBankAccountFromDomain(*account)
-	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
-		return err
-	}
-	*account = m.ToDomain()
-	return nil
+func (r *bankAccountRepository) Update(ctx context.Context, account *ApartmentBankAccount) error {
+	return database.DB(ctx, r.db).Model(account).Select("*").Omit("deleted_at").Updates(account).Error
 }
 
 func (r *bankAccountRepository) Delete(ctx context.Context, id uuid.UUID) error {

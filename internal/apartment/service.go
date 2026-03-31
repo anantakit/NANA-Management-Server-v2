@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/domain"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
@@ -14,8 +13,8 @@ import (
 type ApartmentService interface {
 	List(ctx context.Context) ([]ApartmentResponse, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*ApartmentResponse, error)
-	Create(ctx context.Context, req CreateApartmentRequest) (*domain.Apartment, error)
-	Update(ctx context.Context, id uuid.UUID, req UpdateApartmentRequest) (*domain.Apartment, error)
+	Create(ctx context.Context, req CreateApartmentRequest) (*Apartment, error)
+	Update(ctx context.Context, id uuid.UUID, req UpdateApartmentRequest) (*Apartment, error)
 }
 
 type apartmentService struct {
@@ -76,7 +75,7 @@ func (s *apartmentService) GetByID(ctx context.Context, id uuid.UUID) (*Apartmen
 	return &r, nil
 }
 
-func (s *apartmentService) Create(ctx context.Context, req CreateApartmentRequest) (*domain.Apartment, error) {
+func (s *apartmentService) Create(ctx context.Context, req CreateApartmentRequest) (*Apartment, error) {
 	exists, err := s.repo.ExistsByName(ctx, req.Name)
 	if err != nil {
 		return nil, fmt.Errorf("check name: %w", err)
@@ -85,7 +84,7 @@ func (s *apartmentService) Create(ctx context.Context, req CreateApartmentReques
 		return nil, respond.ErrConflict.WithMessage("ชื่ออาคารซ้ำ")
 	}
 
-	apt := domain.Apartment{
+	apt := Apartment{
 		Name:                   req.Name,
 		DisplayOrder:           req.DisplayOrder,
 		ElectricityRatePerUnit: money.ToSatang(req.ElectricityRatePerUnit),
@@ -101,7 +100,7 @@ func (s *apartmentService) Create(ctx context.Context, req CreateApartmentReques
 	return &apt, nil
 }
 
-func (s *apartmentService) Update(ctx context.Context, id uuid.UUID, req UpdateApartmentRequest) (*domain.Apartment, error) {
+func (s *apartmentService) Update(ctx context.Context, id uuid.UUID, req UpdateApartmentRequest) (*Apartment, error) {
 	apt, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบอาคาร")

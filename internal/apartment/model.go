@@ -3,23 +3,21 @@ package apartment
 import (
 	"time"
 
-	"nana/internal/domain"
-
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type Apartment struct {
-	ID                     uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	Name                   string         `gorm:"type:varchar(255);not null"`
-	DisplayOrder           int            `gorm:"not null;default:0"`
-	ElectricityRatePerUnit int64          `gorm:"not null;default:0"`
-	WaterRatePerUnit       int64          `gorm:"not null;default:0"`
-	Address                string         `gorm:"type:text;not null;default:''"`
-	TaxID                  string         `gorm:"type:varchar(20);not null;default:''"`
-	CreatedAt              time.Time      `gorm:"not null;default:now()"`
-	UpdatedAt              time.Time      `gorm:"not null;default:now()"`
-	DeletedAt              gorm.DeletedAt `gorm:"index"`
+	ID                     uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	Name                   string         `gorm:"type:varchar(255);not null" json:"name"`
+	DisplayOrder           int            `gorm:"not null;default:0" json:"display_order"`
+	ElectricityRatePerUnit int64          `gorm:"not null;default:0" json:"electricity_rate_per_unit"`
+	WaterRatePerUnit       int64          `gorm:"not null;default:0" json:"water_rate_per_unit"`
+	Address                string         `gorm:"type:text;not null;default:''" json:"address"`
+	TaxID                  string         `gorm:"type:varchar(20);not null;default:''" json:"tax_id"`
+	CreatedAt              time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt              time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+	DeletedAt              gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (Apartment) TableName() string { return "apartments" }
@@ -31,50 +29,22 @@ func (a *Apartment) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-func (a *Apartment) ToDomain() domain.Apartment {
-	return domain.Apartment{
-		ID:                     a.ID,
-		Name:                   a.Name,
-		DisplayOrder:           a.DisplayOrder,
-		ElectricityRatePerUnit: a.ElectricityRatePerUnit,
-		WaterRatePerUnit:       a.WaterRatePerUnit,
-		Address:                a.Address,
-		TaxID:                  a.TaxID,
-		CreatedAt:              a.CreatedAt,
-		UpdatedAt:              a.UpdatedAt,
-	}
-}
-
-func ApartmentFromDomain(d domain.Apartment) Apartment {
-	return Apartment{
-		ID:                     d.ID,
-		Name:                   d.Name,
-		DisplayOrder:           d.DisplayOrder,
-		ElectricityRatePerUnit: d.ElectricityRatePerUnit,
-		WaterRatePerUnit:       d.WaterRatePerUnit,
-		Address:                d.Address,
-		TaxID:                  d.TaxID,
-		CreatedAt:              d.CreatedAt,
-		UpdatedAt:              d.UpdatedAt,
-	}
-}
-
 // ApartmentBankAccount
 
 type ApartmentBankAccount struct {
-	ID            uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	ApartmentID   uuid.UUID      `gorm:"type:uuid;not null"`
-	BankName      string         `gorm:"type:varchar(100);not null"`
-	AccountName   string         `gorm:"type:varchar(255);not null"`
-	AccountNumber string         `gorm:"type:varchar(50);not null"`
-	PromptPayID   *string        `gorm:"column:promptpay_id;type:varchar(20)"`
-	IsPrimary     bool           `gorm:"not null;default:false"`
-	Note          *string        `gorm:"type:text"`
-	CreatedAt     time.Time      `gorm:"not null;default:now()"`
-	UpdatedAt     time.Time      `gorm:"not null;default:now()"`
-	DeletedAt     gorm.DeletedAt `gorm:"index"`
+	ID            uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	ApartmentID   uuid.UUID      `gorm:"type:uuid;not null" json:"apartment_id"`
+	BankName      string         `gorm:"type:varchar(100);not null" json:"bank_name"`
+	AccountName   string         `gorm:"type:varchar(255);not null" json:"account_name"`
+	AccountNumber string         `gorm:"type:varchar(50);not null" json:"account_number"`
+	PromptPayID   *string        `gorm:"column:promptpay_id;type:varchar(20)" json:"promptpay_id"`
+	IsPrimary     bool           `gorm:"not null;default:false" json:"is_primary"`
+	Note          *string        `gorm:"type:text" json:"note"`
+	CreatedAt     time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt     time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
 
-	ApartmentRef *Apartment `gorm:"foreignKey:ApartmentID"`
+	ApartmentRef *Apartment `gorm:"foreignKey:ApartmentID" json:"-"`
 }
 
 func (ApartmentBankAccount) TableName() string { return "apartment_bank_accounts" }
@@ -86,32 +56,3 @@ func (b *ApartmentBankAccount) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-func (b *ApartmentBankAccount) ToDomain() domain.ApartmentBankAccount {
-	return domain.ApartmentBankAccount{
-		ID:            b.ID,
-		ApartmentID:   b.ApartmentID,
-		BankName:      b.BankName,
-		AccountName:   b.AccountName,
-		AccountNumber: b.AccountNumber,
-		PromptPayID:   b.PromptPayID,
-		IsPrimary:     b.IsPrimary,
-		Note:          b.Note,
-		CreatedAt:     b.CreatedAt,
-		UpdatedAt:     b.UpdatedAt,
-	}
-}
-
-func ApartmentBankAccountFromDomain(d domain.ApartmentBankAccount) ApartmentBankAccount {
-	return ApartmentBankAccount{
-		ID:            d.ID,
-		ApartmentID:   d.ApartmentID,
-		BankName:      d.BankName,
-		AccountName:   d.AccountName,
-		AccountNumber: d.AccountNumber,
-		PromptPayID:   d.PromptPayID,
-		IsPrimary:     d.IsPrimary,
-		Note:          d.Note,
-		CreatedAt:     d.CreatedAt,
-		UpdatedAt:     d.UpdatedAt,
-	}
-}
