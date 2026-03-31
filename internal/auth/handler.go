@@ -1,12 +1,10 @@
-package handler
+package auth
 
 import (
 	"time"
 
-	"nana/internal/dto"
-	"nana/internal/service"
-	"nana/internal/shared/config"
 	"nana/internal/shared/bind"
+	"nana/internal/shared/config"
 	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
@@ -14,11 +12,11 @@ import (
 )
 
 type AuthHandler struct {
-	authService service.AuthService
+	authService AuthService
 	cfg         *config.Config
 }
 
-func NewAuthHandler(authService service.AuthService, cfg *config.Config) *AuthHandler {
+func NewAuthHandler(authService AuthService, cfg *config.Config) *AuthHandler {
 	return &AuthHandler{
 		authService: authService,
 		cfg:         cfg,
@@ -38,7 +36,7 @@ func (h *AuthHandler) RegisterProtectedRoutes(router fiber.Router) {
 }
 
 func (h *AuthHandler) Login(c fiber.Ctx) error {
-	var req dto.LoginRequest
+	var req LoginRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -56,7 +54,7 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 	rawToken := c.Cookies("refresh_token")
 	if rawToken == "" {
-		return respond.Error(c, service.ErrTokenInvalid)
+		return respond.Error(c, ErrTokenInvalid)
 	}
 
 	resp, newRefreshToken, err := h.authService.Refresh(c.Context(), rawToken)
@@ -84,10 +82,10 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 func (h *AuthHandler) ChangePassword(c fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(uuid.UUID)
 	if !ok {
-		return respond.Error(c, service.ErrTokenInvalid)
+		return respond.Error(c, ErrTokenInvalid)
 	}
 
-	var req dto.ChangePasswordRequest
+	var req ChangePasswordRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}

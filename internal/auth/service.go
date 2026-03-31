@@ -1,4 +1,4 @@
-package service
+package auth
 
 import (
 	"context"
@@ -10,9 +10,6 @@ import (
 	"time"
 	"unicode"
 
-	"nana/internal/domain"
-	"nana/internal/dto"
-	"nana/internal/repository"
 	"nana/internal/shared/config"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -21,26 +18,26 @@ import (
 )
 
 type AuthService interface {
-	Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, string, error)
-	Refresh(ctx context.Context, rawToken string) (*dto.LoginResponse, string, error)
+	Login(ctx context.Context, req LoginRequest) (*LoginResponse, string, error)
+	Refresh(ctx context.Context, rawToken string) (*LoginResponse, string, error)
 	Logout(ctx context.Context, userID uuid.UUID, rawToken string) error
-	ChangePassword(ctx context.Context, userID uuid.UUID, req dto.ChangePasswordRequest) error
+	ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest) error
 	StartTokenCleanup(ctx context.Context, interval time.Duration)
 }
 
 type authService struct {
-	userRepo repository.UserRepository
+	userRepo UserRepository
 	cfg      *config.Config
 }
 
-func NewAuthService(userRepo repository.UserRepository, cfg *config.Config) AuthService {
+func NewAuthService(userRepo UserRepository, cfg *config.Config) AuthService {
 	return &authService{
 		userRepo: userRepo,
 		cfg:      cfg,
 	}
 }
 
-func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, string, error) {
+func (s *authService) Login(ctx context.Context, req LoginRequest) (*LoginResponse, string, error) {
 	if req.Username == "" || req.Password == "" {
 		return nil, "", ErrInvalidCredentials
 	}
@@ -64,13 +61,13 @@ func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 		return nil, "", fmt.Errorf("create refresh token: %w", err)
 	}
 
-	return &dto.LoginResponse{
+	return &LoginResponse{
 		AccessToken: accessToken,
-		User:        dto.ToUserResponse(*user),
+		User:        ToUserResponse(user),
 	}, refreshToken, nil
 }
 
-func (s *authService) Refresh(ctx context.Context, rawToken string) (*dto.LoginResponse, string, error) {
+func (s *authService) Refresh(ctx context.Context, rawToken string) (*LoginResponse, string, error) {
 	if rawToken == "" {
 		return nil, "", ErrTokenInvalid
 	}
@@ -111,9 +108,9 @@ func (s *authService) Refresh(ctx context.Context, rawToken string) (*dto.LoginR
 		return nil, "", fmt.Errorf("create refresh token: %w", err)
 	}
 
-	return &dto.LoginResponse{
+	return &LoginResponse{
 		AccessToken: accessToken,
-		User:        dto.ToUserResponse(*user),
+		User:        ToUserResponse(user),
 	}, newRefreshToken, nil
 }
 
@@ -128,7 +125,7 @@ func (s *authService) Logout(ctx context.Context, userID uuid.UUID, rawToken str
 	return nil
 }
 
-func (s *authService) ChangePassword(ctx context.Context, userID uuid.UUID, req dto.ChangePasswordRequest) error {
+func (s *authService) ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest) error {
 	user, err := s.userRepo.FindByID(ctx, userID)
 	if err != nil {
 		return ErrUserNotFound
@@ -174,10 +171,10 @@ func (s *authService) StartTokenCleanup(ctx context.Context, interval time.Durat
 	}()
 }
 
-func (s *authService) generateAccessToken(user *domain.User) (string, error) {
+func (s *authService) generateAccessToken(user *User) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":  user.ID.String(),
-		"role": string(user.Role),
+		"role": user.Role.String(),
 		"exp":  time.Now().Add(time.Duration(s.cfg.JWTExpiryHours) * time.Hour).Unix(),
 		"iat":  time.Now().Unix(),
 	}
@@ -194,7 +191,7 @@ func (s *authService) createRefreshToken(ctx context.Context, userID, familyID u
 
 	tokenHash := hashToken(rawToken)
 
-	rt := domain.RefreshToken{
+	rt := RefreshToken{
 		ID:        uuid.New(),
 		UserID:    userID,
 		TokenHash: tokenHash,

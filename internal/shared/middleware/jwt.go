@@ -3,9 +3,9 @@ package middleware
 import (
 	"strings"
 
-	"nana/internal/shared/respond"
 	"nana/internal/shared/config"
-	"nana/internal/domain"
+	"nana/internal/shared/respond"
+	"nana/internal/shared/role"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -47,24 +47,24 @@ func JWTProtected(cfg *config.Config) fiber.Handler {
 			return sendAuthError(c, respond.ErrUnauthorized)
 		}
 
-		role, _ := claims["role"].(string)
+		r, _ := claims["role"].(string)
 
 		c.Locals("userID", userID)
-		c.Locals("role", domain.UserRole(role))
+		c.Locals("role", role.Role(r))
 
 		return c.Next()
 	}
 }
 
-func RequireRole(roles ...domain.UserRole) fiber.Handler {
+func RequireRole(roles ...role.Role) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		role, ok := c.Locals("role").(domain.UserRole)
+		r, ok := c.Locals("role").(role.Role)
 		if !ok {
 			return sendAuthError(c, respond.ErrForbidden)
 		}
 
-		for _, r := range roles {
-			if role == r {
+		for _, allowed := range roles {
+			if r == allowed {
 				return c.Next()
 			}
 		}

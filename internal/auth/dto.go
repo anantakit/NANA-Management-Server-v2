@@ -1,6 +1,4 @@
-package dto
-
-import "nana/internal/domain"
+package auth
 
 type LoginRequest struct {
 	Username string `json:"username" validate:"required,min=1,max=100"`
@@ -20,12 +18,12 @@ type UserResponse struct {
 	MustChangePassword bool   `json:"must_change_password"`
 }
 
-func ToUserResponse(u domain.User) UserResponse {
+func ToUserResponse(u *User) UserResponse {
 	return UserResponse{
 		ID:                 u.ID.String(),
 		Username:           u.Username,
 		FullName:           u.FullName,
-		Role:               string(u.Role),
+		Role:               u.Role.String(),
 		MustChangePassword: u.MustChangePassword,
 	}
 }

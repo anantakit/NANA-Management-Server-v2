@@ -5,8 +5,10 @@ import (
 	"log/slog"
 
 	"nana/internal/apartment"
+	"nana/internal/auth"
 	"nana/internal/domain"
 	"nana/internal/model"
+	"nana/internal/shared/role"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -206,7 +208,7 @@ func rangeRooms(prefix string, start, end int, roomType domain.RoomType, floor i
 
 func seedAdminUser(db *gorm.DB) error {
 	var count int64
-	if err := db.Model(&model.User{}).Where("username = ?", "admin").Count(&count).Error; err != nil {
+	if err := db.Model(&auth.User{}).Where("username = ?", "admin").Count(&count).Error; err != nil {
 		return fmt.Errorf("check admin user: %w", err)
 	}
 	if count > 0 {
@@ -218,11 +220,11 @@ func seedAdminUser(db *gorm.DB) error {
 		return fmt.Errorf("hash admin password: %w", err)
 	}
 
-	user := model.User{
+	user := auth.User{
 		Username:           "admin",
 		PasswordHash:       string(hash),
 		FullName:           "ผู้ดูแลระบบ",
-		Role:               string(domain.UserRoleAdmin),
+		Role:               role.Admin,
 		MustChangePassword: true,
 	}
 

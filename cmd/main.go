@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"nana/internal/apartment"
-	"nana/internal/domain"
+	"nana/internal/auth"
 	"nana/internal/handler"
 	"nana/internal/repository"
 	"nana/internal/seed"
@@ -19,6 +19,7 @@ import (
 	"nana/internal/shared/database"
 	"nana/internal/shared/logger"
 	"nana/internal/shared/middleware"
+	"nana/internal/shared/role"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/recover"
@@ -66,9 +67,9 @@ func main() {
 	txManager := database.NewTxManager(db)
 
 	// Wire dependencies — Auth
-	userRepo := repository.NewUserRepository(db)
-	authService := service.NewAuthService(userRepo, cfg)
-	authHandler := handler.NewAuthHandler(authService, cfg)
+	userRepo := auth.NewUserRepository(db)
+	authService := auth.NewAuthService(userRepo, cfg)
+	authHandler := auth.NewAuthHandler(authService, cfg)
 	authService.StartTokenCleanup(ctx, 1*time.Hour)
 
 	// Wire dependencies — Apartments
@@ -133,7 +134,7 @@ func main() {
 	authHandler.RegisterProtectedRoutes(protected.Group("/auth"))
 
 	// Admin-only routes
-	admin := protected.Group("", middleware.RequireRole(domain.UserRoleAdmin))
+	admin := protected.Group("", middleware.RequireRole(role.Admin))
 	aptHandler.RegisterRoutes(admin.Group("/apartments"))
 	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
 	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))

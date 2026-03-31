@@ -1,4 +1,4 @@
-package service
+package auth
 
 import "nana/internal/shared/respond"
 

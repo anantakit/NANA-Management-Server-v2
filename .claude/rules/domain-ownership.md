@@ -92,9 +92,35 @@ Workflow owner เท่านั้น — feature ที่ trigger การ�
 
 | Case | Share? |
 |------|--------|
-| Validation read (เช็คว่ามีจริง) | ✅ `*domain.X` ได้ |
+| Validation read (เช็คว่ามีจริง) | ✅ `*domain.X` ได้ (ถ้ามี domain layer) |
 | Display read (แสดงบาง field) | ❌ projection / flat DTO |
 | Business logic ที่ต้องรู้ internal state | ❌ ผ่าน port method |
+
+### Q6: ควรแยก domain + model ไหม?
+
+| Feature มี... | แยก? |
+|----------------|------|
+| Business logic ใน struct (lifecycle, calculation, state transition) | ✅ YES — domain pure + model GORM |
+| แค่ CRUD, struct เป็น data container | ❌ NO — GORM model = domain |
+
+```
+✅ contract, room → แยก domain + model (มี behavior)
+❌ auth, apartment, tenant → GORM model ตรง (ไม่มี behavior)
+```
+
+### Q7: ควรอยู่ domain/ หรือ shared/?
+
+| เป็น... | ที่อยู่ |
+|---------|--------|
+| Business entity ที่มี logic (contract, room) | `domain/` |
+| Cross-cutting concern (role, pagination, errors) | `shared/` |
+| Data container ที่ไม่มี logic | feature package โดยตรง |
+
+```
+❌ domain/ ≠ shared dumping ground
+✅ domain/ = business entities ที่มี behavior
+✅ shared/ = infrastructure + cross-cutting concerns
+```
 
 ## 4. Summary: 10 Principles
 
