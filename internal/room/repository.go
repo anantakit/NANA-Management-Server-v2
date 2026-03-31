@@ -19,6 +19,7 @@ type RoomRepository interface {
 	Create(ctx context.Context, room *Room) error
 	Update(ctx context.Context, room *Room) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status RoomStatus) error
+	MarkOccupied(ctx context.Context, id uuid.UUID) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ExistsByNumber(ctx context.Context, apartmentID uuid.UUID, number string) (bool, error)
 	ExistsByNumberExcluding(ctx context.Context, apartmentID uuid.UUID, number string, excludeID uuid.UUID) (bool, error)
@@ -211,6 +212,10 @@ func (r *roomRepository) Update(ctx context.Context, room *Room) error {
 
 func (r *roomRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status RoomStatus) error {
 	return database.DB(ctx, r.db).Model(&Room{}).Where("id = ?", id).Update("status", string(status)).Error
+}
+
+func (r *roomRepository) MarkOccupied(ctx context.Context, id uuid.UUID) error {
+	return r.UpdateStatus(ctx, id, RoomStatusOccupied)
 }
 
 func (r *roomRepository) Delete(ctx context.Context, id uuid.UUID) error {

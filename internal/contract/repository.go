@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"nana/internal/domain"
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
 
@@ -15,9 +14,9 @@ import (
 type ContractRepository interface {
 	FindAll(ctx context.Context, params ContractListParams) ([]ContractWithRelations, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*ContractWithRelations, error)
-	FindByIDSimple(ctx context.Context, id uuid.UUID) (*domain.Contract, error)
-	Create(ctx context.Context, contract *domain.Contract) error
-	Update(ctx context.Context, contract *domain.Contract) error
+	FindByIDSimple(ctx context.Context, id uuid.UUID) (*Contract, error)
+	Create(ctx context.Context, contract *Contract) error
+	Update(ctx context.Context, contract *Contract) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	HasActiveByRoomID(ctx context.Context, roomID uuid.UUID) (bool, error)
 	HasActiveByTenantID(ctx context.Context, tenantID uuid.UUID) (bool, error)
@@ -87,7 +86,7 @@ func (r *contractRepository) FindAll(ctx context.Context, params ContractListPar
 	result := make([]ContractWithRelations, len(rows))
 	for i, row := range rows {
 		result[i] = ContractWithRelations{
-			Contract:      row.Contract.ToDomain(),
+			Contract:      row.Contract,
 			TenantName:    row.TenantName,
 			TenantPhone:   row.TenantPhone,
 			RoomNumber:    row.RoomNumber,
@@ -130,7 +129,7 @@ func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*Contr
 	}
 
 	result := ContractWithRelations{
-		Contract:      row.Contract.ToDomain(),
+		Contract:      row.Contract,
 		TenantName:    row.TenantName,
 		TenantPhone:   row.TenantPhone,
 		RoomNumber:    row.RoomNumber,
@@ -140,31 +139,20 @@ func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*Contr
 	return &result, nil
 }
 
-func (r *contractRepository) FindByIDSimple(ctx context.Context, id uuid.UUID) (*domain.Contract, error) {
+func (r *contractRepository) FindByIDSimple(ctx context.Context, id uuid.UUID) (*Contract, error) {
 	var m Contract
 	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
 		return nil, err
 	}
-	d := m.ToDomain()
-	return &d, nil
+	return &m, nil
 }
 
-func (r *contractRepository) Create(ctx context.Context, contract *domain.Contract) error {
-	m := ContractFromDomain(*contract)
-	if err := database.DB(ctx, r.db).Create(&m).Error; err != nil {
-		return err
-	}
-	*contract = m.ToDomain()
-	return nil
+func (r *contractRepository) Create(ctx context.Context, contract *Contract) error {
+	return database.DB(ctx, r.db).Create(contract).Error
 }
 
-func (r *contractRepository) Update(ctx context.Context, contract *domain.Contract) error {
-	m := ContractFromDomain(*contract)
-	if err := database.DB(ctx, r.db).Model(&m).Select("*").Omit("deleted_at").Updates(&m).Error; err != nil {
-		return err
-	}
-	*contract = m.ToDomain()
-	return nil
+func (r *contractRepository) Update(ctx context.Context, contract *Contract) error {
+	return database.DB(ctx, r.db).Model(contract).Select("*").Omit("deleted_at").Updates(contract).Error
 }
 
 func (r *contractRepository) Delete(ctx context.Context, id uuid.UUID) error {
@@ -175,7 +163,7 @@ func (r *contractRepository) HasActiveByRoomID(ctx context.Context, roomID uuid.
 	var count int64
 	err := database.DB(ctx, r.db).
 		Model(&Contract{}).
-		Where("room_id = ? AND status = ?", roomID, domain.ContractStatusActive).
+		Where("room_id = ? AND status = ?", roomID, ContractStatusActive).
 		Count(&count).Error
 	return count > 0, err
 }
@@ -184,7 +172,7 @@ func (r *contractRepository) HasActiveByTenantID(ctx context.Context, tenantID u
 	var count int64
 	err := database.DB(ctx, r.db).
 		Model(&Contract{}).
-		Where("tenant_id = ? AND status = ?", tenantID, domain.ContractStatusActive).
+		Where("tenant_id = ? AND status = ?", tenantID, ContractStatusActive).
 		Count(&count).Error
 	return count > 0, err
 }

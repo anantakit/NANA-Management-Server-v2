@@ -104,8 +104,8 @@ func (s *roomService) Update(ctx context.Context, id uuid.UUID, req UpdateRoomRe
 	if req.Status != nil {
 		// Only allow VACANT and MAINTENANCE from manual update
 		// OCCUPIED is set automatically by contract creation
-		if room.Status == RoomStatusOccupied {
-			return nil, respond.ErrBadRequest.WithMessage("ไม่สามารถเปลี่ยนสถานะห้องที่มีผู้เช่าอยู่")
+		if err := room.ValidateStatusChange(); err != nil {
+			return nil, respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		room.Status = RoomStatus(*req.Status)
 	}
@@ -123,8 +123,8 @@ func (s *roomService) Delete(ctx context.Context, id uuid.UUID) error {
 		return respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
 
-	if room.Status == RoomStatusOccupied {
-		return respond.ErrBadRequest.WithMessage("ไม่สามารถลบห้องที่มีผู้เช่าอยู่")
+	if err := room.CanBeDeleted(); err != nil {
+		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
 
 	return s.repo.Delete(ctx, id)

@@ -18,50 +18,41 @@ paths:
 
 ทุก feature อยู่ใน package ของตัวเอง (`internal/auth/`, `internal/apartment/`, etc.)
 
-### เมื่อไหร่ต้องแยก domain + model (2-layer)?
+### Domain Ownership — ทุก feature เป็นเจ้าของ domain ของตัวเอง
 
-| Feature มี... | แยก? | ตัวอย่าง |
-|----------------|------|----------|
-| Business logic (lifecycle, state transition, calculation) | ✅ YES | contract |
-| แค่ CRUD, ไม่มี logic ใน struct | ❌ NO — GORM model = domain | auth, apartment, tenant, room |
+**GORM model = domain ทุก feature** — ไม่แยก domain + model
 
 ```
-✅ แยกเมื่อ: มี domain methods (ValidateForCreate, CalculateDeposit, CanTransition)
-❌ ไม่แยกเมื่อ: struct เป็นแค่ data container ไม่มี behavior
+✅ ทุก feature: GORM model อยู่ใน feature/model.go + domain methods อยู่ที่เดียวกัน
+❌ ห้ามแยก domain struct ออกจาก GORM model (ไม่ต้อง ToDomain/FromDomain)
+❌ ห้ามใช้ domain/ package สำหรับ feature ที่ own ตัวเองได้
 ```
 
-### Feature ที่ไม่แยก domain (simple CRUD)
 ```go
-// auth/model.go — GORM struct IS the domain
-type User struct {
-    ID   uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
-    Role role.Role  `gorm:"type:varchar(20)" json:"role"`
+// contract/model.go — GORM struct + types + domain methods
+type ContractStatus string
+const ContractStatusActive ContractStatus = "ACTIVE"
+
+type Contract struct {
+    ID     uuid.UUID      `gorm:"type:uuid;primaryKey" json:"id"`
+    Status ContractStatus `gorm:"type:varchar(20)" json:"status"`
     ...
 }
 
-// auth/repository.go — return *User ตรง ๆ
-func (r *repo) FindByID(ctx, id) (*User, error)
+// domain methods — pure, no DB, no side effects
+func (c *Contract) IsActive() bool { return c.Status == ContractStatusActive }
+func (c *Contract) ValidateForUpdate() error { ... }
 
-// auth/service.go — ใช้ *User ตรง ๆ ไม่ต้อง mapping
-```
+// contract/repository.go — return *Contract ตรง ๆ
+func (r *repo) FindByID(ctx, id) (*Contract, error)
 
-### Feature ที่แยก domain (มี business logic)
-```go
-// domain/contract.go — pure struct + methods, NO gorm
-type Contract struct { ... }
-func (c *Contract) ValidateForCreate() error { ... }
-func (c *Contract) CalculateDeposit() int64 { ... }
-
-// contract/model.go — GORM struct + ToDomain/FromDomain
-// contract/repository.go — return *domain.Contract
 // contract/service.go — thin orchestration, เรียก domain methods
 ```
 
-### Domain (internal/domain/) — เฉพาะ business entities ที่มี logic
-- Pure Go structs + methods, JSON tags only
-- NO gorm imports, NO BeforeCreate, NO gorm tags
-- Typed string constants for statuses/types (RoomStatus, ContractStatus)
-- **ห้ามเป็น shared dumping ground** — ถ้า struct ไม่มี logic ให้อยู่ใน feature
+### Domain (internal/domain/) — เฉพาะ future entities ที่ยังไม่มี feature
+- ใช้เก็บ struct สำหรับ feature ที่ยังไม่สร้าง (bill, meter_reading, payment)
+- เมื่อสร้าง feature แล้ว → ย้ายเข้า feature package ทันที
+- **ห้ามเป็น shared dumping ground**
 
 ### Shared (internal/shared/) — cross-cutting concerns
 - `shared/role/` — role.Admin, role.Manager (type-safe enum, ไม่มี logic)
@@ -72,15 +63,16 @@ func (c *Contract) CalculateDeposit() int64 { ... }
 ```
 ❌ domain/ ≠ shared dumping ground
 ❌ shared/ ≠ catch-all (group เป็น subdomain)
-✅ domain/ = business entities ที่มี behavior
+✅ domain/ = future entities เท่านั้น (ย้ายเข้า feature เมื่อสร้าง)
 ✅ shared/ = infrastructure + cross-cutting concerns
 ```
 
-### Model (feature package)
-- GORM structs with `gorm:"..."` tags
+### Model (feature package — feature/model.go)
+- GORM structs with `gorm:"..."` + `json:"..."` tags
 - `BeforeCreate` hook: UUID generation
-- ถ้าแยก domain: มี `ToDomain()` method + `XxxFromDomain()` function
-- ถ้าไม่แยก domain: ไม่ต้อง conversion — GORM struct ใช้ตรง
+- Typed string constants (statuses, types) อยู่ใน model.go เดียวกัน
+- Domain methods (pure, no DB) อยู่ใน model.go เดียวกัน
+- ไม่มี ToDomain/FromDomain — GORM struct ใช้ตรง
 - UUID PK: `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
 - Soft deletes: `gorm.DeletedAt`
 
@@ -108,8 +100,7 @@ func (c *Contract) CalculateDeposit() int64 { ... }
 - Interface first, then private struct
 - All methods: `context.Context` as first param
 - `database.DB(ctx, r.db)` on every query (NOT `r.db.WithContext(ctx)`) — enables tx participation
-- ถ้าแยก domain: return domain models via `model.ToDomain()`
-- ถ้าไม่แยก: return GORM model ตรง ๆ
+- Return GORM model ตรง ๆ (ไม่มี ToDomain/FromDomain)
 - Max 400 lines, max 12 methods, CRUD only — single entity per repo
 - **Update pattern**: use `db.Model(&m).Select("*").Omit("deleted_at").Updates(&m)` — NOT `Save()` which skips zero values (false, 0, "")
 

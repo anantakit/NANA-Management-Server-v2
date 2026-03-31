@@ -1,7 +1,6 @@
 package contract
 
 import (
-	"nana/internal/domain"
 	"nana/internal/shared/money"
 	"nana/internal/shared/pagination"
 
@@ -59,7 +58,7 @@ type ContractResponse struct {
 
 // ContractWithRelations holds joined data from contracts + tenants + rooms + apartments.
 type ContractWithRelations struct {
-	domain.Contract
+	Contract
 	TenantName    string
 	TenantPhone   string
 	RoomNumber    string

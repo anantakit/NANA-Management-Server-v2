@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"nana/internal/domain"
-	"nana/internal/room"
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
@@ -25,7 +23,7 @@ type ContractService interface {
 type contractService struct {
 	repo    ContractRepository
 	rooms   RoomQuerier
-	roomCmd RoomStatusUpdater
+	roomCmd RoomCommander
 	tenants TenantQuerier
 	tx      database.TxManager
 }
@@ -33,7 +31,7 @@ type contractService struct {
 func NewContractService(
 	repo ContractRepository,
 	rooms RoomQuerier,
-	roomCmd RoomStatusUpdater,
+	roomCmd RoomCommander,
 	tenants TenantQuerier,
 	tx database.TxManager,
 ) ContractService {
@@ -78,7 +76,7 @@ func (s *contractService) Create(ctx context.Context, req CreateContractRequest)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
 	}
-	if r.Status != room.RoomStatusVacant {
+	if !r.IsVacant() {
 		return nil, respond.ErrBadRequest.WithMessage("ห้องนี้ไม่ว่าง ไม่สามารถสร้างสัญญาได้")
 	}
 
@@ -96,17 +94,17 @@ func (s *contractService) Create(ctx context.Context, req CreateContractRequest)
 		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง")
 	}
 
-	contract := domain.Contract{
+	contract := Contract{
 		TenantID:               tenantID,
 		RoomID:                 roomID,
 		StartDate:              startDate,
 		MinMonths:              req.MinMonths,
 		MonthlyRent:            money.ToSatang(req.MonthlyRent),
 		DepositAmount:          money.ToSatang(req.DepositAmount),
-		DepositStatus:          domain.DepositStatusCollected,
+		DepositStatus:          DepositStatusCollected,
 		ElectricityRatePerUnit: money.ToSatang(req.ElectricityRatePerUnit),
 		WaterRatePerUnit:       money.ToSatang(req.WaterRatePerUnit),
-		Status:                 domain.ContractStatusActive,
+		Status:                 ContractStatusActive,
 	}
 
 	// Transaction: create contract + update room status
@@ -114,7 +112,7 @@ func (s *contractService) Create(ctx context.Context, req CreateContractRequest)
 		if err := s.repo.Create(txCtx, &contract); err != nil {
 			return err
 		}
-		return s.roomCmd.UpdateStatus(txCtx, roomID, room.RoomStatusOccupied)
+		return s.roomCmd.MarkOccupied(txCtx, roomID)
 	}); err != nil {
 		return nil, fmt.Errorf("create contract: %w", err)
 	}
@@ -131,8 +129,8 @@ func (s *contractService) Update(ctx context.Context, id uuid.UUID, req UpdateCo
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
 	}
-	if contract.Status != domain.ContractStatusActive {
-		return nil, respond.ErrBadRequest.WithMessage("ไม่สามารถแก้ไขสัญญาที่ไม่ใช่สถานะใช้งาน")
+	if err := contract.ValidateForUpdate(); err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
 
 	if req.MinMonths != nil {
@@ -178,8 +176,8 @@ func (s *contractService) Delete(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
 	}
-	if contract.Status == domain.ContractStatusActive {
-		return respond.ErrBadRequest.WithMessage("ไม่สามารถลบสัญญาที่ยังใช้งานอยู่")
+	if err := contract.CanBeDeleted(); err != nil {
+		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
 
 	return s.repo.Delete(ctx, id)

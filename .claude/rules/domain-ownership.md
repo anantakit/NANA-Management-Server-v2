@@ -92,33 +92,32 @@ Workflow owner เท่านั้น — feature ที่ trigger การ�
 
 | Case | Share? |
 |------|--------|
-| Validation read (เช็คว่ามีจริง) | ✅ `*domain.X` ได้ (ถ้ามี domain layer) |
+| Validation read (เช็คว่ามีจริง) | ✅ `*feature.Model` ได้ (ผ่าน port) |
 | Display read (แสดงบาง field) | ❌ projection / flat DTO |
 | Business logic ที่ต้องรู้ internal state | ❌ ผ่าน port method |
 
 ### Q6: ควรแยก domain + model ไหม?
 
-| Feature มี... | แยก? |
-|----------------|------|
-| Business logic ใน struct (lifecycle, calculation, state transition) | ✅ YES — domain pure + model GORM |
-| แค่ CRUD, struct เป็น data container | ❌ NO — GORM model = domain |
+**ไม่ — ทุก feature ใช้ GORM model = domain**
 
 ```
-✅ contract → แยก domain + model (มี behavior)
-❌ auth, apartment, tenant, room → GORM model ตรง (ไม่มี behavior)
+✅ ทุก feature (auth, apartment, tenant, room, contract) → GORM model ตรง + domain methods
+❌ ห้ามแยก domain struct ออกจาก GORM model (ไม่ต้อง ToDomain/FromDomain)
 ```
 
-### Q7: ควรอยู่ domain/ หรือ shared/?
+Domain methods (pure, no DB, no side effects) ใส่ที่ model.go ของ feature ตรง ๆ
+
+### Q7: ควรอยู่ feature/ หรือ shared/?
 
 | เป็น... | ที่อยู่ |
 |---------|--------|
-| Business entity ที่มี logic (contract) | `domain/` |
+| Business entity + types + methods | feature package (`contract/model.go`) |
 | Cross-cutting concern (role, pagination, errors) | `shared/` |
-| Data container ที่ไม่มี logic | feature package โดยตรง |
+| Future entity ที่ยังไม่มี feature | `domain/` (ย้ายเข้า feature เมื่อสร้าง) |
 
 ```
-❌ domain/ ≠ shared dumping ground
-✅ domain/ = business entities ที่มี behavior
+❌ domain/ ≠ shared dumping ground — เก็บเฉพาะ future entities
+✅ feature/model.go = single source of truth (struct + types + methods)
 ✅ shared/ = infrastructure + cross-cutting concerns
 ```
 
@@ -126,7 +125,7 @@ Workflow owner เท่านั้น — feature ที่ trigger การ�
 
 ```
 1.  Write = owner only
-2.  Cross-write = command port only
+2.  Cross-write = command port only (semantic method: MarkOccupied, MarkPaid)
 3.  Query & Command ports ต้องแยก
 4.  Query port = pure read, no side effects, no tx
 5.  Query = owner of endpoint
@@ -135,4 +134,5 @@ Workflow owner เท่านั้น — feature ที่ trigger การ�
 8.  Port = minimal + capability-based + consumer-defined
 9.  DTO ≠ shared, Domain ≠ shared by default
 10. Side effects → event (future), emit after commit only
+11. ห้าม feature อื่นใช้ constant ของ domain โดยตรง — ใช้ domain method แทนเสมอ
 ```

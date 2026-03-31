@@ -15,10 +15,10 @@ type RoomQuerier interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*room.Room, error)
 }
 
-// RoomStatusUpdater updates room status as a cross-feature command.
-// Implemented by room.RoomRepository; injected via main.go.
-type RoomStatusUpdater interface {
-	UpdateStatus(ctx context.Context, id uuid.UUID, status room.RoomStatus) error
+// RoomCommander updates room state as a cross-feature command.
+// Semantic methods — consumer ไม่ต้องรู้ค่า constant ของ room.
+type RoomCommander interface {
+	MarkOccupied(ctx context.Context, id uuid.UUID) error
 }
 
 // TenantQuerier looks up tenants for validation.

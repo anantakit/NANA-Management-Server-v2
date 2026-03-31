@@ -142,7 +142,9 @@ LEFT JOIN contracts ON ... AND contracts.status = 'ACTIVE'
 ✅ Port อยู่ฝั่ง consumer (A/port.go)
 ✅ Minimal — เฉพาะ method ที่ใช้จริง
 ✅ Query/Command แยกเสมอ
+✅ Command port ใช้ semantic method (MarkOccupied, MarkPaid) — ไม่ส่ง constant ข้าม feature
 ❌ ห้าม expose full repository
+❌ ห้าม feature อื่นใช้ constant ของ domain โดยตรง — ใช้ domain method แทนเสมอ
 ```
 
 ### Query Port Purity
