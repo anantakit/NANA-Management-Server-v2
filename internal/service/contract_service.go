@@ -11,6 +11,7 @@ import (
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
+	"nana/internal/tenant"
 
 	"github.com/google/uuid"
 )
@@ -26,14 +27,14 @@ type ContractService interface {
 type contractService struct {
 	contractRepo repository.ContractRepository
 	roomRepo     repository.RoomRepository
-	tenantRepo   repository.TenantRepository
+	tenantRepo   tenant.TenantRepository
 	tx           database.TxManager
 }
 
 func NewContractService(
 	contractRepo repository.ContractRepository,
 	roomRepo repository.RoomRepository,
-	tenantRepo repository.TenantRepository,
+	tenantRepo tenant.TenantRepository,
 	tx database.TxManager,
 ) ContractService {
 	return &contractService{

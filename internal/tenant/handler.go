@@ -1,8 +1,7 @@
-package handler
+package tenant
 
 import (
 	"nana/internal/dto"
-	"nana/internal/service"
 	"nana/internal/shared/bind"
 	"nana/internal/shared/respond"
 
@@ -11,10 +10,10 @@ import (
 )
 
 type TenantHandler struct {
-	svc service.TenantService
+	svc TenantService
 }
 
-func NewTenantHandler(svc service.TenantService) *TenantHandler {
+func NewTenantHandler(svc TenantService) *TenantHandler {
 	return &TenantHandler{svc: svc}
 }
 
@@ -39,7 +38,7 @@ func (h *TenantHandler) List(c fiber.Ctx) error {
 	}
 
 	meta := dto.ComputeMeta(params.Page, params.Limit, total)
-	return respond.SuccessWithMeta(c, "สำเร็จ", dto.ToTenantResponseList(tenants), meta)
+	return respond.SuccessWithMeta(c, "สำเร็จ", ToTenantResponseList(tenants), meta)
 }
 
 func (h *TenantHandler) GetByID(c fiber.Ctx) error {
@@ -52,11 +51,11 @@ func (h *TenantHandler) GetByID(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "สำเร็จ", dto.ToTenantResponse(*tenant))
+	return respond.Success(c, "สำเร็จ", ToTenantResponse(*tenant))
 }
 
 func (h *TenantHandler) Create(c fiber.Ctx) error {
-	var req dto.CreateTenantRequest
+	var req CreateTenantRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -65,7 +64,7 @@ func (h *TenantHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างผู้เช่าสำเร็จ", dto.ToTenantResponse(*tenant))
+	return respond.Created(c, "สร้างผู้เช่าสำเร็จ", ToTenantResponse(*tenant))
 }
 
 func (h *TenantHandler) Update(c fiber.Ctx) error {
@@ -74,7 +73,7 @@ func (h *TenantHandler) Update(c fiber.Ctx) error {
 		return respond.ValidationError(c, []string{"รหัสผู้เช่าไม่ถูกต้อง"})
 	}
 
-	var req dto.UpdateTenantRequest
+	var req UpdateTenantRequest
 	if err := bind.Body(c, &req); err != nil {
 		return err
 	}
@@ -83,7 +82,7 @@ func (h *TenantHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตผู้เช่าสำเร็จ", dto.ToTenantResponse(*tenant))
+	return respond.Success(c, "อัปเดตผู้เช่าสำเร็จ", ToTenantResponse(*tenant))
 }
 
 func (h *TenantHandler) Delete(c fiber.Ctx) error {

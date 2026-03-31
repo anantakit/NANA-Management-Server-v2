@@ -1,39 +1,37 @@
-package service
+package tenant
 
 import (
 	"context"
 	"fmt"
 
-	"nana/internal/domain"
 	"nana/internal/dto"
-	"nana/internal/repository"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
 
 type TenantService interface {
-	List(ctx context.Context, params dto.PaginationParams) ([]domain.Tenant, int64, error)
-	GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
-	Create(ctx context.Context, req dto.CreateTenantRequest) (*domain.Tenant, error)
-	Update(ctx context.Context, id uuid.UUID, req dto.UpdateTenantRequest) (*domain.Tenant, error)
+	List(ctx context.Context, params dto.PaginationParams) ([]Tenant, int64, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*Tenant, error)
+	Create(ctx context.Context, req CreateTenantRequest) (*Tenant, error)
+	Update(ctx context.Context, id uuid.UUID, req UpdateTenantRequest) (*Tenant, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 type tenantService struct {
-	repo         repository.TenantRepository
-	contractRepo repository.ContractRepository
+	repo            TenantRepository
+	contractChecker ContractChecker
 }
 
-func NewTenantService(repo repository.TenantRepository, contractRepo repository.ContractRepository) TenantService {
-	return &tenantService{repo: repo, contractRepo: contractRepo}
+func NewTenantService(repo TenantRepository, contractChecker ContractChecker) TenantService {
+	return &tenantService{repo: repo, contractChecker: contractChecker}
 }
 
-func (s *tenantService) List(ctx context.Context, params dto.PaginationParams) ([]domain.Tenant, int64, error) {
+func (s *tenantService) List(ctx context.Context, params dto.PaginationParams) ([]Tenant, int64, error) {
 	return s.repo.FindAll(ctx, params)
 }
 
-func (s *tenantService) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+func (s *tenantService) GetByID(ctx context.Context, id uuid.UUID) (*Tenant, error) {
 	tenant, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
@@ -41,7 +39,7 @@ func (s *tenantService) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tena
 	return tenant, nil
 }
 
-func (s *tenantService) Create(ctx context.Context, req dto.CreateTenantRequest) (*domain.Tenant, error) {
+func (s *tenantService) Create(ctx context.Context, req CreateTenantRequest) (*Tenant, error) {
 	exists, err := s.repo.ExistsByIDCard(ctx, req.IDCard)
 	if err != nil {
 		return nil, fmt.Errorf("check id card: %w", err)
@@ -50,7 +48,7 @@ func (s *tenantService) Create(ctx context.Context, req dto.CreateTenantRequest)
 		return nil, respond.ErrConflict.WithMessage("เลขบัตรประชาชนซ้ำ")
 	}
 
-	tenant := domain.Tenant{
+	tenant := Tenant{
 		FullName:         req.FullName,
 		IDCard:           req.IDCard,
 		Phone:            req.Phone,
@@ -65,7 +63,7 @@ func (s *tenantService) Create(ctx context.Context, req dto.CreateTenantRequest)
 	return &tenant, nil
 }
 
-func (s *tenantService) Update(ctx context.Context, id uuid.UUID, req dto.UpdateTenantRequest) (*domain.Tenant, error) {
+func (s *tenantService) Update(ctx context.Context, id uuid.UUID, req UpdateTenantRequest) (*Tenant, error) {
 	tenant, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
@@ -106,7 +104,7 @@ func (s *tenantService) Delete(ctx context.Context, id uuid.UUID) error {
 		return respond.ErrNotFound.WithMessage("ไม่พบผู้เช่า")
 	}
 
-	hasActive, err := s.contractRepo.HasActiveByTenantID(ctx, id)
+	hasActive, err := s.contractChecker.HasActiveByTenantID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("check active contract: %w", err)
 	}

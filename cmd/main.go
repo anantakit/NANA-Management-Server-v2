@@ -15,6 +15,7 @@ import (
 	"nana/internal/repository"
 	"nana/internal/seed"
 	"nana/internal/service"
+	"nana/internal/tenant"
 	"nana/internal/shared/config"
 	"nana/internal/shared/database"
 	"nana/internal/shared/logger"
@@ -88,15 +89,15 @@ func main() {
 	roomHandler := handler.NewRoomHandler(roomService)
 
 	// Wire dependencies — Tenants
-	tenantRepo := repository.NewTenantRepository(db)
+	tenantRepo := tenant.NewTenantRepository(db)
 
 	// Wire dependencies — Contracts
 	contractRepo := repository.NewContractRepository(db)
 	contractService := service.NewContractService(contractRepo, roomRepo, tenantRepo, txManager)
 	contractHandler := handler.NewContractHandler(contractService)
 
-	tenantService := service.NewTenantService(tenantRepo, contractRepo)
-	tenantHandler := handler.NewTenantHandler(tenantService)
+	tenantService := tenant.NewTenantService(tenantRepo, contractRepo)
+	tenantHandler := tenant.NewTenantHandler(tenantService)
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{

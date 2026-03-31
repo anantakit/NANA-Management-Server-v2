@@ -9,6 +9,7 @@ import (
 	"nana/internal/domain"
 	"nana/internal/model"
 	"nana/internal/shared/role"
+	"nana/internal/tenant"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -254,21 +255,21 @@ func seedDevTenants(db *gorm.DB) error {
 
 	for _, t := range tenants {
 		var count int64
-		if err := db.Model(&model.Tenant{}).Where("id_card = ?", t.IDCard).Count(&count).Error; err != nil {
+		if err := db.Model(&tenant.Tenant{}).Where("id_card = ?", t.IDCard).Count(&count).Error; err != nil {
 			return fmt.Errorf("check tenant %s: %w", t.FullName, err)
 		}
 		if count > 0 {
 			continue
 		}
 
-		tenant := model.Tenant{
+		tn := tenant.Tenant{
 			FullName:         t.FullName,
 			IDCard:           t.IDCard,
 			Phone:            t.Phone,
 			Address:          t.Address,
 			EmergencyContact: t.EmergencyContact,
 		}
-		if err := db.Create(&tenant).Error; err != nil {
+		if err := db.Create(&tn).Error; err != nil {
 			return fmt.Errorf("create tenant %s: %w", t.FullName, err)
 		}
 	}

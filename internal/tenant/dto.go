@@ -1,6 +1,4 @@
-package dto
-
-import "nana/internal/domain"
+package tenant
 
 type CreateTenantRequest struct {
 	FullName         string `json:"full_name" validate:"required,min=1,max=255"`
@@ -29,7 +27,7 @@ type TenantResponse struct {
 	UpdatedAt        string `json:"updated_at"`
 }
 
-func ToTenantResponse(t domain.Tenant) TenantResponse {
+func ToTenantResponse(t Tenant) TenantResponse {
 	return TenantResponse{
 		ID:               t.ID.String(),
 		FullName:         t.FullName,
@@ -42,7 +40,7 @@ func ToTenantResponse(t domain.Tenant) TenantResponse {
 	}
 }
 
-func ToTenantResponseList(tenants []domain.Tenant) []TenantResponse {
+func ToTenantResponseList(tenants []Tenant) []TenantResponse {
 	result := make([]TenantResponse, len(tenants))
 	for i, t := range tenants {
 		result[i] = ToTenantResponse(t)

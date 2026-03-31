@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"nana/internal/domain"
+	"nana/internal/tenant"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -27,7 +28,7 @@ type Contract struct {
 	UpdatedAt              time.Time      `gorm:"not null;default:now()"`
 	DeletedAt              gorm.DeletedAt `gorm:"index"`
 
-	Tenant *Tenant `gorm:"foreignKey:TenantID"`
+	Tenant *tenant.Tenant `gorm:"foreignKey:TenantID"`
 	Room   *Room   `gorm:"foreignKey:RoomID"`
 }
 
