@@ -38,7 +38,7 @@ Scan backend code for OWASP top 10 vulnerabilities and project-specific security
 
 ### Error Handling
 - [ ] No sensitive data in error messages
-- [ ] `apperror.MapToHTTP()` used (not switch/if in handlers)
+- [ ] `respond.MapToHTTP()` used (not switch/if in handlers)
 - [ ] Internal errors logged with slog, not returned to client
 
 ### Headers & CORS

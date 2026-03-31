@@ -1,9 +1,9 @@
 ---
 description: TxManager pattern for cross-repo transactions in service layer
 paths:
-  - "internal/service/**"
-  - "internal/repository/**"
-  - "internal/database/**"
+  - "internal/*/service.go"
+  - "internal/*/repository.go"
+  - "internal/shared/database/**"
   - "cmd/**"
 ---
 
@@ -16,9 +16,9 @@ Service เป็น **orchestrator**, repo ไม่รู้เรื่อง
 ## Architecture
 
 ```
-database/tx.go     → TxManager interface + DB() helper
-service            → inject TxManager, orchestrate cross-repo operations
-repository         → ใช้ database.DB(ctx, r.db) ทุก method (tx-aware อัตโนมัติ)
+shared/database/tx.go  → TxManager interface + DB() helper
+feature/service.go     → inject TxManager, orchestrate cross-repo operations
+feature/repository.go  → ใช้ database.DB(ctx, r.db) ทุก method (tx-aware อัตโนมัติ)
 ```
 
 ## Key Components
@@ -81,8 +81,8 @@ func (s *contractService) Create(ctx context.Context, ...) error {
 
 ### DON'T
 - ❌ ใช้ `r.db.WithContext(ctx)` ตรงๆ ใน repo (จะไม่ participate ใน tx)
-- ❌ Repo เรียก entity อื่น (`model.Room{}` ใน contract repo)
-- ❌ Service import `gorm.io/gorm` หรือ `model` package
+- ❌ Repo เรียก entity อื่น (e.g. `room.Room{}` ใน contract repo)
+- ❌ Service import `gorm.io/gorm`
 - ❌ สร้าง `XxxAsPrimary()` หรือ `CreateAndUpdateYyy()` ที่ repo level
 - ❌ ทำ heavy work (HTTP calls, file I/O) ภายใน `RunInTx`
 
@@ -93,8 +93,8 @@ func (s *contractService) Create(ctx context.Context, ...) error {
 txManager := database.NewTxManager(db)
 
 // Service ที่ต้อง cross-repo tx
-contractSvc := service.NewContractService(contractRepo, roomRepo, tenantRepo, txManager)
-bankAcctSvc := service.NewBankAccountService(bankRepo, aptRepo, txManager)
+contractSvc := contract.NewContractService(contractRepo, roomRepo, roomRepo, tenantRepo, txManager)
+bankAcctSvc := apartment.NewBankAccountService(bankRepo, aptRepo, txManager)
 
 // Service ที่ไม่ต้อง — ไม่ต้อง inject
 roomSvc := room.NewRoomService(roomRepo, aptRepo)

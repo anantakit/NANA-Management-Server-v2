@@ -2,7 +2,8 @@
 description: Quick reference for all API routes, methods, auth requirements
 paths:
   - "cmd/**"
-  - "internal/handler/**"
+  - "internal/*/handler.go"
+  - "internal/*/bank_account_handler.go"
 ---
 
 # API Routes

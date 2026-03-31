@@ -2,8 +2,8 @@
 description: Domain model details, entity relationships, billing logic, status constants
 paths:
   - "internal/domain/**"
-  - "internal/service/**"
-  - "internal/dto/**"
+  - "internal/*/model.go"
+  - "internal/*/dto.go"
 ---
 
 # Domain Model Reference
@@ -17,7 +17,7 @@ Apartment 1──N Room 1──N Contract N──1 Tenant
                     Bill 1──N Payment
 ```
 
-## Status Constants (typed strings in domain/)
+## Status Constants (typed strings in feature/model.go)
 - RoomType: `air`, `fan`
 - RoomStatus: `VACANT`, `OCCUPIED`, `MAINTENANCE`
 - ContractStatus: `ACTIVE`, `ENDED`, `TERMINATED`

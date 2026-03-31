@@ -8,7 +8,7 @@ paths:
 
 ## Fiber v3 API (CRITICAL — not v2)
 - `fiber.Ctx` is an interface (not `*fiber.Ctx`)
-- Use `BindBody(c, &req)` / `BindQuery(c, &req)` from handler/bind.go
+- Use `bind.Body(c, &req)` / `bind.Query(c, &req)` from `shared/bind/`
 - Route params: `c.Params("id")`
 - Response: `c.Status(code).JSON(data)`
 - Middleware: `func(fiber.Ctx) error`
@@ -56,7 +56,7 @@ func (r *repo) FindByID(ctx, id) (*Contract, error)
 
 ### Shared (internal/shared/) — cross-cutting concerns
 - `shared/role/` — role.Admin, role.Manager (type-safe enum, ไม่มี logic)
-- `shared/respond/` — AppError, Success, Error, BindBody
+- `shared/respond/` — AppError, Success, Error; `shared/bind/` — Body, Query
 - `shared/config/`, `shared/database/`, `shared/middleware/`, `shared/money/`, `shared/logger/`
 - **ใช้เมื่อ:** ข้าม feature + ไม่ใช่ business domain
 
@@ -81,7 +81,7 @@ func (r *repo) FindByID(ctx, id) (*Contract, error)
 - Validation: `validate:"required,min=1,max=255"`
 - JSON: `snake_case` tags
 - Money: `float64` in DTO (satang → baht conversion)
-- Pagination: embed `PaginationParams`, use `SafeSort()`
+- Pagination: embed `pagination.PaginationParams`, use `pagination.SafeSort()`
 
 ### Handler (feature package)
 - `bind.Body(c, &req)` → service call → `respond.Success()`/`respond.Error()`
@@ -124,16 +124,16 @@ var _ RoomService = (*roomService)(nil)
 const ContractStatusActive ContractStatus = "ACTIVE"
 
 // Errors — exported with Err prefix
-var ErrBookingNotFound = apperror.ErrNotFound.WithMessage("ไม่พบการจอง")
+var ErrBookingNotFound = respond.ErrNotFound.WithMessage("ไม่พบการจอง")
 
 // Packages — lowercase, no underscore, no common/util/lib
 ```
 
 ## Error Handling
 
-- `apperror.AppError`: Code, HTTPStatus, Message
-- `apperror.MapToHTTP(c, err)`: single centralized function
-- Predefined: ErrNotFound, ErrConflict, ErrBadRequest, ErrUnauthorized, ErrForbidden
+- `respond.AppError`: Code, HTTPStatus, Message (in `shared/respond/apperror.go`)
+- `respond.MapToHTTP(c, err)`: single centralized function
+- Predefined: `respond.ErrNotFound`, `ErrConflict`, `ErrBadRequest`, `ErrUnauthorized`, `ErrForbidden`
 - Feature errors: define in `feature/errors.go` using `respond.New()`
 - **Wrap with `%w`** (preserves `errors.Is/As` chain) — NOT `%v`
 - **Handle once** — wrap OR log, never both
@@ -159,7 +159,7 @@ db.Preload("RoomStays").Find(&bookings)
 // ❌ Unsafe sort — SQL injection
 db.Order(fmt.Sprintf("%s %s", userInput, userOrder))
 // ✅ SafeSort
-db.Order(dto.SafeSort(col, order, allowedCols, "created_at"))
+db.Order(pagination.SafeSort(col, order, allowedCols, "created_at"))
 
 // ❌ BETWEEN for date ranges (inclusive both ends)
 db.Where("date BETWEEN ? AND ?", start, end)

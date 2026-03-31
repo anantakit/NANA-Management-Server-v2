@@ -16,15 +16,15 @@ A's Service (workflow owner) → Port Interface (in A/port.go) → B's Repositor
 ```
 
 ```go
-// contract/port.go
-type RoomStatusUpdater interface {
-    UpdateStatus(ctx context.Context, id uuid.UUID, status room.RoomStatus) error
+// contract/port.go — semantic method, consumer ไม่ต้องรู้ค่า constant ของ room
+type RoomCommander interface {
+    MarkOccupied(ctx context.Context, id uuid.UUID) error
 }
 
 // contract/service.go
 s.tx.RunInTx(ctx, func(txCtx) error {
-    s.repo.Create(txCtx, &contract)               // own table ✅
-    s.rooms.UpdateStatus(txCtx, roomID, OCCUPIED)  // via port ✅
+    s.repo.Create(txCtx, &contract)              // own table ✅
+    s.roomCmd.MarkOccupied(txCtx, roomID)        // via port ✅
 })
 ```
 
@@ -67,9 +67,9 @@ s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 ### 3a. Validation Read — เช็คก่อน create/update
 
 ```go
-// contract/port.go — return domain model ได้
+// contract/port.go — return feature model ได้
 type TenantQuerier interface {
-    FindByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+    FindByID(ctx context.Context, id uuid.UUID) (*tenant.Tenant, error)
 }
 ```
 
@@ -108,7 +108,7 @@ LEFT JOIN contracts ON ... AND contracts.status = 'ACTIVE'
 
 | | ระดับ 1: domain constant | ระดับ 2: port |
 |---|---|---|
-| วิธี | `contracts.status = ?`, `domain.ContractStatusActive` | contract expose `FindActiveByRoomIDs()` port |
+| วิธี | `contracts.status = ?`, `contract.ContractStatusActive` | contract expose `FindActiveByRoomIDs()` port |
 | Coupling | low (traceable) | zero |
 | Performance | 1 query (JOIN) | 2 queries + merge |
 | **ใช้เมื่อ** | **status = simple enum (ตอนนี้)** | definition ซับซ้อนขึ้น |
@@ -120,7 +120,7 @@ LEFT JOIN contracts ON ... AND contracts.status = 'ACTIVE'
 | Use Case | Port Name |
 |----------|-----------|
 | check contract exists | `ContractChecker` |
-| update room status | `RoomStatusUpdater` |
+| update room status | `RoomCommander` |
 | query tenant data | `TenantQuerier` |
 | query apartment data | `ApartmentQuerier` |
 | batch query contracts | `ActiveContractProvider` |
@@ -158,12 +158,12 @@ LEFT JOIN contracts ON ... AND contracts.status = 'ACTIVE'
 
 ## 5. Sharing Rules
 
-### Domain Model
+### Feature Model
 
 ```
 ❌ ห้าม share ข้าม feature by default
-✅ domain/ package เป็น shared ได้ (data definition)
-✅ Validation read → *domain.X ได้
+✅ Port return *feature.Model ได้ (e.g. *tenant.Tenant ผ่าน TenantQuerier)
+✅ Validation read → *feature.Model ได้
 ✅ Display read → lightweight projection / flat DTO
 ```
 
