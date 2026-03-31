@@ -1,0 +1,105 @@
+package meterreading
+
+import (
+	"nana/internal/shared/pagination"
+)
+
+// --- Request DTOs ---
+
+type CreateRequest struct {
+	RoomID             string `json:"room_id" validate:"required,uuid"`
+	ReadingDate        string `json:"reading_date" validate:"required"`
+	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent       int    `json:"water_current" validate:"min=0"`
+	IsMeterReplaced    bool   `json:"is_meter_replaced"`
+}
+
+type BatchCreateItem struct {
+	RoomID             string `json:"room_id" validate:"required,uuid"`
+	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent       int    `json:"water_current" validate:"min=0"`
+	IsMeterReplaced    bool   `json:"is_meter_replaced"`
+}
+
+type BatchCreateRequest struct {
+	ReadingDate string            `json:"reading_date" validate:"required"`
+	Items       []BatchCreateItem `json:"items" validate:"required,min=1,dive"`
+}
+
+type UpdateRequest struct {
+	ElectricityCurrent *int  `json:"electricity_current" validate:"omitempty,min=0"`
+	WaterCurrent       *int  `json:"water_current" validate:"omitempty,min=0"`
+	IsMeterReplaced    *bool `json:"is_meter_replaced"`
+}
+
+// --- Query params ---
+
+type ListParams struct {
+	pagination.PaginationParams
+	Month string `query:"month" validate:"omitempty"` // format: YYYY-MM
+}
+
+// --- Response DTOs ---
+
+type MeterReadingResponse struct {
+	ID                  string `json:"id"`
+	RoomID              string `json:"room_id"`
+	RoomNumber          string `json:"room_number"`
+	Floor               int    `json:"floor"`
+	ReadingDate         string `json:"reading_date"`
+	ElectricityPrevious int    `json:"electricity_previous"`
+	ElectricityCurrent  int    `json:"electricity_current"`
+	ElectricityUsed     int    `json:"electricity_used"`
+	WaterPrevious       int    `json:"water_previous"`
+	WaterCurrent        int    `json:"water_current"`
+	WaterUsed           int    `json:"water_used"`
+	TenantName          string `json:"tenant_name"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+}
+
+// MeterReadingWithRoom holds joined data from meter_readings + rooms + tenants.
+type MeterReadingWithRoom struct {
+	MeterReading
+	RoomNumber string
+	Floor      int
+	TenantName string
+}
+
+func ToMeterReadingResponse(m MeterReadingWithRoom) MeterReadingResponse {
+	return MeterReadingResponse{
+		ID:                  m.ID.String(),
+		RoomID:              m.RoomID.String(),
+		RoomNumber:          m.RoomNumber,
+		Floor:               m.Floor,
+		ReadingDate:         m.ReadingDate.Format("2006-01-02"),
+		ElectricityPrevious: m.ElectricityPrevious,
+		ElectricityCurrent:  m.ElectricityCurrent,
+		ElectricityUsed:     m.ElectricityUsed(),
+		WaterPrevious:       m.WaterPrevious,
+		WaterCurrent:        m.WaterCurrent,
+		WaterUsed:           m.WaterUsed(),
+		TenantName:          m.TenantName,
+		CreatedAt:           m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:           m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+func ToMeterReadingResponseList(readings []MeterReadingWithRoom) []MeterReadingResponse {
+	result := make([]MeterReadingResponse, len(readings))
+	for i, r := range readings {
+		result[i] = ToMeterReadingResponse(r)
+	}
+	return result
+}
+
+type BatchCreateResponse struct {
+	Created int                    `json:"created"`
+	Items   []MeterReadingResponse `json:"items"`
+}
+
+type LatestReadingResponse struct {
+	ElectricityCurrent int    `json:"electricity_current"`
+	WaterCurrent       int    `json:"water_current"`
+	ReadingDate        string `json:"reading_date"`
+}

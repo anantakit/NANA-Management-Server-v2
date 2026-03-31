@@ -1,0 +1,151 @@
+package meterreading
+
+import (
+	"nana/internal/shared/bind"
+	"nana/internal/shared/pagination"
+	"nana/internal/shared/respond"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+)
+
+type MeterReadingHandler struct {
+	svc MeterReadingService
+}
+
+func NewMeterReadingHandler(svc MeterReadingService) *MeterReadingHandler {
+	return &MeterReadingHandler{svc: svc}
+}
+
+func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
+	router.Get("/", h.List)
+	router.Post("/", h.Create)
+	router.Post("/batch", h.BatchCreate)
+	router.Get("/rooms/:roomId/latest", h.GetLatest)
+	router.Get("/:readingId", h.GetByID)
+	router.Put("/:readingId", h.Update)
+}
+
+func (h *MeterReadingHandler) List(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	var params ListParams
+	if err := bind.Query(c, &params); err != nil {
+		return err
+	}
+	params.Normalize()
+
+	readings, total, err := h.svc.List(c.Context(), apartmentID, params)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
+	return respond.SuccessWithMeta(c, "สำเร็จ", ToMeterReadingResponseList(readings), meta)
+}
+
+func (h *MeterReadingHandler) GetByID(c fiber.Ctx) error {
+	_, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+	readingID, err := uuid.Parse(c.Params("readingId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสข้อมูลมิเตอร์ไม่ถูกต้อง"})
+	}
+
+	reading, err := h.svc.GetByID(c.Context(), readingID)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Success(c, "สำเร็จ", ToMeterReadingResponse(*reading))
+}
+
+func (h *MeterReadingHandler) Create(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	var req CreateRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	reading, err := h.svc.Create(c.Context(), apartmentID, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Created(c, "บันทึกมิเตอร์สำเร็จ", ToMeterReadingResponse(*reading))
+}
+
+func (h *MeterReadingHandler) BatchCreate(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	var req BatchCreateRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	readings, err := h.svc.BatchCreate(c.Context(), apartmentID, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	resp := BatchCreateResponse{
+		Created: len(readings),
+		Items:   ToMeterReadingResponseList(readings),
+	}
+	return respond.Created(c, "บันทึกมิเตอร์สำเร็จ", resp)
+}
+
+func (h *MeterReadingHandler) Update(c fiber.Ctx) error {
+	_, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+	readingID, err := uuid.Parse(c.Params("readingId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสข้อมูลมิเตอร์ไม่ถูกต้อง"})
+	}
+
+	var req UpdateRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	reading, err := h.svc.Update(c.Context(), readingID, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Success(c, "อัปเดตมิเตอร์สำเร็จ", ToMeterReadingResponse(*reading))
+}
+
+func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {
+	_, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+	roomID, err := uuid.Parse(c.Params("roomId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
+	}
+
+	reading, err := h.svc.GetLatestByRoomID(c.Context(), roomID)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	resp := LatestReadingResponse{
+		ElectricityCurrent: reading.ElectricityCurrent,
+		WaterCurrent:       reading.WaterCurrent,
+		ReadingDate:        reading.ReadingDate.Format("2006-01-02"),
+	}
+	return respond.Success(c, "สำเร็จ", resp)
+}
