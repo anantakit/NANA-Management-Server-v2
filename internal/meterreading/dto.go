@@ -7,18 +7,20 @@ import (
 // --- Request DTOs ---
 
 type CreateRequest struct {
-	RoomID             string `json:"room_id" validate:"required,uuid"`
-	ReadingDate        string `json:"reading_date" validate:"required"`
-	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
-	WaterCurrent       int    `json:"water_current" validate:"min=0"`
-	IsMeterReplaced    bool   `json:"is_meter_replaced"`
+	RoomID                     string `json:"room_id" validate:"required,uuid"`
+	ReadingDate                string `json:"reading_date" validate:"required"`
+	ElectricityCurrent         int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent               int    `json:"water_current" validate:"min=0"`
+	IsWaterMeterReplaced       bool   `json:"is_water_meter_replaced"`
+	IsElectricityMeterReplaced bool   `json:"is_electricity_meter_replaced"`
 }
 
 type BatchCreateItem struct {
-	RoomID             string `json:"room_id" validate:"required,uuid"`
-	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
-	WaterCurrent       int    `json:"water_current" validate:"min=0"`
-	IsMeterReplaced    bool   `json:"is_meter_replaced"`
+	RoomID                     string `json:"room_id" validate:"required,uuid"`
+	ElectricityCurrent         int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent               int    `json:"water_current" validate:"min=0"`
+	IsWaterMeterReplaced       bool   `json:"is_water_meter_replaced"`
+	IsElectricityMeterReplaced bool   `json:"is_electricity_meter_replaced"`
 }
 
 type BatchCreateRequest struct {
@@ -27,9 +29,33 @@ type BatchCreateRequest struct {
 }
 
 type UpdateRequest struct {
-	ElectricityCurrent *int  `json:"electricity_current" validate:"omitempty,min=0"`
-	WaterCurrent       *int  `json:"water_current" validate:"omitempty,min=0"`
-	IsMeterReplaced    *bool `json:"is_meter_replaced"`
+	ElectricityCurrent         *int  `json:"electricity_current" validate:"omitempty,min=0"`
+	WaterCurrent               *int  `json:"water_current" validate:"omitempty,min=0"`
+	IsWaterMeterReplaced       *bool `json:"is_water_meter_replaced"`
+	IsElectricityMeterReplaced *bool `json:"is_electricity_meter_replaced"`
+}
+
+// --- Helpers ---
+
+func (r CreateRequest) ReplacedFlags() MeterReplacedFlags {
+	return MeterReplacedFlags{
+		Water:       r.IsWaterMeterReplaced,
+		Electricity: r.IsElectricityMeterReplaced,
+	}
+}
+
+func (r BatchCreateItem) ReplacedFlags() MeterReplacedFlags {
+	return MeterReplacedFlags{
+		Water:       r.IsWaterMeterReplaced,
+		Electricity: r.IsElectricityMeterReplaced,
+	}
+}
+
+func (r UpdateRequest) ReplacedFlags() MeterReplacedFlags {
+	return MeterReplacedFlags{
+		Water:       r.IsWaterMeterReplaced != nil && *r.IsWaterMeterReplaced,
+		Electricity: r.IsElectricityMeterReplaced != nil && *r.IsElectricityMeterReplaced,
+	}
 }
 
 // --- Query params ---

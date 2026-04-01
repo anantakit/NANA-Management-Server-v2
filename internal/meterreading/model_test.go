@@ -50,7 +50,7 @@ func TestWaterUsed(t *testing.T) {
 // --- NewReading ---
 
 func TestNewReading_FirstReading_NilLatest(t *testing.T) {
-	m, err := NewReading(roomA, date("2026-03-01"), 100, 50, nil, false)
+	m, err := NewReading(roomA, date("2026-03-01"), 100, 50, nil, MeterReplacedFlags{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestNewReading_FirstReading_NilLatest(t *testing.T) {
 
 func TestNewReading_AutoPopulatePrevious(t *testing.T) {
 	latest := makeLatest(roomA, "2026-02-01", 200, 100)
-	m, err := NewReading(roomA, date("2026-03-01"), 350, 130, latest, false)
+	m, err := NewReading(roomA, date("2026-03-01"), 350, 130, latest, MeterReplacedFlags{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNewReading_AutoPopulatePrevious(t *testing.T) {
 
 func TestNewReading_MeterReplaced_PreviousZero(t *testing.T) {
 	latest := makeLatest(roomA, "2026-02-01", 9999, 5000)
-	m, err := NewReading(roomA, date("2026-03-01"), 50, 10, latest, true)
+	m, err := NewReading(roomA, date("2026-03-01"), 50, 10, latest, MeterReplacedFlags{Water: true, Electricity: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,9 +87,37 @@ func TestNewReading_MeterReplaced_PreviousZero(t *testing.T) {
 	}
 }
 
+func TestNewReading_WaterReplacedOnly(t *testing.T) {
+	latest := makeLatest(roomA, "2026-02-01", 200, 5000)
+	m, err := NewReading(roomA, date("2026-03-01"), 250, 10, latest, MeterReplacedFlags{Water: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.WaterPrevious != 0 {
+		t.Errorf("WaterPrevious = %d, want 0", m.WaterPrevious)
+	}
+	if m.ElectricityPrevious != 200 {
+		t.Errorf("ElectricityPrevious = %d, want 200 (unchanged)", m.ElectricityPrevious)
+	}
+}
+
+func TestNewReading_ElecReplacedOnly(t *testing.T) {
+	latest := makeLatest(roomA, "2026-02-01", 9999, 100)
+	m, err := NewReading(roomA, date("2026-03-01"), 50, 120, latest, MeterReplacedFlags{Electricity: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 0 {
+		t.Errorf("ElectricityPrevious = %d, want 0", m.ElectricityPrevious)
+	}
+	if m.WaterPrevious != 100 {
+		t.Errorf("WaterPrevious = %d, want 100 (unchanged)", m.WaterPrevious)
+	}
+}
+
 func TestNewReading_SameDate_OK(t *testing.T) {
 	latest := makeLatest(roomA, "2026-03-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 120, latest, false)
+	_, err := NewReading(roomA, date("2026-03-01"), 250, 120, latest, MeterReplacedFlags{})
 	if err != nil {
 		t.Fatalf("same date should be allowed, got: %v", err)
 	}
@@ -97,7 +125,7 @@ func TestNewReading_SameDate_OK(t *testing.T) {
 
 func TestNewReading_ElecCurrentBelowPrevious(t *testing.T) {
 	latest := makeLatest(roomA, "2026-02-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 150, 120, latest, false)
+	_, err := NewReading(roomA, date("2026-03-01"), 150, 120, latest, MeterReplacedFlags{})
 	if err != ErrElectricityCurrentBelowPrevious {
 		t.Errorf("expected ErrElectricityCurrentBelowPrevious, got %v", err)
 	}
@@ -105,7 +133,7 @@ func TestNewReading_ElecCurrentBelowPrevious(t *testing.T) {
 
 func TestNewReading_WaterCurrentBelowPrevious(t *testing.T) {
 	latest := makeLatest(roomA, "2026-02-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 80, latest, false)
+	_, err := NewReading(roomA, date("2026-03-01"), 250, 80, latest, MeterReplacedFlags{})
 	if err != ErrWaterCurrentBelowPrevious {
 		t.Errorf("expected ErrWaterCurrentBelowPrevious, got %v", err)
 	}
@@ -113,7 +141,7 @@ func TestNewReading_WaterCurrentBelowPrevious(t *testing.T) {
 
 func TestNewReading_LatestRoomMismatch(t *testing.T) {
 	latest := makeLatest(roomB, "2026-02-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 120, latest, false)
+	_, err := NewReading(roomA, date("2026-03-01"), 250, 120, latest, MeterReplacedFlags{})
 	if err != ErrLatestRoomMismatch {
 		t.Errorf("expected ErrLatestRoomMismatch, got %v", err)
 	}
@@ -121,7 +149,7 @@ func TestNewReading_LatestRoomMismatch(t *testing.T) {
 
 func TestNewReading_DateBeforeLatest(t *testing.T) {
 	latest := makeLatest(roomA, "2026-03-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-02-15"), 250, 120, latest, false)
+	_, err := NewReading(roomA, date("2026-02-15"), 250, 120, latest, MeterReplacedFlags{})
 	if err != ErrReadingDateBeforeLatest {
 		t.Errorf("expected ErrReadingDateBeforeLatest, got %v", err)
 	}
@@ -146,9 +174,11 @@ func TestCanUpdate_NotLatest(t *testing.T) {
 
 // --- ApplyUpdate ---
 
+var noReplace = MeterReplacedFlags{}
+
 func TestApplyUpdate_PartialElectricity(t *testing.T) {
 	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 50, WaterCurrent: 80}
-	err := m.ApplyUpdate(intPtr(250), nil)
+	err := m.ApplyUpdate(intPtr(250), nil, noReplace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +192,7 @@ func TestApplyUpdate_PartialElectricity(t *testing.T) {
 
 func TestApplyUpdate_PartialWater(t *testing.T) {
 	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 50, WaterCurrent: 80}
-	err := m.ApplyUpdate(nil, intPtr(90))
+	err := m.ApplyUpdate(nil, intPtr(90), noReplace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +203,7 @@ func TestApplyUpdate_PartialWater(t *testing.T) {
 
 func TestApplyUpdate_BothFields(t *testing.T) {
 	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 50, WaterCurrent: 80}
-	err := m.ApplyUpdate(intPtr(300), intPtr(100))
+	err := m.ApplyUpdate(intPtr(300), intPtr(100), noReplace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,7 +214,7 @@ func TestApplyUpdate_BothFields(t *testing.T) {
 
 func TestApplyUpdate_NilBoth_NoChange(t *testing.T) {
 	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 50, WaterCurrent: 80}
-	err := m.ApplyUpdate(nil, nil)
+	err := m.ApplyUpdate(nil, nil, noReplace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +225,7 @@ func TestApplyUpdate_NilBoth_NoChange(t *testing.T) {
 
 func TestApplyUpdate_ElecBelowPrevious(t *testing.T) {
 	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 50, WaterCurrent: 80}
-	err := m.ApplyUpdate(intPtr(50), nil)
+	err := m.ApplyUpdate(intPtr(50), nil, noReplace)
 	if err != ErrElectricityCurrentBelowPrevious {
 		t.Errorf("expected ErrElectricityCurrentBelowPrevious, got %v", err)
 	}
@@ -203,8 +233,44 @@ func TestApplyUpdate_ElecBelowPrevious(t *testing.T) {
 
 func TestApplyUpdate_WaterBelowPrevious(t *testing.T) {
 	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 50, WaterCurrent: 80}
-	err := m.ApplyUpdate(nil, intPtr(30))
+	err := m.ApplyUpdate(nil, intPtr(30), noReplace)
 	if err != ErrWaterCurrentBelowPrevious {
 		t.Errorf("expected ErrWaterCurrentBelowPrevious, got %v", err)
+	}
+}
+
+// --- ApplyUpdate with meter replaced ---
+
+func TestApplyUpdate_WaterReplaced_ResetsPrevious(t *testing.T) {
+	m := MeterReading{ElectricityPrevious: 100, ElectricityCurrent: 200, WaterPrevious: 5000, WaterCurrent: 5100}
+	err := m.ApplyUpdate(nil, intPtr(10), MeterReplacedFlags{Water: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.WaterPrevious != 0 {
+		t.Errorf("WaterPrevious = %d, want 0", m.WaterPrevious)
+	}
+	if m.WaterCurrent != 10 {
+		t.Errorf("WaterCurrent = %d, want 10", m.WaterCurrent)
+	}
+	if m.ElectricityPrevious != 100 {
+		t.Errorf("ElectricityPrevious should be unchanged, got %d", m.ElectricityPrevious)
+	}
+}
+
+func TestApplyUpdate_ElecReplaced_ResetsPrevious(t *testing.T) {
+	m := MeterReading{ElectricityPrevious: 9000, ElectricityCurrent: 9500, WaterPrevious: 50, WaterCurrent: 80}
+	err := m.ApplyUpdate(intPtr(20), nil, MeterReplacedFlags{Electricity: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 0 {
+		t.Errorf("ElectricityPrevious = %d, want 0", m.ElectricityPrevious)
+	}
+	if m.ElectricityCurrent != 20 {
+		t.Errorf("ElectricityCurrent = %d, want 20", m.ElectricityCurrent)
+	}
+	if m.WaterPrevious != 50 {
+		t.Errorf("WaterPrevious should be unchanged, got %d", m.WaterPrevious)
 	}
 }

@@ -67,10 +67,15 @@ func (m *MeterReading) validate() error {
 	return nil
 }
 
+// MeterReplacedFlags indicates which meters have been physically replaced.
+type MeterReplacedFlags struct {
+	Water       bool
+	Electricity bool
+}
+
 // NewReading creates a MeterReading with auto-populated previous values.
-// If isMeterReplaced is true, previous starts at 0.
-// Otherwise, previous is carried over from the latest reading.
-func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int, latest *MeterReading, isMeterReplaced bool) (*MeterReading, error) {
+// Replaced meters start at previous = 0; others carry over from latest.
+func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int, latest *MeterReading, replaced MeterReplacedFlags) (*MeterReading, error) {
 	if latest != nil {
 		// Guard: latest must belong to the same room
 		if latest.RoomID != roomID {
@@ -83,9 +88,13 @@ func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurre
 	}
 
 	var elecPrev, waterPrev int
-	if !isMeterReplaced && latest != nil {
-		elecPrev = latest.ElectricityCurrent
-		waterPrev = latest.WaterCurrent
+	if latest != nil {
+		if !replaced.Electricity {
+			elecPrev = latest.ElectricityCurrent
+		}
+		if !replaced.Water {
+			waterPrev = latest.WaterCurrent
+		}
 	}
 
 	m := &MeterReading{
@@ -111,8 +120,15 @@ func (m *MeterReading) CanUpdate(latestID uuid.UUID) error {
 }
 
 // ApplyUpdate mutates current values and re-validates.
+// Replaced meters reset their previous to 0.
 // Caller must verify CanUpdate() first.
-func (m *MeterReading) ApplyUpdate(elecCurrent, waterCurrent *int) error {
+func (m *MeterReading) ApplyUpdate(elecCurrent, waterCurrent *int, replaced MeterReplacedFlags) error {
+	if replaced.Electricity {
+		m.ElectricityPrevious = 0
+	}
+	if replaced.Water {
+		m.WaterPrevious = 0
+	}
 	if elecCurrent != nil {
 		m.ElectricityCurrent = *elecCurrent
 	}
