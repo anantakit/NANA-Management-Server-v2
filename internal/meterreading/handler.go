@@ -1,6 +1,8 @@
 package meterreading
 
 import (
+	"sort"
+
 	"nana/internal/shared/bind"
 	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
@@ -19,6 +21,7 @@ func NewMeterReadingHandler(svc MeterReadingService) *MeterReadingHandler {
 
 func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	router.Get("/", h.List)
+	router.Get("/baselines", h.GetBaselines)
 	router.Post("/", h.Create)
 	router.Post("/batch", h.BatchCreate)
 	router.Get("/rooms/:roomId/latest", h.GetLatest)
@@ -125,6 +128,33 @@ func (h *MeterReadingHandler) Update(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 	return respond.Success(c, "อัปเดตมิเตอร์สำเร็จ", ToMeterReadingResponse(*reading))
+}
+
+func (h *MeterReadingHandler) GetBaselines(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	baselines, err := h.svc.GetBaselines(c.Context(), apartmentID)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	result := make([]RoomBaselineResponse, 0, len(baselines))
+	for roomID, bl := range baselines {
+		result = append(result, RoomBaselineResponse{
+			RoomID:                   roomID.String(),
+			ElectricityBaseline:      bl.ElectricityBaseline,
+			WaterBaseline:            bl.WaterBaseline,
+			ElectricityHasEnoughData: bl.ElectricityHasEnoughData,
+			WaterHasEnoughData:       bl.WaterHasEnoughData,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].RoomID < result[j].RoomID
+	})
+	return respond.Success(c, "สำเร็จ", result)
 }
 
 func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {

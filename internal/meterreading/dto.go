@@ -68,20 +68,22 @@ type ListParams struct {
 // --- Response DTOs ---
 
 type MeterReadingResponse struct {
-	ID                  string `json:"id"`
-	RoomID              string `json:"room_id"`
-	RoomNumber          string `json:"room_number"`
-	Floor               int    `json:"floor"`
-	ReadingDate         string `json:"reading_date"`
-	ElectricityPrevious int    `json:"electricity_previous"`
-	ElectricityCurrent  int    `json:"electricity_current"`
-	ElectricityUsed     int    `json:"electricity_used"`
-	WaterPrevious       int    `json:"water_previous"`
-	WaterCurrent        int    `json:"water_current"`
-	WaterUsed           int    `json:"water_used"`
-	TenantName          string `json:"tenant_name"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
+	ID                   string `json:"id"`
+	RoomID               string `json:"room_id"`
+	RoomNumber           string `json:"room_number"`
+	Floor                int    `json:"floor"`
+	ReadingDate          string `json:"reading_date"`
+	ElectricityPrevious  int    `json:"electricity_previous"`
+	ElectricityCurrent   int    `json:"electricity_current"`
+	ElectricityUsed      int    `json:"electricity_used"`
+	WaterPrevious        int    `json:"water_previous"`
+	WaterCurrent         int    `json:"water_current"`
+	WaterUsed            int    `json:"water_used"`
+	IsAnomalyElectricity bool   `json:"is_anomaly_electricity"`
+	IsAnomalyWater       bool   `json:"is_anomaly_water"`
+	TenantName           string `json:"tenant_name"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 // MeterReadingWithRoom holds joined data from meter_readings + rooms + tenants.
@@ -94,20 +96,22 @@ type MeterReadingWithRoom struct {
 
 func ToMeterReadingResponse(m MeterReadingWithRoom) MeterReadingResponse {
 	return MeterReadingResponse{
-		ID:                  m.ID.String(),
-		RoomID:              m.RoomID.String(),
-		RoomNumber:          m.RoomNumber,
-		Floor:               m.Floor,
-		ReadingDate:         m.ReadingDate.Format("2006-01-02"),
-		ElectricityPrevious: m.ElectricityPrevious,
-		ElectricityCurrent:  m.ElectricityCurrent,
-		ElectricityUsed:     m.ElectricityUsed(),
-		WaterPrevious:       m.WaterPrevious,
-		WaterCurrent:        m.WaterCurrent,
-		WaterUsed:           m.WaterUsed(),
-		TenantName:          m.TenantName,
-		CreatedAt:           m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:           m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:                   m.ID.String(),
+		RoomID:               m.RoomID.String(),
+		RoomNumber:           m.RoomNumber,
+		Floor:                m.Floor,
+		ReadingDate:          m.ReadingDate.Format("2006-01-02"),
+		ElectricityPrevious:  m.ElectricityPrevious,
+		ElectricityCurrent:   m.ElectricityCurrent,
+		ElectricityUsed:      m.ElectricityUsed(),
+		WaterPrevious:        m.WaterPrevious,
+		WaterCurrent:         m.WaterCurrent,
+		WaterUsed:            m.WaterUsed(),
+		IsAnomalyElectricity: m.IsAnomalyElectricity,
+		IsAnomalyWater:       m.IsAnomalyWater,
+		TenantName:           m.TenantName,
+		CreatedAt:            m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:            m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -128,4 +132,12 @@ type LatestReadingResponse struct {
 	ElectricityCurrent int    `json:"electricity_current"`
 	WaterCurrent       int    `json:"water_current"`
 	ReadingDate        string `json:"reading_date"`
+}
+
+type RoomBaselineResponse struct {
+	RoomID                   string `json:"room_id"`
+	ElectricityBaseline      int    `json:"electricity_baseline"`
+	WaterBaseline            int    `json:"water_baseline"`
+	ElectricityHasEnoughData bool   `json:"electricity_has_enough_data"`
+	WaterHasEnoughData       bool   `json:"water_has_enough_data"`
 }

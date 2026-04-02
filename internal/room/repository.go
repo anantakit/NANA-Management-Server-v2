@@ -16,6 +16,7 @@ type RoomRepository interface {
 	FindByApartmentIDWithContracts(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]RoomWithContract, int64, error)
 	FindByIDWithContract(ctx context.Context, id uuid.UUID) (*RoomWithContract, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*Room, error)
+	FindRoomIDsByApartment(ctx context.Context, apartmentID uuid.UUID) ([]uuid.UUID, error)
 	Create(ctx context.Context, room *Room) error
 	Update(ctx context.Context, room *Room) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status RoomStatus) error
@@ -200,6 +201,15 @@ func (r *roomRepository) FindByID(ctx context.Context, id uuid.UUID) (*Room, err
 		return nil, err
 	}
 	return &m, nil
+}
+
+func (r *roomRepository) FindRoomIDsByApartment(ctx context.Context, apartmentID uuid.UUID) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := database.DB(ctx, r.db).
+		Model(&Room{}).
+		Where("apartment_id = ?", apartmentID).
+		Pluck("id", &ids).Error
+	return ids, err
 }
 
 func (r *roomRepository) Create(ctx context.Context, room *Room) error {

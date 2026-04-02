@@ -274,3 +274,121 @@ func TestApplyUpdate_ElecReplaced_ResetsPrevious(t *testing.T) {
 		t.Errorf("WaterPrevious should be unchanged, got %d", m.WaterPrevious)
 	}
 }
+
+// --- IsAnomalousUsage ---
+
+func TestIsAnomalousUsage_BaselineZero_BelowThreshold(t *testing.T) {
+	if IsAnomalousUsage(100, 0) {
+		t.Error("usage=100, baseline=0 should NOT be anomaly (need >100)")
+	}
+}
+
+func TestIsAnomalousUsage_BaselineZero_AboveThreshold(t *testing.T) {
+	if !IsAnomalousUsage(101, 0) {
+		t.Error("usage=101, baseline=0 should be anomaly")
+	}
+}
+
+func TestIsAnomalousUsage_Normal_NotExceeding(t *testing.T) {
+	// baseline=100, threshold = 100*3/2 = 150 → usage must be >150
+	if IsAnomalousUsage(150, 100) {
+		t.Error("usage=150, baseline=100 should NOT be anomaly (need >150)")
+	}
+}
+
+func TestIsAnomalousUsage_Normal_Exceeding(t *testing.T) {
+	if !IsAnomalousUsage(151, 100) {
+		t.Error("usage=151, baseline=100 should be anomaly")
+	}
+}
+
+func TestIsAnomalousUsage_SmallBaseline_MinThresholdGuard(t *testing.T) {
+	// baseline=10, threshold = 10*3/2 = 15 → usage=16 > 15 BUT 16 <= 50 → NOT anomaly
+	if IsAnomalousUsage(16, 10) {
+		t.Error("usage=16, baseline=10 should NOT be anomaly (below min threshold 50)")
+	}
+}
+
+func TestIsAnomalousUsage_SmallBaseline_AboveMinThreshold(t *testing.T) {
+	// baseline=10, usage=51 > 15 AND > 50 → anomaly
+	if !IsAnomalousUsage(51, 10) {
+		t.Error("usage=51, baseline=10 should be anomaly")
+	}
+}
+
+// --- ComputeAnomalies ---
+
+func TestComputeAnomalies_BothHaveData(t *testing.T) {
+	m := MeterReading{
+		ElectricityPrevious: 1000, ElectricityCurrent: 1200, // used = 200
+		WaterPrevious: 100, WaterCurrent: 300, // used = 200
+	}
+	bl := RoomBaseline{
+		ElectricityBaseline:      100, // threshold = 150, usage 200 > 150 && > 50 → anomaly
+		WaterBaseline:            100, // same
+		ElectricityHasEnoughData: true,
+		WaterHasEnoughData:       true,
+	}
+	m.ComputeAnomalies(bl)
+	if !m.IsAnomalyElectricity {
+		t.Error("expected electricity anomaly")
+	}
+	if !m.IsAnomalyWater {
+		t.Error("expected water anomaly")
+	}
+}
+
+func TestComputeAnomalies_ElecHasData_WaterDoesNot(t *testing.T) {
+	m := MeterReading{
+		ElectricityPrevious: 1000, ElectricityCurrent: 1200, // used = 200
+		WaterPrevious: 100, WaterCurrent: 300, // used = 200
+	}
+	bl := RoomBaseline{
+		ElectricityBaseline:      100,
+		WaterBaseline:            100,
+		ElectricityHasEnoughData: true,
+		WaterHasEnoughData:       false, // not enough data
+	}
+	m.ComputeAnomalies(bl)
+	if !m.IsAnomalyElectricity {
+		t.Error("expected electricity anomaly")
+	}
+	if m.IsAnomalyWater {
+		t.Error("water should NOT be flagged when not enough data")
+	}
+}
+
+func TestComputeAnomalies_NeitherHasData(t *testing.T) {
+	m := MeterReading{
+		ElectricityPrevious: 1000, ElectricityCurrent: 9999,
+		WaterPrevious: 100, WaterCurrent: 9999,
+	}
+	bl := RoomBaseline{
+		ElectricityHasEnoughData: false,
+		WaterHasEnoughData:       false,
+	}
+	m.ComputeAnomalies(bl)
+	if m.IsAnomalyElectricity || m.IsAnomalyWater {
+		t.Error("neither should be flagged when not enough data")
+	}
+}
+
+func TestComputeAnomalies_NormalUsage_NoAnomaly(t *testing.T) {
+	m := MeterReading{
+		ElectricityPrevious: 1000, ElectricityCurrent: 1100, // used = 100
+		WaterPrevious: 100, WaterCurrent: 110, // used = 10
+	}
+	bl := RoomBaseline{
+		ElectricityBaseline:      100, // threshold = 150, usage 100 < 150 → OK
+		WaterBaseline:            100, // threshold = 150, usage 10 < 150 → OK
+		ElectricityHasEnoughData: true,
+		WaterHasEnoughData:       true,
+	}
+	m.ComputeAnomalies(bl)
+	if m.IsAnomalyElectricity {
+		t.Error("electricity should not be anomaly")
+	}
+	if m.IsAnomalyWater {
+		t.Error("water should not be anomaly")
+	}
+}

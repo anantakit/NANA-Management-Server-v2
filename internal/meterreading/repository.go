@@ -16,6 +16,7 @@ type MeterReadingRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*MeterReadingWithRoom, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*MeterReading, error)
 	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
 }
@@ -144,6 +145,33 @@ func (r *meterReadingRepository) FindLatestByRoomID(ctx context.Context, roomID 
 		return nil, err
 	}
 	return &m, nil
+}
+
+func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID][]MeterReading{}, nil
+	}
+
+	var readings []MeterReading
+	subQuery := database.DB(ctx, r.db).
+		Table("meter_readings").
+		Select("*, ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY reading_date DESC, created_at DESC) AS rn").
+		Where("room_id IN ? AND deleted_at IS NULL", roomIDs)
+
+	err := database.DB(ctx, r.db).
+		Table("(?) AS sub", subQuery).
+		Where("rn <= ?", limit).
+		Order("room_id, rn").
+		Find(&readings).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[uuid.UUID][]MeterReading, len(roomIDs))
+	for _, reading := range readings {
+		result[reading.RoomID] = append(result[reading.RoomID], reading)
+	}
+	return result, nil
 }
 
 func (r *meterReadingRepository) Create(ctx context.Context, reading *MeterReading) error {

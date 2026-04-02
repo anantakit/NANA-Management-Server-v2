@@ -30,10 +30,12 @@ type MeterReading struct {
 	ElectricityCurrent  int            `gorm:"not null;default:0" json:"electricity_current"`
 	WaterPrevious       int            `gorm:"not null;default:0" json:"water_previous"`
 	WaterCurrent        int            `gorm:"not null;default:0" json:"water_current"`
-	ReadBy              *uuid.UUID     `gorm:"type:uuid" json:"read_by"`
-	CreatedAt           time.Time      `gorm:"not null;default:now()" json:"created_at"`
-	UpdatedAt           time.Time      `gorm:"not null;default:now()" json:"updated_at"`
-	DeletedAt           gorm.DeletedAt `gorm:"index" json:"-"`
+	ReadBy               *uuid.UUID     `gorm:"type:uuid" json:"read_by"`
+	IsAnomalyElectricity bool           `gorm:"not null;default:false" json:"is_anomaly_electricity"`
+	IsAnomalyWater       bool           `gorm:"not null;default:false" json:"is_anomaly_water"`
+	CreatedAt            time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt            time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
 
 	Room *room.Room `gorm:"foreignKey:RoomID" json:"-"`
 }
@@ -136,4 +138,38 @@ func (m *MeterReading) ApplyUpdate(elecCurrent, waterCurrent *int, replaced Mete
 		m.WaterCurrent = *waterCurrent
 	}
 	return m.validate()
+}
+
+// --- Anomaly detection ---
+
+// RoomBaseline holds historical usage baselines per meter type.
+// Computed from the last 3–6 persisted readings (excluding current batch).
+type RoomBaseline struct {
+	ElectricityBaseline      int
+	WaterBaseline            int
+	ElectricityHasEnoughData bool
+	WaterHasEnoughData       bool
+}
+
+// IsAnomalousUsage detects whether a usage value is anomalous given a historical baseline.
+// Single source of truth — frontend must use the equivalent formula.
+//
+//	baseline == 0 → usage > 100
+//	else         → usage > baseline*3/2 && usage > 50
+func IsAnomalousUsage(usage, baseline int) bool {
+	if baseline == 0 {
+		return usage > 100
+	}
+	return usage > baseline*3/2 && usage > 50
+}
+
+// ComputeAnomalies sets anomaly flags based on baselines.
+// Each meter is evaluated independently only if it has enough historical data.
+func (m *MeterReading) ComputeAnomalies(bl RoomBaseline) {
+	if bl.ElectricityHasEnoughData {
+		m.IsAnomalyElectricity = IsAnomalousUsage(m.ElectricityUsed(), bl.ElectricityBaseline)
+	}
+	if bl.WaterHasEnoughData {
+		m.IsAnomalyWater = IsAnomalousUsage(m.WaterUsed(), bl.WaterBaseline)
+	}
 }

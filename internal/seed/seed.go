@@ -47,6 +47,12 @@ func Run(db *gorm.DB, env string) error {
 		if err := seedDevTenants(db); err != nil {
 			return fmt.Errorf("seed dev tenants: %w", err)
 		}
+		if err := seedDevContracts(db); err != nil {
+			return fmt.Errorf("seed dev contracts: %w", err)
+		}
+		if err := seedDevMeterReadings(db); err != nil {
+			return fmt.Errorf("seed dev meter readings: %w", err)
+		}
 	}
 
 	slog.Info("seed data completed")
@@ -250,6 +256,8 @@ func seedDevTenants(db *gorm.DB) error {
 		{FullName: "วิชัย มั่งมี", IDCard: "1100100100003", Phone: "0834567890", Address: "789 ถ.รัชดา กรุงเทพฯ", EmergencyContact: "วิภา มั่งมี 0856543210"},
 		{FullName: "นภา สุขใจ", IDCard: "1100100100004", Phone: "0845678901", Address: "321 ถ.ลาดพร้าว กรุงเทพฯ", EmergencyContact: "นที สุขใจ 0845432109"},
 		{FullName: "ประเสริฐ ดีงาม", IDCard: "1100100100005", Phone: "0856789012", Address: "654 ถ.งามวงศ์วาน นนทบุรี", EmergencyContact: "ประภา ดีงาม 0834321098"},
+		{FullName: "อรุณ แสงจันทร์", IDCard: "1100100100006", Phone: "0867890123", Address: "111 ถ.พระราม 9 กรุงเทพฯ", EmergencyContact: "อรุณี แสงจันทร์ 0823210987"},
+		{FullName: "พิมพ์ใจ สุวรรณ", IDCard: "1100100100007", Phone: "0878901234", Address: "222 ถ.วิภาวดี กรุงเทพฯ", EmergencyContact: "พิมาน สุวรรณ 0812109876"},
 	}
 
 	for _, t := range tenants {

@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
@@ -20,6 +21,7 @@ type ContractRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	HasActiveByRoomID(ctx context.Context, roomID uuid.UUID) (bool, error)
 	HasActiveByTenantID(ctx context.Context, tenantID uuid.UUID) (bool, error)
+	FindActiveContractStartDatesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]time.Time, error)
 }
 
 type contractRepository struct {
@@ -175,4 +177,37 @@ func (r *contractRepository) HasActiveByTenantID(ctx context.Context, tenantID u
 		Where("tenant_id = ? AND status = ?", tenantID, ContractStatusActive).
 		Count(&count).Error
 	return count > 0, err
+}
+
+// FindActiveContractStartDatesByRoomIDs returns the start date of the current active contract per room.
+// If a room has multiple active contracts (data anomaly), picks the latest start_date.
+// Rooms without an active contract are omitted from the result.
+func (r *contractRepository) FindActiveContractStartDatesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]time.Time, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]time.Time{}, nil
+	}
+
+	type row struct {
+		RoomID    uuid.UUID `gorm:"column:room_id"`
+		StartDate time.Time `gorm:"column:start_date"`
+	}
+
+	// DISTINCT ON picks one row per room_id; ORDER BY start_date DESC = latest contract wins
+	var rows []row
+	err := database.DB(ctx, r.db).
+		Raw(`SELECT DISTINCT ON (room_id) room_id, start_date
+			 FROM contracts
+			 WHERE room_id IN ? AND status = ? AND deleted_at IS NULL
+			 ORDER BY room_id, start_date DESC`,
+			roomIDs, ContractStatusActive).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[uuid.UUID]time.Time, len(rows))
+	for _, r := range rows {
+		result[r.RoomID] = r.StartDate
+	}
+	return result, nil
 }

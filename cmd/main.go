@@ -101,7 +101,7 @@ func main() {
 
 	// Wire dependencies — Meter Readings
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, txManager)
+	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, txManager)
 	meterHandler := meterreading.NewMeterReadingHandler(meterService)
 
 	// Create Fiber app
