@@ -13,6 +13,8 @@ type CreateRequest struct {
 	WaterCurrent               int    `json:"water_current" validate:"min=0"`
 	IsWaterMeterReplaced       bool   `json:"is_water_meter_replaced"`
 	IsElectricityMeterReplaced bool   `json:"is_electricity_meter_replaced"`
+	IsWaterMeterRollover       bool   `json:"is_water_meter_rollover"`
+	IsElectricityMeterRollover bool   `json:"is_electricity_meter_rollover"`
 }
 
 type BatchCreateItem struct {
@@ -21,6 +23,8 @@ type BatchCreateItem struct {
 	WaterCurrent               int    `json:"water_current" validate:"min=0"`
 	IsWaterMeterReplaced       bool   `json:"is_water_meter_replaced"`
 	IsElectricityMeterReplaced bool   `json:"is_electricity_meter_replaced"`
+	IsWaterMeterRollover       bool   `json:"is_water_meter_rollover"`
+	IsElectricityMeterRollover bool   `json:"is_electricity_meter_rollover"`
 }
 
 type BatchCreateRequest struct {
@@ -33,6 +37,8 @@ type UpdateRequest struct {
 	WaterCurrent               *int  `json:"water_current" validate:"omitempty,min=0"`
 	IsWaterMeterReplaced       *bool `json:"is_water_meter_replaced"`
 	IsElectricityMeterReplaced *bool `json:"is_electricity_meter_replaced"`
+	IsWaterMeterRollover       *bool `json:"is_water_meter_rollover"`
+	IsElectricityMeterRollover *bool `json:"is_electricity_meter_rollover"`
 }
 
 // --- Helpers ---
@@ -44,6 +50,13 @@ func (r CreateRequest) ReplacedFlags() MeterReplacedFlags {
 	}
 }
 
+func (r CreateRequest) RolloverFlags() MeterRolloverFlags {
+	return MeterRolloverFlags{
+		Water:       r.IsWaterMeterRollover,
+		Electricity: r.IsElectricityMeterRollover,
+	}
+}
+
 func (r BatchCreateItem) ReplacedFlags() MeterReplacedFlags {
 	return MeterReplacedFlags{
 		Water:       r.IsWaterMeterReplaced,
@@ -51,10 +64,24 @@ func (r BatchCreateItem) ReplacedFlags() MeterReplacedFlags {
 	}
 }
 
+func (r BatchCreateItem) RolloverFlags() MeterRolloverFlags {
+	return MeterRolloverFlags{
+		Water:       r.IsWaterMeterRollover,
+		Electricity: r.IsElectricityMeterRollover,
+	}
+}
+
 func (r UpdateRequest) ReplacedFlags() MeterReplacedFlags {
 	return MeterReplacedFlags{
 		Water:       r.IsWaterMeterReplaced != nil && *r.IsWaterMeterReplaced,
 		Electricity: r.IsElectricityMeterReplaced != nil && *r.IsElectricityMeterReplaced,
+	}
+}
+
+func (r UpdateRequest) RolloverFlags() MeterRolloverFlags {
+	return MeterRolloverFlags{
+		Water:       r.IsWaterMeterRollover != nil && *r.IsWaterMeterRollover,
+		Electricity: r.IsElectricityMeterRollover != nil && *r.IsElectricityMeterRollover,
 	}
 }
 
@@ -79,8 +106,10 @@ type MeterReadingResponse struct {
 	WaterPrevious        int    `json:"water_previous"`
 	WaterCurrent         int    `json:"water_current"`
 	WaterUsed            int    `json:"water_used"`
-	IsAnomalyElectricity bool   `json:"is_anomaly_electricity"`
-	IsAnomalyWater       bool   `json:"is_anomaly_water"`
+	IsRolloverElectricity bool   `json:"is_rollover_electricity"`
+	IsRolloverWater       bool   `json:"is_rollover_water"`
+	IsAnomalyElectricity  bool   `json:"is_anomaly_electricity"`
+	IsAnomalyWater        bool   `json:"is_anomaly_water"`
 	TenantName           string `json:"tenant_name"`
 	CreatedAt            string `json:"created_at"`
 	UpdatedAt            string `json:"updated_at"`
@@ -107,8 +136,10 @@ func ToMeterReadingResponse(m MeterReadingWithRoom) MeterReadingResponse {
 		WaterPrevious:        m.WaterPrevious,
 		WaterCurrent:         m.WaterCurrent,
 		WaterUsed:            m.WaterUsed(),
-		IsAnomalyElectricity: m.IsAnomalyElectricity,
-		IsAnomalyWater:       m.IsAnomalyWater,
+		IsRolloverElectricity: m.IsRolloverElectricity,
+		IsRolloverWater:       m.IsRolloverWater,
+		IsAnomalyElectricity:  m.IsAnomalyElectricity,
+		IsAnomalyWater:        m.IsAnomalyWater,
 		TenantName:           m.TenantName,
 		CreatedAt:            m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:            m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),

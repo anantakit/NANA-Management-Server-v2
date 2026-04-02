@@ -80,7 +80,7 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 	latest := s.findLatestOrNil(ctx, roomID)
 
 	// Domain: create + validate
-	reading, err := NewReading(roomID, readingDate, req.ElectricityCurrent, req.WaterCurrent, latest, req.ReplacedFlags())
+	reading, err := NewReading(roomID, readingDate, req.ElectricityCurrent, req.WaterCurrent, latest, req.ReplacedFlags(), req.RolloverFlags())
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
@@ -131,7 +131,7 @@ func (s *meterReadingService) BatchCreate(ctx context.Context, apartmentID uuid.
 		for i, item := range req.Items {
 			latest := s.findLatestOrNil(txCtx, roomIDs[i])
 
-			reading, err := NewReading(roomIDs[i], readingDate, item.ElectricityCurrent, item.WaterCurrent, latest, item.ReplacedFlags())
+			reading, err := NewReading(roomIDs[i], readingDate, item.ElectricityCurrent, item.WaterCurrent, latest, item.ReplacedFlags(), item.RolloverFlags())
 			if err != nil {
 				return respond.ErrBadRequest.WithMessage(fmt.Sprintf("รายการที่ %d: %s", i+1, err.Error()))
 			}
@@ -182,7 +182,7 @@ func (s *meterReadingService) Update(ctx context.Context, id uuid.UUID, req Upda
 	}
 
 	// Domain: mutate + validate
-	if err := reading.ApplyUpdate(req.ElectricityCurrent, req.WaterCurrent, req.ReplacedFlags()); err != nil {
+	if err := reading.ApplyUpdate(req.ElectricityCurrent, req.WaterCurrent, req.ReplacedFlags(), req.RolloverFlags()); err != nil {
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
 

@@ -18,6 +18,8 @@ var (
 	ErrLatestRoomMismatch              = errors.New("ข้อมูลมิเตอร์ล่าสุดไม่ตรงกับห้อง")
 	ErrReadingDateBeforeLatest         = errors.New("วันที่จดมิเตอร์ต้องไม่ย้อนหลังกว่าครั้งล่าสุด")
 	ErrOnlyLatestCanBeUpdated          = errors.New("แก้ไขได้เฉพาะรายการจดมิเตอร์ล่าสุดเท่านั้น")
+	ErrRolloverAndReplacedConflict     = errors.New("ครบรอบมิเตอร์กับเปลี่ยนมิเตอร์ไม่สามารถเลือกพร้อมกันได้")
+	ErrRolloverWithZeroPrevious        = errors.New("ไม่สามารถระบุครบรอบมิเตอร์ได้เมื่อค่าก่อนหน้าเป็น 0")
 )
 
 // --- Model ---
@@ -31,8 +33,10 @@ type MeterReading struct {
 	WaterPrevious       int            `gorm:"not null;default:0" json:"water_previous"`
 	WaterCurrent        int            `gorm:"not null;default:0" json:"water_current"`
 	ReadBy               *uuid.UUID     `gorm:"type:uuid" json:"read_by"`
-	IsAnomalyElectricity bool           `gorm:"not null;default:false" json:"is_anomaly_electricity"`
-	IsAnomalyWater       bool           `gorm:"not null;default:false" json:"is_anomaly_water"`
+	IsRolloverElectricity bool           `gorm:"not null;default:false" json:"is_rollover_electricity"`
+	IsRolloverWater       bool           `gorm:"not null;default:false" json:"is_rollover_water"`
+	IsAnomalyElectricity  bool           `gorm:"not null;default:false" json:"is_anomaly_electricity"`
+	IsAnomalyWater        bool           `gorm:"not null;default:false" json:"is_anomaly_water"`
 	CreatedAt            time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt            time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
@@ -51,19 +55,48 @@ func (m *MeterReading) BeforeCreate(tx *gorm.DB) error {
 
 // --- Domain methods (pure, no DB, no side effects) ---
 
+// digitMax returns 10^(number of digits in n) - 1.
+// Used to infer the meter's max value from the previous reading.
+// e.g. 9970 → 9999, 500 → 999, 0 → 0.
+func digitMax(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	max := 10
+	for max <= n {
+		max *= 10
+	}
+	return max - 1
+}
+
 func (m *MeterReading) ElectricityUsed() int {
+	if m.IsRolloverElectricity {
+		return (digitMax(m.ElectricityPrevious) - m.ElectricityPrevious) + m.ElectricityCurrent
+	}
 	return m.ElectricityCurrent - m.ElectricityPrevious
 }
 
 func (m *MeterReading) WaterUsed() int {
+	if m.IsRolloverWater {
+		return (digitMax(m.WaterPrevious) - m.WaterPrevious) + m.WaterCurrent
+	}
 	return m.WaterCurrent - m.WaterPrevious
 }
 
 func (m *MeterReading) validate() error {
-	if m.ElectricityCurrent < m.ElectricityPrevious {
+	// Mutual exclusion: rollover + replaced cannot coexist per meter
+	if m.IsRolloverElectricity && m.ElectricityPrevious == 0 {
+		return ErrRolloverWithZeroPrevious
+	}
+	if m.IsRolloverWater && m.WaterPrevious == 0 {
+		return ErrRolloverWithZeroPrevious
+	}
+
+	// Normal validation: current >= previous (skip when rollover)
+	if !m.IsRolloverElectricity && m.ElectricityCurrent < m.ElectricityPrevious {
 		return ErrElectricityCurrentBelowPrevious
 	}
-	if m.WaterCurrent < m.WaterPrevious {
+	if !m.IsRolloverWater && m.WaterCurrent < m.WaterPrevious {
 		return ErrWaterCurrentBelowPrevious
 	}
 	return nil
@@ -75,9 +108,23 @@ type MeterReplacedFlags struct {
 	Electricity bool
 }
 
+// MeterRolloverFlags indicates which meters have rolled over (cycled past max).
+type MeterRolloverFlags struct {
+	Water       bool
+	Electricity bool
+}
+
 // NewReading creates a MeterReading with auto-populated previous values.
-// Replaced meters start at previous = 0; others carry over from latest.
-func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int, latest *MeterReading, replaced MeterReplacedFlags) (*MeterReading, error) {
+// Replaced meters start at previous = 0; rollover meters keep original previous.
+func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int, latest *MeterReading, replaced MeterReplacedFlags, rollover MeterRolloverFlags) (*MeterReading, error) {
+	// Mutual exclusion: rollover + replaced cannot coexist per meter
+	if rollover.Electricity && replaced.Electricity {
+		return nil, ErrRolloverAndReplacedConflict
+	}
+	if rollover.Water && replaced.Water {
+		return nil, ErrRolloverAndReplacedConflict
+	}
+
 	if latest != nil {
 		// Guard: latest must belong to the same room
 		if latest.RoomID != roomID {
@@ -100,12 +147,14 @@ func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurre
 	}
 
 	m := &MeterReading{
-		RoomID:              roomID,
-		ReadingDate:         readingDate,
-		ElectricityPrevious: elecPrev,
-		ElectricityCurrent:  elecCurrent,
-		WaterPrevious:       waterPrev,
-		WaterCurrent:        waterCurrent,
+		RoomID:                roomID,
+		ReadingDate:           readingDate,
+		ElectricityPrevious:   elecPrev,
+		ElectricityCurrent:    elecCurrent,
+		WaterPrevious:         waterPrev,
+		WaterCurrent:          waterCurrent,
+		IsRolloverElectricity: rollover.Electricity,
+		IsRolloverWater:       rollover.Water,
 	}
 	if err := m.validate(); err != nil {
 		return nil, err
@@ -122,15 +171,29 @@ func (m *MeterReading) CanUpdate(latestID uuid.UUID) error {
 }
 
 // ApplyUpdate mutates current values and re-validates.
-// Replaced meters reset their previous to 0.
+// Replaced meters reset their previous to 0; rollover meters keep original previous.
 // Caller must verify CanUpdate() first.
-func (m *MeterReading) ApplyUpdate(elecCurrent, waterCurrent *int, replaced MeterReplacedFlags) error {
+func (m *MeterReading) ApplyUpdate(elecCurrent, waterCurrent *int, replaced MeterReplacedFlags, rollover MeterRolloverFlags) error {
+	// Mutual exclusion: rollover + replaced cannot coexist per meter
+	if rollover.Electricity && replaced.Electricity {
+		return ErrRolloverAndReplacedConflict
+	}
+	if rollover.Water && replaced.Water {
+		return ErrRolloverAndReplacedConflict
+	}
+
+	// Apply replaced flags (previous → 0)
 	if replaced.Electricity {
 		m.ElectricityPrevious = 0
 	}
 	if replaced.Water {
 		m.WaterPrevious = 0
 	}
+
+	// Apply rollover flags (keep original previous)
+	m.IsRolloverElectricity = rollover.Electricity
+	m.IsRolloverWater = rollover.Water
+
 	if elecCurrent != nil {
 		m.ElectricityCurrent = *elecCurrent
 	}
@@ -165,11 +228,12 @@ func IsAnomalousUsage(usage, baseline int) bool {
 
 // ComputeAnomalies sets anomaly flags based on baselines.
 // Each meter is evaluated independently only if it has enough historical data.
+// Rollover meters are skipped — admin has already confirmed the reading.
 func (m *MeterReading) ComputeAnomalies(bl RoomBaseline) {
-	if bl.ElectricityHasEnoughData {
+	if bl.ElectricityHasEnoughData && !m.IsRolloverElectricity {
 		m.IsAnomalyElectricity = IsAnomalousUsage(m.ElectricityUsed(), bl.ElectricityBaseline)
 	}
-	if bl.WaterHasEnoughData {
+	if bl.WaterHasEnoughData && !m.IsRolloverWater {
 		m.IsAnomalyWater = IsAnomalousUsage(m.WaterUsed(), bl.WaterBaseline)
 	}
 }
