@@ -25,6 +25,7 @@ func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	router.Post("/", h.Create)
 	router.Post("/batch", h.BatchCreate)
 	router.Get("/rooms/:roomId/latest", h.GetLatest)
+	router.Get("/rooms/:roomId/history", h.GetRoomHistory)
 	router.Get("/:readingId", h.GetByID)
 	router.Put("/:readingId", h.Update)
 }
@@ -155,6 +156,31 @@ func (h *MeterReadingHandler) GetBaselines(c fiber.Ctx) error {
 		return result[i].RoomID < result[j].RoomID
 	})
 	return respond.Success(c, "สำเร็จ", result)
+}
+
+func (h *MeterReadingHandler) GetRoomHistory(c fiber.Ctx) error {
+	_, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+	roomID, err := uuid.Parse(c.Params("roomId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
+	}
+
+	var params pagination.PaginationParams
+	if err := bind.Query(c, &params); err != nil {
+		return err
+	}
+	params.Normalize()
+
+	readings, total, err := h.svc.GetRoomHistory(c.Context(), roomID, params)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
+	return respond.SuccessWithMeta(c, "สำเร็จ", ToRoomHistoryItemList(readings), meta)
 }
 
 func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {

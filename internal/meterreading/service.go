@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"nana/internal/shared/database"
+	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ type MeterReadingService interface {
 	BatchCreate(ctx context.Context, apartmentID uuid.UUID, req BatchCreateRequest) ([]MeterReadingWithRoom, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateRequest) (*MeterReadingWithRoom, error)
 	GetLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
 }
 
@@ -203,6 +205,10 @@ func (s *meterReadingService) GetLatestByRoomID(ctx context.Context, roomID uuid
 		return nil, fmt.Errorf("get latest meter reading: %w", err)
 	}
 	return reading, nil
+}
+
+func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error) {
+	return s.repo.FindByRoomID(ctx, roomID, params)
 }
 
 // --- private helpers (orchestration support, no business logic) ---

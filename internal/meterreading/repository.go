@@ -15,6 +15,7 @@ type MeterReadingRepository interface {
 	FindAll(ctx context.Context, apartmentID uuid.UUID, params ListParams) ([]MeterReadingWithRoom, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*MeterReadingWithRoom, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*MeterReading, error)
+	FindByRoomID(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error)
 	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
@@ -133,6 +134,28 @@ func (r *meterReadingRepository) FindByIDSimple(ctx context.Context, id uuid.UUI
 		return nil, err
 	}
 	return &m, nil
+}
+
+func (r *meterReadingRepository) FindByRoomID(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error) {
+	var total int64
+	query := database.DB(ctx, r.db).
+		Model(&MeterReading{}).
+		Where("room_id = ? AND deleted_at IS NULL", roomID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var readings []MeterReading
+	err := query.
+		Order("reading_date DESC, updated_at DESC").
+		Offset(params.Offset()).
+		Limit(params.Limit).
+		Find(&readings).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	return readings, total, nil
 }
 
 func (r *meterReadingRepository) FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error) {

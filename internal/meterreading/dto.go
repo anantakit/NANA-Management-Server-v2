@@ -1,6 +1,8 @@
 package meterreading
 
 import (
+	"time"
+
 	"nana/internal/shared/pagination"
 )
 
@@ -152,6 +154,60 @@ func ToMeterReadingResponseList(readings []MeterReadingWithRoom) []MeterReadingR
 		result[i] = ToMeterReadingResponse(r)
 	}
 	return result
+}
+
+// --- Room History Response ---
+
+type RoomHistoryItem struct {
+	ID                    string `json:"id"`
+	ReadingDate           string `json:"reading_date"`
+	ElectricityPrevious   int    `json:"electricity_previous"`
+	ElectricityCurrent    int    `json:"electricity_current"`
+	ElectricityUsed       int    `json:"electricity_used"`
+	WaterPrevious         int    `json:"water_previous"`
+	WaterCurrent          int    `json:"water_current"`
+	WaterUsed             int    `json:"water_used"`
+	IsRolloverElectricity bool   `json:"is_rollover_electricity"`
+	IsRolloverWater       bool   `json:"is_rollover_water"`
+	IsAnomalyElectricity  bool   `json:"is_anomaly_electricity"`
+	IsAnomalyWater        bool   `json:"is_anomaly_water"`
+	IsEdited              bool   `json:"is_edited"`
+	CreatedAt             string `json:"created_at"`
+	UpdatedAt             string `json:"updated_at"`
+}
+
+func ToRoomHistoryItem(m MeterReading) RoomHistoryItem {
+	return RoomHistoryItem{
+		ID:                    m.ID.String(),
+		ReadingDate:           m.ReadingDate.Format("2006-01-02"),
+		ElectricityPrevious:   m.ElectricityPrevious,
+		ElectricityCurrent:    m.ElectricityCurrent,
+		ElectricityUsed:       m.ElectricityUsed(),
+		WaterPrevious:         m.WaterPrevious,
+		WaterCurrent:          m.WaterCurrent,
+		WaterUsed:             m.WaterUsed(),
+		IsRolloverElectricity: m.IsRolloverElectricity,
+		IsRolloverWater:       m.IsRolloverWater,
+		IsAnomalyElectricity:  m.IsAnomalyElectricity,
+		IsAnomalyWater:        m.IsAnomalyWater,
+		IsEdited:              isEdited(m.CreatedAt, m.UpdatedAt),
+		CreatedAt:             m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:             m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+func ToRoomHistoryItemList(readings []MeterReading) []RoomHistoryItem {
+	result := make([]RoomHistoryItem, len(readings))
+	for i, r := range readings {
+		result[i] = ToRoomHistoryItem(r)
+	}
+	return result
+}
+
+// isEdited returns true if updated_at is more than 1 second after created_at.
+// 1-second tolerance avoids false positives from GORM auto-timestamp.
+func isEdited(createdAt, updatedAt time.Time) bool {
+	return updatedAt.After(createdAt.Add(1 * time.Second))
 }
 
 type BatchCreateResponse struct {

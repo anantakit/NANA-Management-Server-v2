@@ -101,8 +101,8 @@ func seedDevContracts(db *gorm.DB) error {
 // | A102 | 6 months | ~81           | ~15            | Elec 122 → OK, 123+ → anomaly         |
 // | A103 | 6 months | ~133          | ~20            | Varied — 200 → OK, 201+ → anomaly     |
 // | A104 | 2 months | (not enough)  | (not enough)   | No anomaly even with extreme values    |
-// | A105 | 6 months | ~5            | ~3             | Min guard 50 — usage 51+ → anomaly     |
-// | A106 | 6 months | 0             | 0              | Baseline=0 fallback: 101+ → anomaly    |
+// | A105 | 6 months | ~40           | ~8             | Low-usage fan room — anomaly at 61+     |
+// | A106 | 6 months | ~250          | ~30            | Heavy AC user — anomaly at 376+        |
 // | A107 | 6 months | ~100          | ~50            | Water-only anomaly (elec normal)       |
 func seedDevMeterReadings(db *gorm.DB) error {
 	var apt apartment.Apartment
@@ -159,13 +159,13 @@ func seedDevMeterReadings(db *gorm.DB) error {
 		"A104": {
 			{200, 25}, {190, 22},
 		},
-		// A105: very low usage ~5 elec, ~3 water → min guard test
+		// A105: low-usage fan room ~40 elec, ~8 water (คนอยู่ไม่ค่อยเปิดไฟ)
 		"A105": {
-			{4, 2}, {6, 3}, {5, 4}, {7, 3}, {4, 2}, {5, 3},
+			{38, 7}, {42, 9}, {40, 8}, {44, 7}, {37, 8}, {41, 9},
 		},
-		// A106: zero usage → baseline=0 → fallback rule (usage > 100)
+		// A106: heavy AC user ~250 elec, ~30 water (เปิดแอร์ตลอด)
 		"A106": {
-			{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0},
+			{240, 28}, {260, 32}, {245, 30}, {255, 29}, {248, 31}, {252, 30},
 		},
 		// A107: elec ~100, water ~50 → test water-only anomaly
 		// Water baseline=~50, threshold=75 → usage 76+ = anomaly
@@ -176,7 +176,11 @@ func seedDevMeterReadings(db *gorm.DB) error {
 	}
 
 	// Base meter values (starting point Oct 2025)
-	baseElec := 1000
+	// A107 starts electricity near 9999 to make rollover realistic
+	baseElecByRoom := map[string]int{
+		"A107": 9500,
+	}
+	defaultBaseElec := 1000
 	baseWater := 100
 
 	created := 0
@@ -186,7 +190,10 @@ func seedDevMeterReadings(db *gorm.DB) error {
 			continue
 		}
 
-		elecPrev := baseElec
+		elecPrev := baseElecByRoom[rm.Number]
+		if elecPrev == 0 {
+			elecPrev = defaultBaseElec
+		}
 		waterPrev := baseWater
 
 		for monthIdx, usage := range profile {
@@ -223,5 +230,52 @@ func seedDevMeterReadings(db *gorm.DB) error {
 	if created > 0 {
 		slog.Info("seeded dev meter readings", "count", created)
 	}
+
+	// --- History-specific test data ---
+	// Mark some readings as "edited" (bump updated_at so is_edited = true)
+	// A101 Jan 2026 + A103 Dec 2025 → simulate admin corrections
+	if err := db.Exec(`
+		UPDATE meter_readings
+		SET updated_at = created_at + INTERVAL '1 hour'
+		WHERE room_id IN (
+			SELECT id FROM rooms WHERE apartment_id = ? AND number IN ('A101', 'A103')
+		)
+		AND (
+			(reading_date = '2026-01-01' AND room_id = (SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A101'))
+			OR
+			(reading_date = '2025-12-01' AND room_id = (SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A103'))
+		)
+		AND deleted_at IS NULL
+	`, apt.ID, apt.ID, apt.ID).Error; err != nil {
+		slog.Warn("failed to mark edited readings", "error", err)
+	}
+
+	// A107 Feb 2026: electricity rollover — meter passed 9999 and wrapped
+	// Previous ~9,898 (from Jan), actual usage ~102 → meter wrapped to 0+1
+	// Set: previous=9898, current=1, is_rollover=true
+	// Also fix Mar 2026 to chain from the new current (1)
+	a107RoomID := "(SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A107')"
+	if err := db.Exec(`
+		UPDATE meter_readings
+		SET electricity_previous = 9898, electricity_current = 1,
+		    is_rollover_electricity = true
+		WHERE room_id = `+a107RoomID+`
+		AND reading_date = '2026-02-01'
+		AND deleted_at IS NULL
+	`, apt.ID).Error; err != nil {
+		slog.Warn("failed to set rollover reading", "error", err)
+	}
+	// Fix A107 Mar 2026 to chain from rolled-over value (1)
+	if err := db.Exec(`
+		UPDATE meter_readings
+		SET electricity_previous = 1, electricity_current = 101
+		WHERE room_id = `+a107RoomID+`
+		AND reading_date = '2026-03-01'
+		AND deleted_at IS NULL
+	`, apt.ID).Error; err != nil {
+		slog.Warn("failed to fix post-rollover reading", "error", err)
+	}
+
+
 	return nil
 }
