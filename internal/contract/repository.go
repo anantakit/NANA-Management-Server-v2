@@ -22,6 +22,7 @@ type ContractRepository interface {
 	HasActiveByRoomID(ctx context.Context, roomID uuid.UUID) (bool, error)
 	HasActiveByTenantID(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	FindActiveContractStartDatesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]time.Time, error)
+	FindByRoomIDWithTenants(ctx context.Context, roomID uuid.UUID) ([]ContractTenantSummary, error)
 }
 
 type contractRepository struct {
@@ -208,6 +209,43 @@ func (r *contractRepository) FindActiveContractStartDatesByRoomIDs(ctx context.C
 	result := make(map[uuid.UUID]time.Time, len(rows))
 	for _, r := range rows {
 		result[r.RoomID] = r.StartDate
+	}
+	return result, nil
+}
+
+// FindByRoomIDWithTenants returns all contracts for a room with tenant names, ordered by start_date DESC.
+// Used by meter reading history for tenant segmentation overlay.
+func (r *contractRepository) FindByRoomIDWithTenants(ctx context.Context, roomID uuid.UUID) ([]ContractTenantSummary, error) {
+	type row struct {
+		TenantName  string         `gorm:"column:tenant_name"`
+		StartDate   time.Time      `gorm:"column:start_date"`
+		MoveOutDate *time.Time     `gorm:"column:move_out_date"`
+		Status      ContractStatus `gorm:"column:status"`
+	}
+
+	var rows []row
+	err := database.DB(ctx, r.db).
+		Model(&Contract{}).
+		Select(`tenants.full_name AS tenant_name,
+			contracts.start_date,
+			contracts.move_out_date,
+			contracts.status`).
+		Joins("JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
+		Where("contracts.room_id = ? AND contracts.deleted_at IS NULL", roomID).
+		Order("contracts.start_date DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]ContractTenantSummary, len(rows))
+	for i, row := range rows {
+		result[i] = ContractTenantSummary{
+			TenantName:  row.TenantName,
+			StartDate:   row.StartDate,
+			MoveOutDate: row.MoveOutDate,
+			Status:      row.Status,
+		}
 	}
 	return result, nil
 }

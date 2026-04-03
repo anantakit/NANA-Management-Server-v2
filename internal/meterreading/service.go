@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"nana/internal/contract"
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
@@ -22,7 +23,7 @@ type MeterReadingService interface {
 	BatchCreate(ctx context.Context, apartmentID uuid.UUID, req BatchCreateRequest) ([]MeterReadingWithRoom, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateRequest) (*MeterReadingWithRoom, error)
 	GetLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
-	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error)
+	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
 }
 
@@ -207,8 +208,45 @@ func (s *meterReadingService) GetLatestByRoomID(ctx context.Context, roomID uuid
 	return reading, nil
 }
 
-func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error) {
-	return s.repo.FindByRoomID(ctx, roomID, params)
+func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error) {
+	readings, total, err := s.repo.FindByRoomID(ctx, roomID, params)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	contracts, _ := s.contracts.FindByRoomIDWithTenants(ctx, roomID)
+
+	result := make([]MeterReadingWithTenant, len(readings))
+	for i, r := range readings {
+		name, startDate, isCurrent := matchTenantForReading(r.ReadingDate, contracts)
+		result[i] = MeterReadingWithTenant{
+			MeterReading:      r,
+			TenantName:        name,
+			ContractStartDate: startDate,
+			IsCurrentTenant:   isCurrent,
+		}
+	}
+	return result, total, nil
+}
+
+// matchTenantForReading finds which contract (tenant) covers a given reading date.
+// Contracts must be sorted by start_date DESC (newest first).
+func matchTenantForReading(readingDate time.Time, contracts []contract.ContractTenantSummary) (string, time.Time, bool) {
+	for _, c := range contracts {
+		if readingDate.Before(c.StartDate) {
+			continue
+		}
+		// ACTIVE contract has no end — matches everything >= start
+		if c.Status == contract.ContractStatusActive {
+			return c.TenantName, c.StartDate, true
+		}
+		// ENDED/TERMINATED — check if reading is before move-out (or start of next contract handled by sort order)
+		if c.MoveOutDate != nil && readingDate.After(*c.MoveOutDate) {
+			continue
+		}
+		return c.TenantName, c.StartDate, false
+	}
+	return "", time.Time{}, false
 }
 
 // --- private helpers (orchestration support, no business logic) ---

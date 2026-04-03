@@ -172,11 +172,26 @@ type RoomHistoryItem struct {
 	IsAnomalyElectricity  bool   `json:"is_anomaly_electricity"`
 	IsAnomalyWater        bool   `json:"is_anomaly_water"`
 	IsEdited              bool   `json:"is_edited"`
+	TenantName            string `json:"tenant_name"`
+	ContractStartDate     string `json:"contract_start_date"`
+	IsCurrentTenant       bool   `json:"is_current_tenant"`
 	CreatedAt             string `json:"created_at"`
 	UpdatedAt             string `json:"updated_at"`
 }
 
-func ToRoomHistoryItem(m MeterReading) RoomHistoryItem {
+// MeterReadingWithTenant holds a reading enriched with tenant context from contract data.
+type MeterReadingWithTenant struct {
+	MeterReading
+	TenantName        string
+	ContractStartDate time.Time
+	IsCurrentTenant   bool
+}
+
+func ToRoomHistoryItem(m MeterReadingWithTenant) RoomHistoryItem {
+	contractStart := ""
+	if !m.ContractStartDate.IsZero() {
+		contractStart = m.ContractStartDate.Format("2006-01-02")
+	}
 	return RoomHistoryItem{
 		ID:                    m.ID.String(),
 		ReadingDate:           m.ReadingDate.Format("2006-01-02"),
@@ -191,12 +206,15 @@ func ToRoomHistoryItem(m MeterReading) RoomHistoryItem {
 		IsAnomalyElectricity:  m.IsAnomalyElectricity,
 		IsAnomalyWater:        m.IsAnomalyWater,
 		IsEdited:              isEdited(m.CreatedAt, m.UpdatedAt),
+		TenantName:            m.TenantName,
+		ContractStartDate:     contractStart,
+		IsCurrentTenant:       m.IsCurrentTenant,
 		CreatedAt:             m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:             m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
-func ToRoomHistoryItemList(readings []MeterReading) []RoomHistoryItem {
+func ToRoomHistoryItemList(readings []MeterReadingWithTenant) []RoomHistoryItem {
 	result := make([]RoomHistoryItem, len(readings))
 	for i, r := range readings {
 		result[i] = ToRoomHistoryItem(r)

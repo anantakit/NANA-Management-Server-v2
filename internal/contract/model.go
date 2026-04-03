@@ -88,3 +88,14 @@ func (c *Contract) CanBeDeleted() error {
 	}
 	return nil
 }
+
+// --- Projections ---
+
+// ContractTenantSummary is a lightweight projection for cross-feature display reads.
+// Used by meter reading history to show tenant segmentation.
+type ContractTenantSummary struct {
+	TenantName  string
+	StartDate   time.Time
+	MoveOutDate *time.Time
+	Status      ContractStatus
+}
