@@ -10,7 +10,7 @@ import (
 
 type CreateRequest struct {
 	RoomID                     string `json:"room_id" validate:"required,uuid"`
-	ReadingDate                string `json:"reading_date" validate:"required"`
+	BillingMonth               string `json:"billing_month" validate:"required"`
 	ElectricityCurrent         int    `json:"electricity_current" validate:"min=0"`
 	WaterCurrent               int    `json:"water_current" validate:"min=0"`
 	IsWaterMeterReplaced       bool   `json:"is_water_meter_replaced"`
@@ -30,8 +30,8 @@ type BatchCreateItem struct {
 }
 
 type BatchCreateRequest struct {
-	ReadingDate string            `json:"reading_date" validate:"required"`
-	Items       []BatchCreateItem `json:"items" validate:"required,min=1,dive"`
+	BillingMonth string            `json:"billing_month" validate:"required"`
+	Items        []BatchCreateItem `json:"items" validate:"required,min=1,dive"`
 }
 
 type UpdateRequest struct {
@@ -101,7 +101,7 @@ type MeterReadingResponse struct {
 	RoomID               string `json:"room_id"`
 	RoomNumber           string `json:"room_number"`
 	Floor                int    `json:"floor"`
-	ReadingDate          string `json:"reading_date"`
+	BillingMonth         string `json:"billing_month"`
 	ElectricityPrevious  int    `json:"electricity_previous"`
 	ElectricityCurrent   int    `json:"electricity_current"`
 	ElectricityUsed      int    `json:"electricity_used"`
@@ -131,7 +131,7 @@ func ToMeterReadingResponse(m MeterReadingWithRoom) MeterReadingResponse {
 		RoomID:               m.RoomID.String(),
 		RoomNumber:           m.RoomNumber,
 		Floor:                m.Floor,
-		ReadingDate:          m.ReadingDate.Format("2006-01-02"),
+		BillingMonth:          m.BillingMonth,
 		ElectricityPrevious:  m.ElectricityPrevious,
 		ElectricityCurrent:   m.ElectricityCurrent,
 		ElectricityUsed:      m.ElectricityUsed(),
@@ -160,7 +160,7 @@ func ToMeterReadingResponseList(readings []MeterReadingWithRoom) []MeterReadingR
 
 type RoomHistoryItem struct {
 	ID                    string `json:"id"`
-	ReadingDate           string `json:"reading_date"`
+	BillingMonth          string `json:"billing_month"`
 	ElectricityPrevious   int    `json:"electricity_previous"`
 	ElectricityCurrent    int    `json:"electricity_current"`
 	ElectricityUsed       int    `json:"electricity_used"`
@@ -194,7 +194,7 @@ func ToRoomHistoryItem(m MeterReadingWithTenant) RoomHistoryItem {
 	}
 	return RoomHistoryItem{
 		ID:                    m.ID.String(),
-		ReadingDate:           m.ReadingDate.Format("2006-01-02"),
+		BillingMonth:           m.BillingMonth,
 		ElectricityPrevious:   m.ElectricityPrevious,
 		ElectricityCurrent:    m.ElectricityCurrent,
 		ElectricityUsed:       m.ElectricityUsed(),
@@ -236,7 +236,7 @@ type BatchCreateResponse struct {
 type LatestReadingResponse struct {
 	ElectricityCurrent int    `json:"electricity_current"`
 	WaterCurrent       int    `json:"water_current"`
-	ReadingDate        string `json:"reading_date"`
+	BillingMonth       string `json:"billing_month"`
 }
 
 type RoomBaselineResponse struct {

@@ -204,14 +204,14 @@ func seedDevMeterReadings(db *gorm.DB) error {
 				month -= 12
 				year = 2026
 			}
-			readingDate := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+			billingMonth := fmt.Sprintf("%d-%02d", year, month)
 
 			elecCurrent := elecPrev + usage.elec
 			waterCurrent := waterPrev + usage.water
 
 			reading := meterreading.MeterReading{
 				RoomID:              rm.ID,
-				ReadingDate:         readingDate,
+				BillingMonth:        billingMonth,
 				ElectricityPrevious: elecPrev,
 				ElectricityCurrent:  elecCurrent,
 				WaterPrevious:       waterPrev,
@@ -241,9 +241,9 @@ func seedDevMeterReadings(db *gorm.DB) error {
 			SELECT id FROM rooms WHERE apartment_id = ? AND number IN ('A101', 'A103')
 		)
 		AND (
-			(reading_date = '2026-01-01' AND room_id = (SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A101'))
+			(billing_month = '2026-01' AND room_id = (SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A101'))
 			OR
-			(reading_date = '2025-12-01' AND room_id = (SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A103'))
+			(billing_month = '2025-12' AND room_id = (SELECT id FROM rooms WHERE apartment_id = ? AND number = 'A103'))
 		)
 		AND deleted_at IS NULL
 	`, apt.ID, apt.ID, apt.ID).Error; err != nil {
@@ -260,7 +260,7 @@ func seedDevMeterReadings(db *gorm.DB) error {
 		SET electricity_previous = 9898, electricity_current = 1,
 		    is_rollover_electricity = true
 		WHERE room_id = `+a107RoomID+`
-		AND reading_date = '2026-02-01'
+		AND billing_month = '2026-02'
 		AND deleted_at IS NULL
 	`, apt.ID).Error; err != nil {
 		slog.Warn("failed to set rollover reading", "error", err)
@@ -270,7 +270,7 @@ func seedDevMeterReadings(db *gorm.DB) error {
 		UPDATE meter_readings
 		SET electricity_previous = 1, electricity_current = 101
 		WHERE room_id = `+a107RoomID+`
-		AND reading_date = '2026-03-01'
+		AND billing_month = '2026-03'
 		AND deleted_at IS NULL
 	`, apt.ID).Error; err != nil {
 		slog.Warn("failed to fix post-rollover reading", "error", err)
@@ -422,12 +422,12 @@ func seedDevTenantHistory(db *gorm.DB) error {
 	}
 	elecPrev, waterPrev := 1000, 100
 	for _, m := range a108Profile {
-		readingDate := time.Date(m.year, time.Month(m.month), 1, 0, 0, 0, 0, time.UTC)
+		billingMonth := fmt.Sprintf("%d-%02d", m.year, m.month)
 		elecCurr := elecPrev + m.elec
 		waterCurr := waterPrev + m.water
 		reading := meterreading.MeterReading{
 			RoomID:              a108Room.ID,
-			ReadingDate:         readingDate,
+			BillingMonth:        billingMonth,
 			ElectricityPrevious: elecPrev,
 			ElectricityCurrent:  elecCurr,
 			WaterPrevious:       waterPrev,
@@ -444,7 +444,7 @@ func seedDevTenantHistory(db *gorm.DB) error {
 	if err := db.Exec(`
 		UPDATE meter_readings
 		SET is_anomaly_electricity = true
-		WHERE room_id = ? AND reading_date = '2026-02-01' AND deleted_at IS NULL
+		WHERE room_id = ? AND billing_month = '2026-02' AND deleted_at IS NULL
 	`, a108Room.ID).Error; err != nil {
 		slog.Warn("failed to mark A108 anomaly", "error", err)
 	}
@@ -570,12 +570,12 @@ func seedDevTenantHistory(db *gorm.DB) error {
 	}
 	elecPrev, waterPrev = 500, 50
 	for _, m := range a109Profile {
-		readingDate := time.Date(m.year, time.Month(m.month), 1, 0, 0, 0, 0, time.UTC)
+		billingMonth := fmt.Sprintf("%d-%02d", m.year, m.month)
 		elecCurr := elecPrev + m.elec
 		waterCurr := waterPrev + m.water
 		reading := meterreading.MeterReading{
 			RoomID:              a109Room.ID,
-			ReadingDate:         readingDate,
+			BillingMonth:        billingMonth,
 			ElectricityPrevious: elecPrev,
 			ElectricityCurrent:  elecCurr,
 			WaterPrevious:       waterPrev,

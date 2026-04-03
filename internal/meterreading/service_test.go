@@ -2,7 +2,6 @@ package meterreading
 
 import (
 	"testing"
-	"time"
 )
 
 // --- median ---
@@ -105,19 +104,18 @@ func TestComputeBaseline_VariedUsage(t *testing.T) {
 // These test the date-filtering logic used by getBaselinesByRoomIDs.
 // We simulate by filtering readings then passing to computeBaseline.
 
-func makeReading(dateStr string, elecPrev, elecCurr, waterPrev, waterCurr int) MeterReading {
-	d, _ := time.Parse("2006-01-02", dateStr)
+func makeReading(billingMonth string, elecPrev, elecCurr, waterPrev, waterCurr int) MeterReading {
 	return MeterReading{
-		ReadingDate:         d,
+		BillingMonth:        billingMonth,
 		ElectricityPrevious: elecPrev, ElectricityCurrent: elecCurr,
 		WaterPrevious: waterPrev, WaterCurrent: waterCurr,
 	}
 }
 
-func filterByStartDate(readings []MeterReading, startDate time.Time) []MeterReading {
+func filterByStartMonth(readings []MeterReading, startMonth string) []MeterReading {
 	var out []MeterReading
 	for _, r := range readings {
-		if !r.ReadingDate.Before(startDate) {
+		if !isBeforeMonth(r.BillingMonth, startMonth) {
 			out = append(out, r)
 		}
 	}
@@ -128,15 +126,14 @@ func TestTenantScoped_6MonthsHistory_TenantStartedRecently_2Months(t *testing.T)
 	// Room has 6 months history, but current tenant started 2 months ago
 	// → only 2 readings after start date → baseline null (not enough)
 	readings := []MeterReading{
-		makeReading("2025-10-01", 1000, 1100, 100, 110), // old tenant
-		makeReading("2025-11-01", 1100, 1200, 110, 120), // old tenant
-		makeReading("2025-12-01", 1200, 1300, 120, 130), // old tenant
-		makeReading("2026-01-01", 1300, 1400, 130, 140), // old tenant
-		makeReading("2026-02-01", 1400, 1550, 140, 160), // new tenant
-		makeReading("2026-03-01", 1550, 1700, 160, 175), // new tenant
+		makeReading("2025-10", 1000, 1100, 100, 110), // old tenant
+		makeReading("2025-11", 1100, 1200, 110, 120), // old tenant
+		makeReading("2025-12", 1200, 1300, 120, 130), // old tenant
+		makeReading("2026-01", 1300, 1400, 130, 140), // old tenant
+		makeReading("2026-02", 1400, 1550, 140, 160), // new tenant
+		makeReading("2026-03", 1550, 1700, 160, 175), // new tenant
 	}
-	startDate, _ := time.Parse("2006-01-02", "2026-02-01")
-	filtered := filterByStartDate(readings, startDate)
+	filtered := filterByStartMonth(readings, "2026-02")
 	bl := computeBaseline(filtered)
 
 	if bl.ElectricityHasEnoughData {
@@ -150,15 +147,14 @@ func TestTenantScoped_6MonthsHistory_TenantStartedRecently_2Months(t *testing.T)
 func TestTenantScoped_CurrentTenant4Months(t *testing.T) {
 	// Current tenant has 4 months → enough for baseline, should use only their data
 	readings := []MeterReading{
-		makeReading("2025-10-01", 1000, 1100, 100, 110), // old tenant: elec=100
-		makeReading("2025-11-01", 1100, 1200, 110, 120), // old tenant: elec=100
-		makeReading("2025-12-01", 1200, 1500, 120, 150), // new tenant: elec=300 (different pattern)
-		makeReading("2026-01-01", 1500, 1800, 150, 180), // new tenant: elec=300
-		makeReading("2026-02-01", 1800, 2100, 180, 210), // new tenant: elec=300
-		makeReading("2026-03-01", 2100, 2400, 210, 240), // new tenant: elec=300
+		makeReading("2025-10", 1000, 1100, 100, 110), // old tenant: elec=100
+		makeReading("2025-11", 1100, 1200, 110, 120), // old tenant: elec=100
+		makeReading("2025-12", 1200, 1500, 120, 150), // new tenant: elec=300 (different pattern)
+		makeReading("2026-01", 1500, 1800, 150, 180), // new tenant: elec=300
+		makeReading("2026-02", 1800, 2100, 180, 210), // new tenant: elec=300
+		makeReading("2026-03", 2100, 2400, 210, 240), // new tenant: elec=300
 	}
-	startDate, _ := time.Parse("2006-01-02", "2025-12-01")
-	filtered := filterByStartDate(readings, startDate)
+	filtered := filterByStartMonth(readings, "2025-12")
 	bl := computeBaseline(filtered)
 
 	if !bl.ElectricityHasEnoughData {
@@ -184,10 +180,10 @@ func TestTenantScoped_NoContract_EmptyBaseline(t *testing.T) {
 func TestTenantScoped_ZeroUsageTenant_BaselineZeroNotNull(t *testing.T) {
 	// Tenant uses nothing (baseline=0) — must be 0 with HasEnoughData=true, not null
 	readings := []MeterReading{
-		makeReading("2025-10-01", 1000, 1000, 100, 100), // usage=0
-		makeReading("2025-11-01", 1000, 1000, 100, 100), // usage=0
-		makeReading("2025-12-01", 1000, 1000, 100, 100), // usage=0
-		makeReading("2026-01-01", 1000, 1000, 100, 100), // usage=0
+		makeReading("2025-10", 1000, 1000, 100, 100), // usage=0
+		makeReading("2025-11", 1000, 1000, 100, 100), // usage=0
+		makeReading("2025-12", 1000, 1000, 100, 100), // usage=0
+		makeReading("2026-01", 1000, 1000, 100, 100), // usage=0
 	}
 	bl := computeBaseline(readings)
 

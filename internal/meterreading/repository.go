@@ -41,7 +41,7 @@ func (r *meterReadingRepository) FindAll(ctx context.Context, apartmentID uuid.U
 		Where("rooms.apartment_id = ? AND meter_readings.deleted_at IS NULL", apartmentID)
 
 	if params.Month != "" {
-		query = query.Where("TO_CHAR(meter_readings.reading_date, 'YYYY-MM') = ?", params.Month)
+		query = query.Where("meter_readings.billing_month = ?", params.Month)
 	}
 	if params.Search != "" {
 		search := "%" + params.Search + "%"
@@ -52,7 +52,7 @@ func (r *meterReadingRepository) FindAll(ctx context.Context, apartmentID uuid.U
 		return nil, 0, err
 	}
 
-	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"reading_date", "room_number", "created_at"}, "reading_date")
+	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"billing_month", "room_number", "created_at"}, "billing_month")
 	orderCol := "meter_readings." + col
 	if col == "room_number" {
 		orderCol = "rooms.number"
@@ -148,7 +148,7 @@ func (r *meterReadingRepository) FindByRoomID(ctx context.Context, roomID uuid.U
 
 	var readings []MeterReading
 	err := query.
-		Order("reading_date DESC, updated_at DESC").
+		Order("billing_month DESC, updated_at DESC").
 		Offset(params.Offset()).
 		Limit(params.Limit).
 		Find(&readings).Error
@@ -162,7 +162,7 @@ func (r *meterReadingRepository) FindLatestByRoomID(ctx context.Context, roomID 
 	var m MeterReading
 	err := database.DB(ctx, r.db).
 		Where("room_id = ?", roomID).
-		Order("reading_date DESC, created_at DESC").
+		Order("billing_month DESC, created_at DESC").
 		First(&m).Error
 	if err != nil {
 		return nil, err
@@ -178,7 +178,7 @@ func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomID
 	var readings []MeterReading
 	subQuery := database.DB(ctx, r.db).
 		Table("meter_readings").
-		Select("*, ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY reading_date DESC, created_at DESC) AS rn").
+		Select("*, ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY billing_month DESC, created_at DESC) AS rn").
 		Where("room_id IN ? AND deleted_at IS NULL", roomIDs)
 
 	err := database.DB(ctx, r.db).

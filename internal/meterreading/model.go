@@ -16,7 +16,7 @@ var (
 	ErrElectricityCurrentBelowPrevious = errors.New("ค่าไฟฟ้าปัจจุบันต้องมากกว่าหรือเท่ากับค่าก่อนหน้า")
 	ErrWaterCurrentBelowPrevious       = errors.New("ค่าน้ำปัจจุบันต้องมากกว่าหรือเท่ากับค่าก่อนหน้า")
 	ErrLatestRoomMismatch              = errors.New("ข้อมูลมิเตอร์ล่าสุดไม่ตรงกับห้อง")
-	ErrReadingDateBeforeLatest         = errors.New("วันที่จดมิเตอร์ต้องไม่ย้อนหลังกว่าครั้งล่าสุด")
+	ErrBillingMonthBeforeLatest        = errors.New("เดือนที่จดมิเตอร์ต้องไม่ย้อนหลังกว่าครั้งล่าสุด")
 	ErrOnlyLatestCanBeUpdated          = errors.New("แก้ไขได้เฉพาะรายการจดมิเตอร์ล่าสุดเท่านั้น")
 	ErrRolloverAndReplacedConflict     = errors.New("ครบรอบมิเตอร์กับเปลี่ยนมิเตอร์ไม่สามารถเลือกพร้อมกันได้")
 	ErrRolloverWithZeroPrevious        = errors.New("ไม่สามารถระบุครบรอบมิเตอร์ได้เมื่อค่าก่อนหน้าเป็น 0")
@@ -27,7 +27,7 @@ var (
 type MeterReading struct {
 	ID                  uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
 	RoomID              uuid.UUID      `gorm:"type:uuid;not null" json:"room_id"`
-	ReadingDate         time.Time      `gorm:"type:date;not null" json:"reading_date"`
+	BillingMonth        string         `gorm:"type:varchar(7);not null" json:"billing_month"`
 	ElectricityPrevious int            `gorm:"not null;default:0" json:"electricity_previous"`
 	ElectricityCurrent  int            `gorm:"not null;default:0" json:"electricity_current"`
 	WaterPrevious       int            `gorm:"not null;default:0" json:"water_previous"`
@@ -114,9 +114,24 @@ type MeterRolloverFlags struct {
 	Electricity bool
 }
 
+// --- Month helpers (billing_month = "YYYY-MM") ---
+
+// toMonth extracts "YYYY-MM" from a time.Time.
+// Used for month-level comparisons between billing_month and contract dates.
+// billingMonth is treated as whole-month coverage — even if contract starts mid-month, that month counts.
+func toMonth(t time.Time) string {
+	return t.Format("2006-01")
+}
+
+// isBeforeMonth returns true if month a is strictly before month b.
+// Both must be "YYYY-MM" format. Single source of truth for month comparison.
+func isBeforeMonth(a, b string) bool {
+	return a < b
+}
+
 // NewReading creates a MeterReading with auto-populated previous values.
 // Replaced meters start at previous = 0; rollover meters keep original previous.
-func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int, latest *MeterReading, replaced MeterReplacedFlags, rollover MeterRolloverFlags) (*MeterReading, error) {
+func NewReading(roomID uuid.UUID, billingMonth string, elecCurrent, waterCurrent int, latest *MeterReading, replaced MeterReplacedFlags, rollover MeterRolloverFlags) (*MeterReading, error) {
 	// Mutual exclusion: rollover + replaced cannot coexist per meter
 	if rollover.Electricity && replaced.Electricity {
 		return nil, ErrRolloverAndReplacedConflict
@@ -130,9 +145,9 @@ func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurre
 		if latest.RoomID != roomID {
 			return nil, ErrLatestRoomMismatch
 		}
-		// Guard: reading date must not be before latest
-		if readingDate.Before(latest.ReadingDate) {
-			return nil, ErrReadingDateBeforeLatest
+		// Guard: billing month must not be before latest
+		if isBeforeMonth(billingMonth, latest.BillingMonth) {
+			return nil, ErrBillingMonthBeforeLatest
 		}
 	}
 
@@ -148,7 +163,7 @@ func NewReading(roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurre
 
 	m := &MeterReading{
 		RoomID:                roomID,
-		ReadingDate:           readingDate,
+		BillingMonth:          billingMonth,
 		ElectricityPrevious:   elecPrev,
 		ElectricityCurrent:    elecCurrent,
 		WaterPrevious:         waterPrev,

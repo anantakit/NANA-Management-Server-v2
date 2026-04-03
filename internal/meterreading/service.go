@@ -3,6 +3,7 @@ package meterreading
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,15 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// isValidBillingMonth validates "YYYY-MM" format.
+func isValidBillingMonth(s string) bool {
+	if len(s) != 7 || s[4] != '-' {
+		return false
+	}
+	_, err := time.Parse("2006-01", s)
+	return err == nil
+}
 
 type MeterReadingService interface {
 	List(ctx context.Context, apartmentID uuid.UUID, params ListParams) ([]MeterReadingWithRoom, int64, error)
@@ -65,9 +75,8 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("รหัสห้องไม่ถูกต้อง")
 	}
-	readingDate, err := time.Parse("2006-01-02", req.ReadingDate)
-	if err != nil {
-		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง")
+	if !isValidBillingMonth(req.BillingMonth) {
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบเดือนไม่ถูกต้อง (YYYY-MM)")
 	}
 
 	// Validate room belongs to apartment
@@ -83,7 +92,7 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 	latest := s.findLatestOrNil(ctx, roomID)
 
 	// Domain: create + validate
-	reading, err := NewReading(roomID, readingDate, req.ElectricityCurrent, req.WaterCurrent, latest, req.ReplacedFlags(), req.RolloverFlags())
+	reading, err := NewReading(roomID, req.BillingMonth, req.ElectricityCurrent, req.WaterCurrent, latest, req.ReplacedFlags(), req.RolloverFlags())
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
@@ -103,9 +112,8 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 }
 
 func (s *meterReadingService) BatchCreate(ctx context.Context, apartmentID uuid.UUID, req BatchCreateRequest) ([]MeterReadingWithRoom, error) {
-	readingDate, err := time.Parse("2006-01-02", req.ReadingDate)
-	if err != nil {
-		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง")
+	if !isValidBillingMonth(req.BillingMonth) {
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบเดือนไม่ถูกต้อง (YYYY-MM)")
 	}
 
 	// Validate all rooms before transaction
@@ -134,7 +142,7 @@ func (s *meterReadingService) BatchCreate(ctx context.Context, apartmentID uuid.
 		for i, item := range req.Items {
 			latest := s.findLatestOrNil(txCtx, roomIDs[i])
 
-			reading, err := NewReading(roomIDs[i], readingDate, item.ElectricityCurrent, item.WaterCurrent, latest, item.ReplacedFlags(), item.RolloverFlags())
+			reading, err := NewReading(roomIDs[i], req.BillingMonth, item.ElectricityCurrent, item.WaterCurrent, latest, item.ReplacedFlags(), item.RolloverFlags())
 			if err != nil {
 				return respond.ErrBadRequest.WithMessage(fmt.Sprintf("รายการที่ %d: %s", i+1, err.Error()))
 			}
@@ -146,7 +154,7 @@ func (s *meterReadingService) BatchCreate(ctx context.Context, apartmentID uuid.
 
 			if err := s.repo.Create(txCtx, reading); err != nil {
 				if isDuplicateKeyError(err) {
-					return respond.ErrConflict.WithMessage(fmt.Sprintf("มีข้อมูลมิเตอร์ของห้องนี้ในวันที่นี้แล้ว (รายการที่ %d)", i+1))
+					return respond.ErrConflict.WithMessage(fmt.Sprintf("มีข้อมูลมิเตอร์ของห้องนี้ในเดือนนี้แล้ว (รายการที่ %d)", i+1))
 				}
 				return fmt.Errorf("create meter reading %d: %w", i+1, err)
 			}
@@ -218,7 +226,7 @@ func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UU
 
 	result := make([]MeterReadingWithTenant, len(readings))
 	for i, r := range readings {
-		name, startDate, isCurrent := matchTenantForReading(r.ReadingDate, contracts)
+		name, startDate, isCurrent := matchTenantForReading(r.BillingMonth, contracts)
 		result[i] = MeterReadingWithTenant{
 			MeterReading:      r,
 			TenantName:        name,
@@ -229,20 +237,25 @@ func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UU
 	return result, total, nil
 }
 
-// matchTenantForReading finds which contract (tenant) covers a given reading date.
-// Contracts must be sorted by start_date DESC (newest first).
-func matchTenantForReading(readingDate time.Time, contracts []contract.ContractTenantSummary) (string, time.Time, bool) {
-	for _, c := range contracts {
-		if readingDate.Before(c.StartDate) {
-			continue
+// matchTenantForReading finds which contract covers a given billing month.
+// billingMonth is treated as whole-month coverage — mid-month start/end counts.
+func matchTenantForReading(billingMonth string, contracts []contract.ContractTenantSummary) (string, time.Time, bool) {
+	// Defensive sort: ensure newest-first (clone to avoid mutating caller's slice)
+	sorted := slices.Clone(contracts)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].StartDate.After(sorted[j].StartDate)
+	})
+	for _, c := range sorted {
+		startMonth := toMonth(c.StartDate)
+		if isBeforeMonth(billingMonth, startMonth) {
+			continue // before contract
 		}
-		// ACTIVE contract has no end — matches everything >= start
 		if c.Status == contract.ContractStatusActive {
-			return c.TenantName, c.StartDate, true
+			return c.TenantName, c.StartDate, true // no end
 		}
-		// ENDED/TERMINATED — check if reading is before move-out (or start of next contract handled by sort order)
-		if c.MoveOutDate != nil && readingDate.After(*c.MoveOutDate) {
-			continue
+		// ENDED/TERMINATED — check end month
+		if c.MoveOutDate != nil && isBeforeMonth(toMonth(*c.MoveOutDate), billingMonth) {
+			continue // after contract ended
 		}
 		return c.TenantName, c.StartDate, false
 	}
@@ -261,7 +274,7 @@ func (s *meterReadingService) findLatestOrNil(ctx context.Context, roomID uuid.U
 
 func (s *meterReadingService) mapCreateError(err error) error {
 	if isDuplicateKeyError(err) {
-		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์ของห้องนี้ในวันที่นี้แล้ว")
+		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์ของห้องนี้ในเดือนนี้แล้ว")
 	}
 	return fmt.Errorf("create meter reading: %w", err)
 }
@@ -315,8 +328,9 @@ func (s *meterReadingService) getBaselinesByRoomIDs(ctx context.Context, roomIDs
 		// Filter to readings from current tenant only
 		readings := historyMap[roomID]
 		filtered := readings[:0:0]
+		startMonth := toMonth(startDate)
 		for _, r := range readings {
-			if !r.ReadingDate.Before(startDate) {
+			if !isBeforeMonth(r.BillingMonth, startMonth) {
 				filtered = append(filtered, r)
 			}
 		}

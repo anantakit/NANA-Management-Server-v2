@@ -201,7 +201,7 @@ func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {
 	resp := LatestReadingResponse{
 		ElectricityCurrent: reading.ElectricityCurrent,
 		WaterCurrent:       reading.WaterCurrent,
-		ReadingDate:        reading.ReadingDate.Format("2006-01-02"),
+		BillingMonth:       reading.BillingMonth,
 	}
 	return respond.Success(c, "สำเร็จ", resp)
 }

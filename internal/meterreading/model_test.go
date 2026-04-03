@@ -2,17 +2,11 @@ package meterreading
 
 import (
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
 
 // --- helpers ---
-
-func date(s string) time.Time {
-	t, _ := time.Parse("2006-01-02", s)
-	return t
-}
 
 func intPtr(v int) *int { return &v }
 
@@ -21,11 +15,11 @@ var (
 	roomB = uuid.New()
 )
 
-func makeLatest(roomID uuid.UUID, readingDate string, elecCurrent, waterCurrent int) *MeterReading {
+func makeLatest(roomID uuid.UUID, billingMonth string, elecCurrent, waterCurrent int) *MeterReading {
 	return &MeterReading{
 		ID:                 uuid.New(),
 		RoomID:             roomID,
-		ReadingDate:        date(readingDate),
+		BillingMonth:       billingMonth,
 		ElectricityCurrent: elecCurrent,
 		WaterCurrent:       waterCurrent,
 	}
@@ -50,7 +44,7 @@ func TestWaterUsed(t *testing.T) {
 // --- NewReading ---
 
 func TestNewReading_FirstReading_NilLatest(t *testing.T) {
-	m, err := NewReading(roomA, date("2026-03-01"), 100, 50, nil, MeterReplacedFlags{}, noRollover)
+	m, err := NewReading(roomA, "2026-03", 100, 50, nil, MeterReplacedFlags{}, noRollover)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,8 +57,8 @@ func TestNewReading_FirstReading_NilLatest(t *testing.T) {
 }
 
 func TestNewReading_AutoPopulatePrevious(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 200, 100)
-	m, err := NewReading(roomA, date("2026-03-01"), 350, 130, latest, MeterReplacedFlags{}, noRollover)
+	latest := makeLatest(roomA, "2026-02", 200, 100)
+	m, err := NewReading(roomA, "2026-03", 350, 130, latest, MeterReplacedFlags{}, noRollover)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,8 +71,8 @@ func TestNewReading_AutoPopulatePrevious(t *testing.T) {
 }
 
 func TestNewReading_MeterReplaced_PreviousZero(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 9999, 5000)
-	m, err := NewReading(roomA, date("2026-03-01"), 50, 10, latest, MeterReplacedFlags{Water: true, Electricity: true}, noRollover)
+	latest := makeLatest(roomA, "2026-02", 9999, 5000)
+	m, err := NewReading(roomA, "2026-03", 50, 10, latest, MeterReplacedFlags{Water: true, Electricity: true}, noRollover)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,8 +82,8 @@ func TestNewReading_MeterReplaced_PreviousZero(t *testing.T) {
 }
 
 func TestNewReading_WaterReplacedOnly(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 200, 5000)
-	m, err := NewReading(roomA, date("2026-03-01"), 250, 10, latest, MeterReplacedFlags{Water: true}, noRollover)
+	latest := makeLatest(roomA, "2026-02", 200, 5000)
+	m, err := NewReading(roomA, "2026-03", 250, 10, latest, MeterReplacedFlags{Water: true}, noRollover)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,8 +96,8 @@ func TestNewReading_WaterReplacedOnly(t *testing.T) {
 }
 
 func TestNewReading_ElecReplacedOnly(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 9999, 100)
-	m, err := NewReading(roomA, date("2026-03-01"), 50, 120, latest, MeterReplacedFlags{Electricity: true}, noRollover)
+	latest := makeLatest(roomA, "2026-02", 9999, 100)
+	m, err := NewReading(roomA, "2026-03", 50, 120, latest, MeterReplacedFlags{Electricity: true}, noRollover)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -115,43 +109,43 @@ func TestNewReading_ElecReplacedOnly(t *testing.T) {
 	}
 }
 
-func TestNewReading_SameDate_OK(t *testing.T) {
-	latest := makeLatest(roomA, "2026-03-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 120, latest, MeterReplacedFlags{}, noRollover)
+func TestNewReading_SameMonth_OK(t *testing.T) {
+	latest := makeLatest(roomA, "2026-03", 200, 100)
+	_, err := NewReading(roomA, "2026-03", 250, 120, latest, MeterReplacedFlags{}, noRollover)
 	if err != nil {
-		t.Fatalf("same date should be allowed, got: %v", err)
+		t.Fatalf("same month should be allowed, got: %v", err)
 	}
 }
 
 func TestNewReading_ElecCurrentBelowPrevious(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 150, 120, latest, MeterReplacedFlags{}, noRollover)
+	latest := makeLatest(roomA, "2026-02", 200, 100)
+	_, err := NewReading(roomA, "2026-03", 150, 120, latest, MeterReplacedFlags{}, noRollover)
 	if err != ErrElectricityCurrentBelowPrevious {
 		t.Errorf("expected ErrElectricityCurrentBelowPrevious, got %v", err)
 	}
 }
 
 func TestNewReading_WaterCurrentBelowPrevious(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 80, latest, MeterReplacedFlags{}, noRollover)
+	latest := makeLatest(roomA, "2026-02", 200, 100)
+	_, err := NewReading(roomA, "2026-03", 250, 80, latest, MeterReplacedFlags{}, noRollover)
 	if err != ErrWaterCurrentBelowPrevious {
 		t.Errorf("expected ErrWaterCurrentBelowPrevious, got %v", err)
 	}
 }
 
 func TestNewReading_LatestRoomMismatch(t *testing.T) {
-	latest := makeLatest(roomB, "2026-02-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 120, latest, MeterReplacedFlags{}, noRollover)
+	latest := makeLatest(roomB, "2026-02", 200, 100)
+	_, err := NewReading(roomA, "2026-03", 250, 120, latest, MeterReplacedFlags{}, noRollover)
 	if err != ErrLatestRoomMismatch {
 		t.Errorf("expected ErrLatestRoomMismatch, got %v", err)
 	}
 }
 
-func TestNewReading_DateBeforeLatest(t *testing.T) {
-	latest := makeLatest(roomA, "2026-03-01", 200, 100)
-	_, err := NewReading(roomA, date("2026-02-15"), 250, 120, latest, MeterReplacedFlags{}, noRollover)
-	if err != ErrReadingDateBeforeLatest {
-		t.Errorf("expected ErrReadingDateBeforeLatest, got %v", err)
+func TestNewReading_MonthBeforeLatest(t *testing.T) {
+	latest := makeLatest(roomA, "2026-03", 200, 100)
+	_, err := NewReading(roomA, "2026-02", 250, 120, latest, MeterReplacedFlags{}, noRollover)
+	if err != ErrBillingMonthBeforeLatest {
+		t.Errorf("expected ErrBillingMonthBeforeLatest, got %v", err)
 	}
 }
 
@@ -323,14 +317,12 @@ func TestIsAnomalousUsage_SmallBaseline_AboveMinThreshold(t *testing.T) {
 
 func TestComputeAnomalies_BothHaveData(t *testing.T) {
 	m := MeterReading{
-		ElectricityPrevious: 1000, ElectricityCurrent: 1200, // used = 200
-		WaterPrevious: 100, WaterCurrent: 300, // used = 200
+		ElectricityPrevious: 1000, ElectricityCurrent: 1200,
+		WaterPrevious: 100, WaterCurrent: 300,
 	}
 	bl := RoomBaseline{
-		ElectricityBaseline:      100, // threshold = 150, usage 200 > 150 && > 50 → anomaly
-		WaterBaseline:            100, // same
-		ElectricityHasEnoughData: true,
-		WaterHasEnoughData:       true,
+		ElectricityBaseline: 100, WaterBaseline: 100,
+		ElectricityHasEnoughData: true, WaterHasEnoughData: true,
 	}
 	m.ComputeAnomalies(bl)
 	if !m.IsAnomalyElectricity {
@@ -343,14 +335,12 @@ func TestComputeAnomalies_BothHaveData(t *testing.T) {
 
 func TestComputeAnomalies_ElecHasData_WaterDoesNot(t *testing.T) {
 	m := MeterReading{
-		ElectricityPrevious: 1000, ElectricityCurrent: 1200, // used = 200
-		WaterPrevious: 100, WaterCurrent: 300, // used = 200
+		ElectricityPrevious: 1000, ElectricityCurrent: 1200,
+		WaterPrevious: 100, WaterCurrent: 300,
 	}
 	bl := RoomBaseline{
-		ElectricityBaseline:      100,
-		WaterBaseline:            100,
-		ElectricityHasEnoughData: true,
-		WaterHasEnoughData:       false, // not enough data
+		ElectricityBaseline: 100, WaterBaseline: 100,
+		ElectricityHasEnoughData: true, WaterHasEnoughData: false,
 	}
 	m.ComputeAnomalies(bl)
 	if !m.IsAnomalyElectricity {
@@ -366,10 +356,7 @@ func TestComputeAnomalies_NeitherHasData(t *testing.T) {
 		ElectricityPrevious: 1000, ElectricityCurrent: 9999,
 		WaterPrevious: 100, WaterCurrent: 9999,
 	}
-	bl := RoomBaseline{
-		ElectricityHasEnoughData: false,
-		WaterHasEnoughData:       false,
-	}
+	bl := RoomBaseline{ElectricityHasEnoughData: false, WaterHasEnoughData: false}
 	m.ComputeAnomalies(bl)
 	if m.IsAnomalyElectricity || m.IsAnomalyWater {
 		t.Error("neither should be flagged when not enough data")
@@ -378,14 +365,12 @@ func TestComputeAnomalies_NeitherHasData(t *testing.T) {
 
 func TestComputeAnomalies_NormalUsage_NoAnomaly(t *testing.T) {
 	m := MeterReading{
-		ElectricityPrevious: 1000, ElectricityCurrent: 1100, // used = 100
-		WaterPrevious: 100, WaterCurrent: 110, // used = 10
+		ElectricityPrevious: 1000, ElectricityCurrent: 1100,
+		WaterPrevious: 100, WaterCurrent: 110,
 	}
 	bl := RoomBaseline{
-		ElectricityBaseline:      100, // threshold = 150, usage 100 < 150 → OK
-		WaterBaseline:            100, // threshold = 150, usage 10 < 150 → OK
-		ElectricityHasEnoughData: true,
-		WaterHasEnoughData:       true,
+		ElectricityBaseline: 100, WaterBaseline: 100,
+		ElectricityHasEnoughData: true, WaterHasEnoughData: true,
 	}
 	m.ComputeAnomalies(bl)
 	if m.IsAnomalyElectricity {
@@ -402,17 +387,9 @@ func TestDigitMax(t *testing.T) {
 	tests := []struct {
 		input, want int
 	}{
-		{0, 0},
-		{5, 9},
-		{9, 9},
-		{10, 99},
-		{99, 99},
-		{100, 999},
-		{500, 999},
-		{999, 999},
-		{9970, 9999},
-		{9999, 9999},
-		{10000, 99999},
+		{0, 0}, {5, 9}, {9, 9}, {10, 99}, {99, 99},
+		{100, 999}, {500, 999}, {999, 999},
+		{9970, 9999}, {9999, 9999}, {10000, 99999},
 	}
 	for _, tt := range tests {
 		if got := digitMax(tt.input); got != tt.want {
@@ -425,11 +402,8 @@ func TestDigitMax(t *testing.T) {
 
 func TestElectricityUsed_Rollover(t *testing.T) {
 	m := MeterReading{
-		ElectricityPrevious:   9970,
-		ElectricityCurrent:    20,
-		IsRolloverElectricity: true,
+		ElectricityPrevious: 9970, ElectricityCurrent: 20, IsRolloverElectricity: true,
 	}
-	// (9999 - 9970) + 20 = 49
 	if got := m.ElectricityUsed(); got != 49 {
 		t.Errorf("ElectricityUsed() = %d, want 49", got)
 	}
@@ -437,47 +411,29 @@ func TestElectricityUsed_Rollover(t *testing.T) {
 
 func TestWaterUsed_Rollover(t *testing.T) {
 	m := MeterReading{
-		WaterPrevious:   500,
-		WaterCurrent:    30,
-		IsRolloverWater: true,
+		WaterPrevious: 500, WaterCurrent: 30, IsRolloverWater: true,
 	}
-	// (999 - 500) + 30 = 529
 	if got := m.WaterUsed(); got != 529 {
 		t.Errorf("WaterUsed() = %d, want 529", got)
 	}
 }
 
 func TestElectricityUsed_Rollover_EdgePrev999Current0(t *testing.T) {
-	m := MeterReading{
-		ElectricityPrevious:   999,
-		ElectricityCurrent:    0,
-		IsRolloverElectricity: true,
-	}
-	// (999 - 999) + 0 = 0
+	m := MeterReading{ElectricityPrevious: 999, ElectricityCurrent: 0, IsRolloverElectricity: true}
 	if got := m.ElectricityUsed(); got != 0 {
 		t.Errorf("ElectricityUsed() = %d, want 0", got)
 	}
 }
 
 func TestElectricityUsed_Rollover_EdgePrev999Current999(t *testing.T) {
-	m := MeterReading{
-		ElectricityPrevious:   999,
-		ElectricityCurrent:    999,
-		IsRolloverElectricity: true,
-	}
-	// (999 - 999) + 999 = 999
+	m := MeterReading{ElectricityPrevious: 999, ElectricityCurrent: 999, IsRolloverElectricity: true}
 	if got := m.ElectricityUsed(); got != 999 {
 		t.Errorf("ElectricityUsed() = %d, want 999", got)
 	}
 }
 
 func TestElectricityUsed_Rollover_EdgePrev9999Current0(t *testing.T) {
-	m := MeterReading{
-		ElectricityPrevious:   9999,
-		ElectricityCurrent:    0,
-		IsRolloverElectricity: true,
-	}
-	// (9999 - 9999) + 0 = 0
+	m := MeterReading{ElectricityPrevious: 9999, ElectricityCurrent: 0, IsRolloverElectricity: true}
 	if got := m.ElectricityUsed(); got != 0 {
 		t.Errorf("ElectricityUsed() = %d, want 0", got)
 	}
@@ -486,8 +442,8 @@ func TestElectricityUsed_Rollover_EdgePrev9999Current0(t *testing.T) {
 // --- NewReading with rollover ---
 
 func TestNewReading_Rollover_Electricity(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 9970, 100)
-	m, err := NewReading(roomA, date("2026-03-01"), 20, 120, latest,
+	latest := makeLatest(roomA, "2026-02", 9970, 100)
+	m, err := NewReading(roomA, "2026-03", 20, 120, latest,
 		MeterReplacedFlags{}, MeterRolloverFlags{Electricity: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -504,8 +460,8 @@ func TestNewReading_Rollover_Electricity(t *testing.T) {
 }
 
 func TestNewReading_Rollover_Water(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 200, 9970)
-	m, err := NewReading(roomA, date("2026-03-01"), 250, 20, latest,
+	latest := makeLatest(roomA, "2026-02", 200, 9970)
+	m, err := NewReading(roomA, "2026-03", 250, 20, latest,
 		MeterReplacedFlags{}, MeterRolloverFlags{Water: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -522,8 +478,8 @@ func TestNewReading_Rollover_Water(t *testing.T) {
 }
 
 func TestNewReading_RolloverAndReplacedConflict_Electricity(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 9970, 100)
-	_, err := NewReading(roomA, date("2026-03-01"), 20, 120, latest,
+	latest := makeLatest(roomA, "2026-02", 9970, 100)
+	_, err := NewReading(roomA, "2026-03", 20, 120, latest,
 		MeterReplacedFlags{Electricity: true}, MeterRolloverFlags{Electricity: true})
 	if err != ErrRolloverAndReplacedConflict {
 		t.Errorf("expected ErrRolloverAndReplacedConflict, got %v", err)
@@ -531,8 +487,8 @@ func TestNewReading_RolloverAndReplacedConflict_Electricity(t *testing.T) {
 }
 
 func TestNewReading_RolloverAndReplacedConflict_Water(t *testing.T) {
-	latest := makeLatest(roomA, "2026-02-01", 200, 9970)
-	_, err := NewReading(roomA, date("2026-03-01"), 250, 20, latest,
+	latest := makeLatest(roomA, "2026-02", 200, 9970)
+	_, err := NewReading(roomA, "2026-03", 250, 20, latest,
 		MeterReplacedFlags{Water: true}, MeterRolloverFlags{Water: true})
 	if err != ErrRolloverAndReplacedConflict {
 		t.Errorf("expected ErrRolloverAndReplacedConflict, got %v", err)
@@ -540,8 +496,7 @@ func TestNewReading_RolloverAndReplacedConflict_Water(t *testing.T) {
 }
 
 func TestNewReading_RolloverWithZeroPrevious(t *testing.T) {
-	// First reading (no latest) → previous=0, rollover should error
-	_, err := NewReading(roomA, date("2026-03-01"), 20, 50, nil,
+	_, err := NewReading(roomA, "2026-03", 20, 50, nil,
 		MeterReplacedFlags{}, MeterRolloverFlags{Electricity: true})
 	if err != ErrRolloverWithZeroPrevious {
 		t.Errorf("expected ErrRolloverWithZeroPrevious, got %v", err)
@@ -571,7 +526,6 @@ func TestApplyUpdate_Rollover_Electricity(t *testing.T) {
 }
 
 func TestApplyUpdate_NormalToRollover(t *testing.T) {
-	// Start as normal reading, then toggle rollover via update
 	m := MeterReading{ElectricityPrevious: 9970, ElectricityCurrent: 9980, WaterPrevious: 50, WaterCurrent: 80}
 	if got := m.ElectricityUsed(); got != 10 {
 		t.Errorf("before: ElectricityUsed() = %d, want 10", got)
@@ -606,17 +560,12 @@ func TestApplyUpdate_RolloverWithZeroPrevious(t *testing.T) {
 
 func TestComputeAnomalies_SkipRollover(t *testing.T) {
 	m := MeterReading{
-		ElectricityPrevious:   9970,
-		ElectricityCurrent:    20,
-		IsRolloverElectricity: true,
-		WaterPrevious:         100,
-		WaterCurrent:          300, // used = 200
+		ElectricityPrevious: 9970, ElectricityCurrent: 20, IsRolloverElectricity: true,
+		WaterPrevious: 100, WaterCurrent: 300,
 	}
 	bl := RoomBaseline{
-		ElectricityBaseline:      100,
-		WaterBaseline:            100,
-		ElectricityHasEnoughData: true,
-		WaterHasEnoughData:       true,
+		ElectricityBaseline: 100, WaterBaseline: 100,
+		ElectricityHasEnoughData: true, WaterHasEnoughData: true,
 	}
 	m.ComputeAnomalies(bl)
 	if m.IsAnomalyElectricity {
@@ -624,5 +573,24 @@ func TestComputeAnomalies_SkipRollover(t *testing.T) {
 	}
 	if !m.IsAnomalyWater {
 		t.Error("water should still be flagged as anomaly (usage 200 > baseline 100*1.5)")
+	}
+}
+
+// --- isBeforeMonth ---
+
+func TestIsBeforeMonth(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"2026-01", "2026-02", true},
+		{"2026-02", "2026-01", false},
+		{"2026-03", "2026-03", false},
+		{"2025-12", "2026-01", true},
+	}
+	for _, tt := range tests {
+		if got := isBeforeMonth(tt.a, tt.b); got != tt.want {
+			t.Errorf("isBeforeMonth(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
 	}
 }
