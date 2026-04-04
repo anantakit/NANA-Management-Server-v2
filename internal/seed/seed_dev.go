@@ -375,7 +375,6 @@ func seedDevTenantHistory(db *gorm.DB) error {
 		WaterRatePerUnit:       apt.WaterRatePerUnit,
 		Status:                 contract.ContractStatusEnded,
 		EndDate:                &wannaEnd,
-		MoveOutDate:            &wannaEnd,
 	}
 	if err := db.Create(&c1).Error; err != nil {
 		return fmt.Errorf("create A108 contract 1: %w", err)
@@ -467,7 +466,6 @@ func seedDevTenantHistory(db *gorm.DB) error {
 		WaterRatePerUnit:       apt.WaterRatePerUnit,
 		Status:                 contract.ContractStatusEnded,
 		EndDate:                &preechaEnd,
-		MoveOutDate:            &preechaEnd,
 	}
 	if err := db.Create(&c0).Error; err != nil {
 		return fmt.Errorf("create A109 contract 0: %w", err)
@@ -489,7 +487,6 @@ func seedDevTenantHistory(db *gorm.DB) error {
 		WaterRatePerUnit:       apt.WaterRatePerUnit,
 		Status:                 contract.ContractStatusEnded,
 		EndDate:                &manatEnd,
-		MoveOutDate:            &manatEnd,
 	}
 	if err := db.Create(&c3).Error; err != nil {
 		return fmt.Errorf("create A109 contract 1: %w", err)
@@ -511,7 +508,6 @@ func seedDevTenantHistory(db *gorm.DB) error {
 		WaterRatePerUnit:       apt.WaterRatePerUnit,
 		Status:                 contract.ContractStatusEnded,
 		EndDate:                &suntornEnd,
-		MoveOutDate:            &suntornEnd,
 	}
 	if err := db.Create(&c4).Error; err != nil {
 		return fmt.Errorf("create A109 contract 2: %w", err)

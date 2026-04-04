@@ -32,7 +32,6 @@ type ActiveContractSummary struct {
 	WaterRatePerUnit       float64 `json:"water_rate_per_unit"`
 	StartDate              string  `json:"start_date"`
 	MinMonths              int     `json:"min_months"`
-	MoveOutDate            *string `json:"move_out_date"`
 }
 
 type RoomResponse struct {
@@ -62,7 +61,6 @@ type RoomWithContract struct {
 	WaterRatePerUnit       *int64
 	StartDate              *string
 	MinMonths              *int
-	MoveOutDate            *string
 }
 
 func ToRoomResponse(r Room) RoomResponse {
@@ -95,7 +93,6 @@ func toRoomResponseWithContract(r RoomWithContract) RoomResponse {
 			WaterRatePerUnit:       money.ToBaht(derefInt64(r.WaterRatePerUnit)),
 			StartDate:              derefStr(r.StartDate),
 			MinMonths:              derefInt(r.MinMonths),
-			MoveOutDate:            r.MoveOutDate,
 		}
 	}
 

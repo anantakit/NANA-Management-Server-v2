@@ -21,6 +21,7 @@ type ApartmentRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*Apartment, error)
 	Create(ctx context.Context, apartment *Apartment) error
 	Update(ctx context.Context, apartment *Apartment) error
+	ExistsByID(ctx context.Context, id uuid.UUID) (bool, error)
 	ExistsByName(ctx context.Context, name string) (bool, error)
 	ExistsByNameExcluding(ctx context.Context, name string, excludeID uuid.UUID) (bool, error)
 	GetRoomStatsByApartmentIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]RoomStats, error)
@@ -56,6 +57,12 @@ func (r *apartmentRepository) Create(ctx context.Context, apartment *Apartment) 
 
 func (r *apartmentRepository) Update(ctx context.Context, apartment *Apartment) error {
 	return database.DB(ctx, r.db).Model(apartment).Select("*").Omit("deleted_at").Updates(apartment).Error
+}
+
+func (r *apartmentRepository) ExistsByID(ctx context.Context, id uuid.UUID) (bool, error) {
+	var count int64
+	err := database.DB(ctx, r.db).Model(&Apartment{}).Where("id = ?", id).Count(&count).Error
+	return count > 0, err
 }
 
 func (r *apartmentRepository) ExistsByName(ctx context.Context, name string) (bool, error) {

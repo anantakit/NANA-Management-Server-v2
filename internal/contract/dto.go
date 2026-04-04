@@ -24,7 +24,6 @@ type UpdateContractRequest struct {
 	DepositAmount          *float64 `json:"deposit_amount" validate:"omitempty,min=0"`
 	ElectricityRatePerUnit *float64 `json:"electricity_rate_per_unit" validate:"omitempty,min=0"`
 	WaterRatePerUnit       *float64 `json:"water_rate_per_unit" validate:"omitempty,min=0"`
-	MoveOutDate            *string  `json:"move_out_date" validate:"omitempty"`
 }
 
 type ContractListParams struct {
@@ -46,7 +45,6 @@ type ContractResponse struct {
 	WaterRatePerUnit       float64 `json:"water_rate_per_unit"`
 	Status                 string  `json:"status"`
 	EndDate                *string `json:"end_date"`
-	MoveOutDate            *string `json:"move_out_date"`
 	TenantName             string  `json:"tenant_name"`
 	TenantPhone            string  `json:"tenant_phone"`
 	RoomNumber             string  `json:"room_number"`
@@ -72,11 +70,6 @@ func ToContractResponse(c ContractWithRelations) ContractResponse {
 		s := c.EndDate.Format("2006-01-02")
 		endDate = &s
 	}
-	var moveOutDate *string
-	if c.MoveOutDate != nil {
-		s := c.MoveOutDate.Format("2006-01-02")
-		moveOutDate = &s
-	}
 
 	return ContractResponse{
 		ID:                     c.ID.String(),
@@ -91,7 +84,6 @@ func ToContractResponse(c ContractWithRelations) ContractResponse {
 		WaterRatePerUnit:       money.ToBaht(c.WaterRatePerUnit),
 		Status:                 string(c.Status),
 		EndDate:                endDate,
-		MoveOutDate:            moveOutDate,
 		TenantName:             c.TenantName,
 		TenantPhone:            c.TenantPhone,
 		RoomNumber:             c.RoomNumber,

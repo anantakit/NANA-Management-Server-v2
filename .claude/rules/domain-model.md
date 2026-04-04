@@ -42,7 +42,7 @@ BaseRent (int64 satang), BaseDeposit (int64 satang), Status (RoomStatus)
 ID, TenantID (FK), RoomID (FK), StartDate, MinMonths (default 6, min 1)
 MonthlyRent (int64 satang), DepositAmount (int64 satang)
 ElectricityRatePerUnit (int64 satang), WaterRatePerUnit (int64 satang)
-DepositStatus, Status (ContractStatus), EndDate (nullable), MoveOutDate (nullable)
+DepositStatus, Status (ContractStatus), EndDate (nullable)
 
 ## Bill Fields
 ID, ContractID (FK), RoomID (FK), BillingMonth (YYYY-MM), BillDate

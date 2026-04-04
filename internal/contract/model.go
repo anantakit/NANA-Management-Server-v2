@@ -44,7 +44,6 @@ type Contract struct {
 	WaterRatePerUnit       int64          `gorm:"not null;default:0" json:"water_rate_per_unit"`
 	Status                 ContractStatus `gorm:"type:varchar(20);not null;default:'ACTIVE'" json:"status"`
 	EndDate                *time.Time     `gorm:"type:date" json:"end_date"`
-	MoveOutDate            *time.Time     `gorm:"type:date" json:"move_out_date"`
 	CreatedAt              time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt              time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 	DeletedAt              gorm.DeletedAt `gorm:"index" json:"-"`
@@ -94,8 +93,8 @@ func (c *Contract) CanBeDeleted() error {
 // ContractTenantSummary is a lightweight projection for cross-feature display reads.
 // Used by meter reading history to show tenant segmentation.
 type ContractTenantSummary struct {
-	TenantName  string
-	StartDate   time.Time
-	MoveOutDate *time.Time
-	Status      ContractStatus
+	TenantName string
+	StartDate  time.Time
+	EndDate    *time.Time
+	Status     ContractStatus
 }

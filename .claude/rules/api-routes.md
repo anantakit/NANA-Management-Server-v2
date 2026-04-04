@@ -43,7 +43,7 @@ paths:
 | PUT | `/:roomId` | Update room (status: VACANT↔MAINTENANCE only, OCCUPIED blocked) |
 | DELETE | `/:roomId` | Soft delete room (blocked if OCCUPIED) |
 
-Room response includes `active_contract`: contract_id, tenant_id, tenant_name, tenant_phone, monthly_rent, deposit_amount, electricity_rate_per_unit, water_rate_per_unit, start_date, min_months, move_out_date
+Room response includes `active_contract`: contract_id, tenant_id, tenant_name, tenant_phone, monthly_rent, deposit_amount, electricity_rate_per_unit, water_rate_per_unit, start_date, min_months
 
 ## Tenants (`/api/v1/tenants`) — Admin only
 | Method | Path | Description |
@@ -60,5 +60,5 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | GET | `/` | List contracts (paginated, filter by status/apartment_id, search tenant/room) |
 | GET | `/:contractId` | Get contract with tenant + room + apartment info (JOIN) |
 | POST | `/` | Create contract (room must be VACANT, auto-sets room OCCUPIED in transaction) |
-| PUT | `/:contractId` | Update contract (ACTIVE only: rent, deposit, rates, min_months, move_out_date) |
+| PUT | `/:contractId` | Update contract (ACTIVE only: rent, deposit, rates, min_months) |
 | DELETE | `/:contractId` | Soft delete contract (blocked if ACTIVE) |

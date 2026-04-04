@@ -148,17 +148,6 @@ func (s *contractService) Update(ctx context.Context, id uuid.UUID, req UpdateCo
 	if req.WaterRatePerUnit != nil {
 		contract.WaterRatePerUnit = money.ToSatang(*req.WaterRatePerUnit)
 	}
-	if req.MoveOutDate != nil {
-		if *req.MoveOutDate == "" {
-			contract.MoveOutDate = nil
-		} else {
-			t, err := time.Parse("2006-01-02", *req.MoveOutDate)
-			if err != nil {
-				return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่แจ้งย้ายออกไม่ถูกต้อง")
-			}
-			contract.MoveOutDate = &t
-		}
-	}
 
 	if err := s.repo.Update(ctx, contract); err != nil {
 		return nil, fmt.Errorf("update contract: %w", err)

@@ -254,7 +254,7 @@ func matchTenantForReading(billingMonth string, contracts []contract.ContractTen
 			return c.TenantName, c.StartDate, true // no end
 		}
 		// ENDED/TERMINATED — check end month
-		if c.MoveOutDate != nil && isBeforeMonth(toMonth(*c.MoveOutDate), billingMonth) {
+		if c.EndDate != nil && isBeforeMonth(toMonth(*c.EndDate), billingMonth) {
 			continue // after contract ended
 		}
 		return c.TenantName, c.StartDate, false
