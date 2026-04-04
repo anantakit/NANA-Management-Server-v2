@@ -11,6 +11,7 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/auth"
+	"nana/internal/billing"
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
@@ -116,6 +117,11 @@ func main() {
 	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txManager)
 	meterHandler := meterreading.NewMeterReadingHandler(meterService)
 
+	// Wire dependencies — Billing
+	billRepo := billing.NewBillingRepository(db)
+	billService := billing.NewBillingService(billRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txManager)
+	billHandler := billing.NewBillingHandler(billService)
+
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:       "Nana Rental Management",
@@ -161,6 +167,7 @@ func main() {
 	meterHandler.RegisterRoutes(admin.Group("/apartments/:apartmentId/meter-readings"))
 	bcHandler.RegisterRoutes(admin.Group("/apartments/:id/billing-configs"))
 	moveOutHandler.RegisterRoutes(admin.Group("/move-out-notices"))
+	billHandler.RegisterRoutes(admin.Group("/bills"))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
