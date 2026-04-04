@@ -23,6 +23,7 @@ type ContractRepository interface {
 	HasActiveByTenantID(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	FindActiveContractStartDatesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]time.Time, error)
 	FindByRoomIDWithTenants(ctx context.Context, roomID uuid.UUID) ([]ContractTenantSummary, error)
+	EndContract(ctx context.Context, id uuid.UUID, endDate time.Time) error
 }
 
 type contractRepository struct {
@@ -248,4 +249,11 @@ func (r *contractRepository) FindByRoomIDWithTenants(ctx context.Context, roomID
 		}
 	}
 	return result, nil
+}
+
+func (r *contractRepository) EndContract(ctx context.Context, id uuid.UUID, endDate time.Time) error {
+	return database.DB(ctx, r.db).Model(&Contract{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"end_date": endDate,
+		"status":   ContractStatusEnded,
+	}).Error
 }
