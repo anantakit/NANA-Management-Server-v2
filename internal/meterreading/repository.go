@@ -3,6 +3,7 @@ package meterreading
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
@@ -11,13 +12,31 @@ import (
 	"gorm.io/gorm"
 )
 
+// temporalDateExpr returns a SQL expression that converts both reading types to a comparable date.
+// MONTHLY → last day of billing_month (e.g. "2026-04" → 2026-04-30)
+// EXIT → reading_date_actual as-is
+// This ensures MONTHLY sorts AFTER EXIT readings in the same month,
+// because a MONTHLY reading represents end-of-month coverage.
+func temporalDateExpr(prefix string) string {
+	if prefix != "" {
+		prefix += "."
+	}
+	return fmt.Sprintf(
+		`CASE WHEN %sreading_type = 'EXIT' THEN %sreading_date_actual `+
+			`ELSE (TO_DATE(%sbilling_month, 'YYYY-MM') + INTERVAL '1 month - 1 day')::date END`,
+		prefix, prefix, prefix,
+	)
+}
+
 type MeterReadingRepository interface {
 	FindAll(ctx context.Context, apartmentID uuid.UUID, params ListParams) ([]MeterReadingWithRoom, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*MeterReadingWithRoom, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*MeterReading, error)
 	FindByRoomID(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error)
 	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+	FindLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
+	HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
 }
@@ -43,6 +62,9 @@ func (r *meterReadingRepository) FindAll(ctx context.Context, apartmentID uuid.U
 	if params.Month != "" {
 		query = query.Where("meter_readings.billing_month = ?", params.Month)
 	}
+	if params.ReadingType != "" {
+		query = query.Where("meter_readings.reading_type = ?", params.ReadingType)
+	}
 	if params.Search != "" {
 		search := "%" + params.Search + "%"
 		query = query.Where("(rooms.number ILIKE ? OR tenants.full_name ILIKE ?)", search, search)
@@ -53,9 +75,14 @@ func (r *meterReadingRepository) FindAll(ctx context.Context, apartmentID uuid.U
 	}
 
 	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"billing_month", "room_number", "created_at"}, "billing_month")
-	orderCol := "meter_readings." + col
-	if col == "room_number" {
+	var orderCol string
+	switch col {
+	case "room_number":
 		orderCol = "rooms.number"
+	case "billing_month":
+		orderCol = temporalDateExpr("meter_readings")
+	default:
+		orderCol = "meter_readings." + col
 	}
 	orderClause := fmt.Sprintf("%s %s", orderCol, order)
 
@@ -146,9 +173,10 @@ func (r *meterReadingRepository) FindByRoomID(ctx context.Context, roomID uuid.U
 		return nil, 0, err
 	}
 
+	sortExpr := temporalDateExpr("")
 	var readings []MeterReading
 	err := query.
-		Order("billing_month DESC, updated_at DESC").
+		Order(fmt.Sprintf("%s DESC, created_at DESC", sortExpr)).
 		Offset(params.Offset()).
 		Limit(params.Limit).
 		Find(&readings).Error
@@ -159,10 +187,11 @@ func (r *meterReadingRepository) FindByRoomID(ctx context.Context, roomID uuid.U
 }
 
 func (r *meterReadingRepository) FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error) {
+	sortExpr := temporalDateExpr("")
 	var m MeterReading
 	err := database.DB(ctx, r.db).
 		Where("room_id = ?", roomID).
-		Order("billing_month DESC, created_at DESC").
+		Order(fmt.Sprintf("%s DESC, created_at DESC", sortExpr)).
 		First(&m).Error
 	if err != nil {
 		return nil, err
@@ -170,6 +199,29 @@ func (r *meterReadingRepository) FindLatestByRoomID(ctx context.Context, roomID 
 	return &m, nil
 }
 
+// FindLatestByRoomIDBeforeDate finds the latest reading strictly before a given date.
+// Used as settlement baseline for EXIT billing.
+// excludeID prevents the EXIT reading itself from being returned as its own baseline.
+func (r *meterReadingRepository) FindLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error) {
+	sortExpr := temporalDateExpr("")
+	q := database.DB(ctx, r.db).
+		Where("room_id = ?", roomID).
+		Where(fmt.Sprintf("%s < ?", sortExpr), before).
+		Order(fmt.Sprintf("%s DESC, created_at DESC", sortExpr))
+
+	if excludeID != nil {
+		q = q.Where("id != ?", *excludeID)
+	}
+
+	var m MeterReading
+	if err := q.First(&m).Error; err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// FindRecentByRoomIDs fetches the last N MONTHLY readings per room for baseline computation.
+// EXIT readings are excluded — they represent partial-period usage, not regular patterns.
 func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error) {
 	if len(roomIDs) == 0 {
 		return map[uuid.UUID][]MeterReading{}, nil
@@ -179,7 +231,7 @@ func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomID
 	subQuery := database.DB(ctx, r.db).
 		Table("meter_readings").
 		Select("*, ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY billing_month DESC, created_at DESC) AS rn").
-		Where("room_id IN ? AND deleted_at IS NULL", roomIDs)
+		Where("room_id IN ? AND reading_type = 'MONTHLY' AND deleted_at IS NULL", roomIDs)
 
 	err := database.DB(ctx, r.db).
 		Table("(?) AS sub", subQuery).
@@ -195,6 +247,17 @@ func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomID
 		result[reading.RoomID] = append(result[reading.RoomID], reading)
 	}
 	return result, nil
+}
+
+// HasMonthlyByRoomAndMonth checks if a MONTHLY reading already exists for this room and month.
+// Used to prevent creating EXIT readings when a MONTHLY for the same period already exists.
+func (r *meterReadingRepository) HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error) {
+	var count int64
+	err := database.DB(ctx, r.db).
+		Model(&MeterReading{}).
+		Where("room_id = ? AND reading_type = 'MONTHLY' AND billing_month = ? AND deleted_at IS NULL", roomID, month).
+		Count(&count).Error
+	return count > 0, err
 }
 
 func (r *meterReadingRepository) Create(ctx context.Context, reading *MeterReading) error {

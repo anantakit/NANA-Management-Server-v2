@@ -23,6 +23,7 @@ func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	router.Get("/", h.List)
 	router.Get("/baselines", h.GetBaselines)
 	router.Post("/", h.Create)
+	router.Post("/exit", h.CreateExitReading)
 	router.Post("/batch", h.BatchCreate)
 	router.Get("/rooms/:roomId/latest", h.GetLatest)
 	router.Get("/rooms/:roomId/history", h.GetRoomHistory)
@@ -84,6 +85,24 @@ func (h *MeterReadingHandler) Create(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 	return respond.Created(c, "บันทึกมิเตอร์สำเร็จ", ToMeterReadingResponse(*reading))
+}
+
+func (h *MeterReadingHandler) CreateExitReading(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	var req ExitCreateRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	reading, err := h.svc.CreateExitReading(c.Context(), apartmentID, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Created(c, "บันทึกมิเตอร์ย้ายออกสำเร็จ", ToMeterReadingResponse(*reading))
 }
 
 func (h *MeterReadingHandler) BatchCreate(c fiber.Ctx) error {
@@ -199,9 +218,11 @@ func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {
 	}
 
 	resp := LatestReadingResponse{
+		ReadingType:        string(reading.ReadingType),
 		ElectricityCurrent: reading.ElectricityCurrent,
 		WaterCurrent:       reading.WaterCurrent,
 		BillingMonth:       reading.BillingMonth,
+		ReadingDateActual:  formatDatePtr(reading.ReadingDateActual),
 	}
 	return respond.Success(c, "สำเร็จ", resp)
 }

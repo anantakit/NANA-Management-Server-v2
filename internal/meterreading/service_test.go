@@ -40,11 +40,20 @@ func TestMedian_ThreeReadings(t *testing.T) {
 
 // --- computeBaseline ---
 
+func makeReading(billingMonth string, elecPrev, elecCurr, waterPrev, waterCurr int) MeterReading {
+	return MeterReading{
+		ReadingType:         ReadingTypeMonthly,
+		BillingMonth:        strPtr(billingMonth),
+		ElectricityPrevious: elecPrev, ElectricityCurrent: elecCurr,
+		WaterPrevious: waterPrev, WaterCurrent: waterCurr,
+	}
+}
+
 func TestComputeBaseline_EnoughData(t *testing.T) {
 	readings := []MeterReading{
-		{ElectricityPrevious: 1000, ElectricityCurrent: 1100, WaterPrevious: 100, WaterCurrent: 110}, // elec=100, water=10
-		{ElectricityPrevious: 900, ElectricityCurrent: 1000, WaterPrevious: 90, WaterCurrent: 100},   // elec=100, water=10
-		{ElectricityPrevious: 800, ElectricityCurrent: 900, WaterPrevious: 80, WaterCurrent: 90},     // elec=100, water=10
+		makeReading("2025-12", 1000, 1100, 100, 110), // elec=100, water=10
+		makeReading("2025-11", 900, 1000, 90, 100),   // elec=100, water=10
+		makeReading("2025-10", 800, 900, 80, 90),     // elec=100, water=10
 	}
 	bl := computeBaseline(readings)
 	if !bl.ElectricityHasEnoughData {
@@ -63,8 +72,8 @@ func TestComputeBaseline_EnoughData(t *testing.T) {
 
 func TestComputeBaseline_NotEnoughData(t *testing.T) {
 	readings := []MeterReading{
-		{ElectricityPrevious: 1000, ElectricityCurrent: 1100, WaterPrevious: 100, WaterCurrent: 110},
-		{ElectricityPrevious: 900, ElectricityCurrent: 1000, WaterPrevious: 90, WaterCurrent: 100},
+		makeReading("2025-11", 1000, 1100, 100, 110),
+		makeReading("2025-10", 900, 1000, 90, 100),
 	}
 	bl := computeBaseline(readings)
 	if bl.ElectricityHasEnoughData {
@@ -84,10 +93,10 @@ func TestComputeBaseline_Empty(t *testing.T) {
 
 func TestComputeBaseline_VariedUsage(t *testing.T) {
 	readings := []MeterReading{
-		{ElectricityPrevious: 0, ElectricityCurrent: 200, WaterPrevious: 0, WaterCurrent: 30}, // elec=200, water=30
-		{ElectricityPrevious: 0, ElectricityCurrent: 100, WaterPrevious: 0, WaterCurrent: 10}, // elec=100, water=10
-		{ElectricityPrevious: 0, ElectricityCurrent: 150, WaterPrevious: 0, WaterCurrent: 20}, // elec=150, water=20
-		{ElectricityPrevious: 0, ElectricityCurrent: 300, WaterPrevious: 0, WaterCurrent: 40}, // elec=300, water=40
+		makeReading("2026-03", 0, 200, 0, 30), // elec=200, water=30
+		makeReading("2026-02", 0, 100, 0, 10), // elec=100, water=10
+		makeReading("2026-01", 0, 150, 0, 20), // elec=150, water=20
+		makeReading("2025-12", 0, 300, 0, 40), // elec=300, water=40
 	}
 	bl := computeBaseline(readings)
 	// sorted elec: [100, 150, 200, 300], avg middle two = (150+200)/2 = 175
@@ -104,18 +113,11 @@ func TestComputeBaseline_VariedUsage(t *testing.T) {
 // These test the date-filtering logic used by getBaselinesByRoomIDs.
 // We simulate by filtering readings then passing to computeBaseline.
 
-func makeReading(billingMonth string, elecPrev, elecCurr, waterPrev, waterCurr int) MeterReading {
-	return MeterReading{
-		BillingMonth:        billingMonth,
-		ElectricityPrevious: elecPrev, ElectricityCurrent: elecCurr,
-		WaterPrevious: waterPrev, WaterCurrent: waterCurr,
-	}
-}
-
 func filterByStartMonth(readings []MeterReading, startMonth string) []MeterReading {
 	var out []MeterReading
 	for _, r := range readings {
-		if !isBeforeMonth(r.BillingMonth, startMonth) {
+		rm := readingMonth(r)
+		if !isBeforeMonth(rm, startMonth) {
 			out = append(out, r)
 		}
 	}

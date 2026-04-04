@@ -30,9 +30,11 @@ type MeterReadingService interface {
 	List(ctx context.Context, apartmentID uuid.UUID, params ListParams) ([]MeterReadingWithRoom, int64, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*MeterReadingWithRoom, error)
 	Create(ctx context.Context, apartmentID uuid.UUID, req CreateRequest) (*MeterReadingWithRoom, error)
+	CreateExitReading(ctx context.Context, apartmentID uuid.UUID, req ExitCreateRequest) (*MeterReadingWithRoom, error)
 	BatchCreate(ctx context.Context, apartmentID uuid.UUID, req BatchCreateRequest) ([]MeterReadingWithRoom, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateRequest) (*MeterReadingWithRoom, error)
 	GetLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+	GetLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
 }
@@ -41,6 +43,7 @@ type meterReadingService struct {
 	repo      MeterReadingRepository
 	rooms     RoomQuerier
 	contracts ContractQuerier
+	moveOuts  MoveOutChecker
 	tx        database.TxManager
 }
 
@@ -48,12 +51,14 @@ func NewMeterReadingService(
 	repo MeterReadingRepository,
 	rooms RoomQuerier,
 	contracts ContractQuerier,
+	moveOuts MoveOutChecker,
 	tx database.TxManager,
 ) MeterReadingService {
 	return &meterReadingService{
 		repo:      repo,
 		rooms:     rooms,
 		contracts: contracts,
+		moveOuts:  moveOuts,
 		tx:        tx,
 	}
 }
@@ -111,6 +116,64 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 	return s.repo.FindByID(ctx, reading.ID)
 }
 
+func (s *meterReadingService) CreateExitReading(ctx context.Context, apartmentID uuid.UUID, req ExitCreateRequest) (*MeterReadingWithRoom, error) {
+	roomID, err := uuid.Parse(req.RoomID)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("รหัสห้องไม่ถูกต้อง")
+	}
+	readingDate, err := time.Parse("2006-01-02", req.ReadingDateActual)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง (YYYY-MM-DD)")
+	}
+
+	// Validate room belongs to apartment
+	r, err := s.rooms.FindByID(ctx, roomID)
+	if err != nil {
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
+	}
+	if r.ApartmentID != apartmentID {
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้")
+	}
+
+	// Validate room has a pending move-out notice
+	pendingRooms, err := s.moveOuts.FindRoomIDsWithPendingNotice(ctx, []uuid.UUID{roomID})
+	if err != nil {
+		return nil, fmt.Errorf("check move-out notice: %w", err)
+	}
+	if !pendingRooms[roomID] {
+		return nil, respond.ErrBadRequest.WithMessage("ห้องนี้ไม่มีการแจ้งย้ายออก ไม่สามารถจดมิเตอร์ย้ายออกได้")
+	}
+
+	// Reject if EXIT reading already exists for this move-out (latest is EXIT)
+	latest := s.findLatestOrNil(ctx, roomID)
+	if latest != nil && latest.IsExit() {
+		return nil, respond.ErrConflict.WithMessage("ห้องนี้มีข้อมูลมิเตอร์ย้ายออกแล้ว")
+	}
+
+	// Reject if MONTHLY reading exists for the same month as the EXIT date
+	exitMonth := toMonth(readingDate)
+	hasMonthly, err := s.repo.HasMonthlyByRoomAndMonth(ctx, roomID, exitMonth)
+	if err != nil {
+		return nil, fmt.Errorf("check monthly reading: %w", err)
+	}
+	if hasMonthly {
+		return nil, respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์รายเดือนของห้องนี้ในเดือนเดียวกันแล้ว กรุณาลบก่อนจดมิเตอร์ย้ายออก")
+	}
+
+	// Domain: create EXIT reading
+	reading, err := NewExitReading(roomID, readingDate, req.ElectricityCurrent, req.WaterCurrent, latest, req.ReplacedFlags(), req.RolloverFlags())
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+
+	// Persist
+	if err := s.repo.Create(ctx, reading); err != nil {
+		return nil, s.mapCreateError(err)
+	}
+
+	return s.repo.FindByID(ctx, reading.ID)
+}
+
 func (s *meterReadingService) BatchCreate(ctx context.Context, apartmentID uuid.UUID, req BatchCreateRequest) ([]MeterReadingWithRoom, error) {
 	if !isValidBillingMonth(req.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("รูปแบบเดือนไม่ถูกต้อง (YYYY-MM)")
@@ -131,6 +194,17 @@ func (s *meterReadingService) BatchCreate(ctx context.Context, apartmentID uuid.
 			return nil, respond.ErrNotFound.WithMessage(fmt.Sprintf("ห้องไม่อยู่ในอาคารนี้ (รายการที่ %d)", i+1))
 		}
 		roomIDs[i] = roomID
+	}
+
+	// Reject rooms with pending move-out notices (monthly batch = MONTHLY only)
+	pendingRooms, err := s.moveOuts.FindRoomIDsWithPendingNotice(ctx, roomIDs)
+	if err != nil {
+		return nil, fmt.Errorf("check move-out notices: %w", err)
+	}
+	for i, roomID := range roomIDs {
+		if pendingRooms[roomID] {
+			return nil, respond.ErrBadRequest.WithMessage(fmt.Sprintf("ห้องรายการที่ %d มีการแจ้งย้ายออก ไม่สามารถจดมิเตอร์รายเดือนได้", i+1))
+		}
 	}
 
 	// Compute baselines from historical readings (before transaction, using roomIDs from request)
@@ -216,6 +290,17 @@ func (s *meterReadingService) GetLatestByRoomID(ctx context.Context, roomID uuid
 	return reading, nil
 }
 
+func (s *meterReadingService) GetLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error) {
+	reading, err := s.repo.FindLatestByRoomIDBeforeDate(ctx, roomID, before, excludeID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, respond.ErrNotFound.WithMessage("ไม่พบข้อมูลมิเตอร์ก่อนวันที่ระบุ")
+		}
+		return nil, fmt.Errorf("get latest meter reading before date: %w", err)
+	}
+	return reading, nil
+}
+
 func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error) {
 	readings, total, err := s.repo.FindByRoomID(ctx, roomID, params)
 	if err != nil {
@@ -226,7 +311,8 @@ func (s *meterReadingService) GetRoomHistory(ctx context.Context, roomID uuid.UU
 
 	result := make([]MeterReadingWithTenant, len(readings))
 	for i, r := range readings {
-		name, startDate, isCurrent := matchTenantForReading(r.BillingMonth, contracts)
+		month := readingMonth(r)
+		name, startDate, isCurrent := matchTenantForReading(month, contracts)
 		result[i] = MeterReadingWithTenant{
 			MeterReading:      r,
 			TenantName:        name,
@@ -274,7 +360,7 @@ func (s *meterReadingService) findLatestOrNil(ctx context.Context, roomID uuid.U
 
 func (s *meterReadingService) mapCreateError(err error) error {
 	if isDuplicateKeyError(err) {
-		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์ของห้องนี้ในเดือนนี้แล้ว")
+		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์ของห้องนี้ในเดือน/วันนี้แล้ว")
 	}
 	return fmt.Errorf("create meter reading: %w", err)
 }
@@ -298,7 +384,7 @@ func (s *meterReadingService) GetBaselines(ctx context.Context, apartmentID uuid
 }
 
 // getBaselinesByRoomIDs is the internal helper shared by GetBaselines (endpoint) and Create/BatchCreate.
-// Baseline uses only readings after current tenant's contract start date.
+// Baseline uses only MONTHLY readings after current tenant's contract start date.
 // No active contract → baseline null (no tenant to compare against).
 func (s *meterReadingService) getBaselinesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]RoomBaseline, error) {
 	if len(roomIDs) == 0 {
@@ -330,7 +416,8 @@ func (s *meterReadingService) getBaselinesByRoomIDs(ctx context.Context, roomIDs
 		filtered := readings[:0:0]
 		startMonth := toMonth(startDate)
 		for _, r := range readings {
-			if !isBeforeMonth(r.BillingMonth, startMonth) {
+			rm := readingMonth(r)
+			if !isBeforeMonth(rm, startMonth) {
 				filtered = append(filtered, r)
 			}
 		}

@@ -2,6 +2,7 @@ package meterreading
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -19,7 +20,20 @@ func makeLatest(roomID uuid.UUID, billingMonth string, elecCurrent, waterCurrent
 	return &MeterReading{
 		ID:                 uuid.New(),
 		RoomID:             roomID,
-		BillingMonth:       billingMonth,
+		ReadingType:        ReadingTypeMonthly,
+		BillingMonth:       strPtr(billingMonth),
+		ElectricityCurrent: elecCurrent,
+		WaterCurrent:       waterCurrent,
+	}
+}
+
+func makeExitLatest(roomID uuid.UUID, dateStr string, elecCurrent, waterCurrent int) *MeterReading {
+	t, _ := time.Parse("2006-01-02", dateStr)
+	return &MeterReading{
+		ID:                 uuid.New(),
+		RoomID:             roomID,
+		ReadingType:        ReadingTypeExit,
+		ReadingDateActual:  &t,
 		ElectricityCurrent: elecCurrent,
 		WaterCurrent:       waterCurrent,
 	}
@@ -53,6 +67,12 @@ func TestNewReading_FirstReading_NilLatest(t *testing.T) {
 	}
 	if m.ElectricityCurrent != 100 || m.WaterCurrent != 50 {
 		t.Errorf("current values mismatch")
+	}
+	if m.ReadingType != ReadingTypeMonthly {
+		t.Errorf("ReadingType = %s, want MONTHLY", m.ReadingType)
+	}
+	if m.BillingMonth == nil || *m.BillingMonth != "2026-03" {
+		t.Errorf("BillingMonth mismatch")
 	}
 }
 
@@ -592,5 +612,190 @@ func TestIsBeforeMonth(t *testing.T) {
 		if got := isBeforeMonth(tt.a, tt.b); got != tt.want {
 			t.Errorf("isBeforeMonth(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+// --- temporalMonth ---
+
+func TestTemporalMonth_Monthly(t *testing.T) {
+	m := MeterReading{ReadingType: ReadingTypeMonthly, BillingMonth: strPtr("2026-03")}
+	if got := m.temporalMonth(); got != "2026-03" {
+		t.Errorf("temporalMonth() = %q, want %q", got, "2026-03")
+	}
+}
+
+func TestTemporalMonth_Exit(t *testing.T) {
+	d := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	m := MeterReading{ReadingType: ReadingTypeExit, ReadingDateActual: &d}
+	if got := m.temporalMonth(); got != "2026-03" {
+		t.Errorf("temporalMonth() = %q, want %q", got, "2026-03")
+	}
+}
+
+// ==============================
+// EXIT Reading Tests
+// ==============================
+
+func TestNewExitReading_FirstReading(t *testing.T) {
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	m, err := NewExitReading(roomA, date, 100, 50, nil, noReplace, noRollover)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ReadingType != ReadingTypeExit {
+		t.Errorf("ReadingType = %s, want EXIT", m.ReadingType)
+	}
+	if m.ReadingDateActual == nil || !m.ReadingDateActual.Equal(date) {
+		t.Error("ReadingDateActual mismatch")
+	}
+	if m.BillingMonth != nil {
+		t.Errorf("BillingMonth should be nil for EXIT, got %v", m.BillingMonth)
+	}
+	if m.ElectricityPrevious != 0 || m.WaterPrevious != 0 {
+		t.Error("first reading previous should be 0")
+	}
+}
+
+func TestNewExitReading_AutoPopulateFromMonthlyLatest(t *testing.T) {
+	latest := makeLatest(roomA, "2026-02", 200, 100)
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	m, err := NewExitReading(roomA, date, 350, 130, latest, noReplace, noRollover)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 200 {
+		t.Errorf("ElectricityPrevious = %d, want 200", m.ElectricityPrevious)
+	}
+	if m.WaterPrevious != 100 {
+		t.Errorf("WaterPrevious = %d, want 100", m.WaterPrevious)
+	}
+}
+
+func TestNewExitReading_AutoPopulateFromExitLatest(t *testing.T) {
+	latest := makeExitLatest(roomA, "2026-03-10", 300, 150)
+	date := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
+	m, err := NewExitReading(roomA, date, 350, 160, latest, noReplace, noRollover)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 300 {
+		t.Errorf("ElectricityPrevious = %d, want 300", m.ElectricityPrevious)
+	}
+	if m.WaterPrevious != 150 {
+		t.Errorf("WaterPrevious = %d, want 150", m.WaterPrevious)
+	}
+}
+
+func TestNewExitReading_DateBeforeLatestMonth(t *testing.T) {
+	latest := makeLatest(roomA, "2026-04", 200, 100)
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	_, err := NewExitReading(roomA, date, 250, 120, latest, noReplace, noRollover)
+	if err != ErrExitDateBeforeLatest {
+		t.Errorf("expected ErrExitDateBeforeLatest, got %v", err)
+	}
+}
+
+func TestNewExitReading_SameMonthAsLatest_OK(t *testing.T) {
+	latest := makeLatest(roomA, "2026-03", 200, 100)
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	_, err := NewExitReading(roomA, date, 250, 120, latest, noReplace, noRollover)
+	if err != nil {
+		t.Fatalf("same month EXIT should be allowed, got: %v", err)
+	}
+}
+
+func TestNewExitReading_RoomMismatch(t *testing.T) {
+	latest := makeLatest(roomB, "2026-02", 200, 100)
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	_, err := NewExitReading(roomA, date, 250, 120, latest, noReplace, noRollover)
+	if err != ErrLatestRoomMismatch {
+		t.Errorf("expected ErrLatestRoomMismatch, got %v", err)
+	}
+}
+
+func TestNewExitReading_RolloverAndReplacedConflict(t *testing.T) {
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	_, err := NewExitReading(roomA, date, 20, 50, nil,
+		MeterReplacedFlags{Electricity: true}, MeterRolloverFlags{Electricity: true})
+	if err != ErrRolloverAndReplacedConflict {
+		t.Errorf("expected ErrRolloverAndReplacedConflict, got %v", err)
+	}
+}
+
+func TestNewExitReading_WithMeterReplaced(t *testing.T) {
+	latest := makeLatest(roomA, "2026-02", 9999, 5000)
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	m, err := NewExitReading(roomA, date, 50, 10, latest, MeterReplacedFlags{Water: true, Electricity: true}, noRollover)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 0 || m.WaterPrevious != 0 {
+		t.Errorf("meter replaced should reset previous to 0")
+	}
+}
+
+func TestNewExitReading_WithRollover(t *testing.T) {
+	latest := makeLatest(roomA, "2026-02", 9970, 100)
+	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	m, err := NewExitReading(roomA, date, 20, 120, latest, noReplace, MeterRolloverFlags{Electricity: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 9970 {
+		t.Errorf("ElectricityPrevious = %d, want 9970", m.ElectricityPrevious)
+	}
+	if !m.IsRolloverElectricity {
+		t.Error("IsRolloverElectricity should be true")
+	}
+	if got := m.ElectricityUsed(); got != 49 {
+		t.Errorf("ElectricityUsed() = %d, want 49", got)
+	}
+}
+
+// --- NewReading after EXIT latest (continuity) ---
+
+func TestNewReading_AfterExitLatest(t *testing.T) {
+	latest := makeExitLatest(roomA, "2026-03-15", 300, 150)
+	m, err := NewReading(roomA, "2026-04", 400, 200, latest, noReplace, noRollover)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ElectricityPrevious != 300 {
+		t.Errorf("ElectricityPrevious = %d, want 300 (from EXIT latest)", m.ElectricityPrevious)
+	}
+	if m.WaterPrevious != 150 {
+		t.Errorf("WaterPrevious = %d, want 150 (from EXIT latest)", m.WaterPrevious)
+	}
+}
+
+func TestNewReading_BeforeExitLatestMonth(t *testing.T) {
+	latest := makeExitLatest(roomA, "2026-04-10", 300, 150)
+	_, err := NewReading(roomA, "2026-03", 350, 160, latest, noReplace, noRollover)
+	if err != ErrBillingMonthBeforeLatest {
+		t.Errorf("expected ErrBillingMonthBeforeLatest, got %v", err)
+	}
+}
+
+// --- readingMonth ---
+
+func TestReadingMonth_Monthly(t *testing.T) {
+	m := MeterReading{BillingMonth: strPtr("2026-03")}
+	if got := readingMonth(m); got != "2026-03" {
+		t.Errorf("readingMonth() = %q, want %q", got, "2026-03")
+	}
+}
+
+func TestReadingMonth_Exit(t *testing.T) {
+	d := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	m := MeterReading{ReadingDateActual: &d}
+	if got := readingMonth(m); got != "2026-03" {
+		t.Errorf("readingMonth() = %q, want %q", got, "2026-03")
+	}
+}
+
+func TestReadingMonth_NilBoth(t *testing.T) {
+	m := MeterReading{}
+	if got := readingMonth(m); got != "" {
+		t.Errorf("readingMonth() = %q, want empty", got)
 	}
 }

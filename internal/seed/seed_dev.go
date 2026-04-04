@@ -211,7 +211,7 @@ func seedDevMeterReadings(db *gorm.DB) error {
 
 			reading := meterreading.MeterReading{
 				RoomID:              rm.ID,
-				BillingMonth:        billingMonth,
+				BillingMonth:        &billingMonth,
 				ElectricityPrevious: elecPrev,
 				ElectricityCurrent:  elecCurrent,
 				WaterPrevious:       waterPrev,
@@ -426,7 +426,7 @@ func seedDevTenantHistory(db *gorm.DB) error {
 		waterCurr := waterPrev + m.water
 		reading := meterreading.MeterReading{
 			RoomID:              a108Room.ID,
-			BillingMonth:        billingMonth,
+			BillingMonth:        &billingMonth,
 			ElectricityPrevious: elecPrev,
 			ElectricityCurrent:  elecCurr,
 			WaterPrevious:       waterPrev,
@@ -571,7 +571,7 @@ func seedDevTenantHistory(db *gorm.DB) error {
 		waterCurr := waterPrev + m.water
 		reading := meterreading.MeterReading{
 			RoomID:              a109Room.ID,
-			BillingMonth:        billingMonth,
+			BillingMonth:        &billingMonth,
 			ElectricityPrevious: elecPrev,
 			ElectricityCurrent:  elecCurr,
 			WaterPrevious:       waterPrev,

@@ -19,6 +19,17 @@ type CreateRequest struct {
 	IsElectricityMeterRollover bool   `json:"is_electricity_meter_rollover"`
 }
 
+type ExitCreateRequest struct {
+	RoomID                     string `json:"room_id" validate:"required,uuid"`
+	ReadingDateActual          string `json:"reading_date_actual" validate:"required"` // YYYY-MM-DD
+	ElectricityCurrent         int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent               int    `json:"water_current" validate:"min=0"`
+	IsWaterMeterReplaced       bool   `json:"is_water_meter_replaced"`
+	IsElectricityMeterReplaced bool   `json:"is_electricity_meter_replaced"`
+	IsWaterMeterRollover       bool   `json:"is_water_meter_rollover"`
+	IsElectricityMeterRollover bool   `json:"is_electricity_meter_rollover"`
+}
+
 type BatchCreateItem struct {
 	RoomID                     string `json:"room_id" validate:"required,uuid"`
 	ElectricityCurrent         int    `json:"electricity_current" validate:"min=0"`
@@ -59,6 +70,20 @@ func (r CreateRequest) RolloverFlags() MeterRolloverFlags {
 	}
 }
 
+func (r ExitCreateRequest) ReplacedFlags() MeterReplacedFlags {
+	return MeterReplacedFlags{
+		Water:       r.IsWaterMeterReplaced,
+		Electricity: r.IsElectricityMeterReplaced,
+	}
+}
+
+func (r ExitCreateRequest) RolloverFlags() MeterRolloverFlags {
+	return MeterRolloverFlags{
+		Water:       r.IsWaterMeterRollover,
+		Electricity: r.IsElectricityMeterRollover,
+	}
+}
+
 func (r BatchCreateItem) ReplacedFlags() MeterReplacedFlags {
 	return MeterReplacedFlags{
 		Water:       r.IsWaterMeterReplaced,
@@ -91,30 +116,33 @@ func (r UpdateRequest) RolloverFlags() MeterRolloverFlags {
 
 type ListParams struct {
 	pagination.PaginationParams
-	Month string `query:"month" validate:"omitempty"` // format: YYYY-MM
+	Month       string `query:"month" validate:"omitempty"`                          // format: YYYY-MM
+	ReadingType string `query:"reading_type" validate:"omitempty,oneof=MONTHLY EXIT"` // MONTHLY or EXIT
 }
 
 // --- Response DTOs ---
 
 type MeterReadingResponse struct {
-	ID                   string `json:"id"`
-	RoomID               string `json:"room_id"`
-	RoomNumber           string `json:"room_number"`
-	Floor                int    `json:"floor"`
-	BillingMonth         string `json:"billing_month"`
-	ElectricityPrevious  int    `json:"electricity_previous"`
-	ElectricityCurrent   int    `json:"electricity_current"`
-	ElectricityUsed      int    `json:"electricity_used"`
-	WaterPrevious        int    `json:"water_previous"`
-	WaterCurrent         int    `json:"water_current"`
-	WaterUsed            int    `json:"water_used"`
-	IsRolloverElectricity bool   `json:"is_rollover_electricity"`
-	IsRolloverWater       bool   `json:"is_rollover_water"`
-	IsAnomalyElectricity  bool   `json:"is_anomaly_electricity"`
-	IsAnomalyWater        bool   `json:"is_anomaly_water"`
-	TenantName           string `json:"tenant_name"`
-	CreatedAt            string `json:"created_at"`
-	UpdatedAt            string `json:"updated_at"`
+	ID                    string  `json:"id"`
+	RoomID                string  `json:"room_id"`
+	RoomNumber            string  `json:"room_number"`
+	Floor                 int     `json:"floor"`
+	ReadingType           string  `json:"reading_type"`
+	BillingMonth          *string `json:"billing_month"`
+	ReadingDateActual     *string `json:"reading_date_actual"`
+	ElectricityPrevious   int     `json:"electricity_previous"`
+	ElectricityCurrent    int     `json:"electricity_current"`
+	ElectricityUsed       int     `json:"electricity_used"`
+	WaterPrevious         int     `json:"water_previous"`
+	WaterCurrent          int     `json:"water_current"`
+	WaterUsed             int     `json:"water_used"`
+	IsRolloverElectricity bool    `json:"is_rollover_electricity"`
+	IsRolloverWater       bool    `json:"is_rollover_water"`
+	IsAnomalyElectricity  bool    `json:"is_anomaly_electricity"`
+	IsAnomalyWater        bool    `json:"is_anomaly_water"`
+	TenantName            string  `json:"tenant_name"`
+	CreatedAt             string  `json:"created_at"`
+	UpdatedAt             string  `json:"updated_at"`
 }
 
 // MeterReadingWithRoom holds joined data from meter_readings + rooms + tenants.
@@ -125,26 +153,36 @@ type MeterReadingWithRoom struct {
 	TenantName string
 }
 
+func formatDatePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format("2006-01-02")
+	return &s
+}
+
 func ToMeterReadingResponse(m MeterReadingWithRoom) MeterReadingResponse {
 	return MeterReadingResponse{
-		ID:                   m.ID.String(),
-		RoomID:               m.RoomID.String(),
-		RoomNumber:           m.RoomNumber,
-		Floor:                m.Floor,
+		ID:                    m.ID.String(),
+		RoomID:                m.RoomID.String(),
+		RoomNumber:            m.RoomNumber,
+		Floor:                 m.Floor,
+		ReadingType:           string(m.ReadingType),
 		BillingMonth:          m.BillingMonth,
-		ElectricityPrevious:  m.ElectricityPrevious,
-		ElectricityCurrent:   m.ElectricityCurrent,
-		ElectricityUsed:      m.ElectricityUsed(),
-		WaterPrevious:        m.WaterPrevious,
-		WaterCurrent:         m.WaterCurrent,
-		WaterUsed:            m.WaterUsed(),
+		ReadingDateActual:     formatDatePtr(m.ReadingDateActual),
+		ElectricityPrevious:   m.ElectricityPrevious,
+		ElectricityCurrent:    m.ElectricityCurrent,
+		ElectricityUsed:       m.ElectricityUsed(),
+		WaterPrevious:         m.WaterPrevious,
+		WaterCurrent:          m.WaterCurrent,
+		WaterUsed:             m.WaterUsed(),
 		IsRolloverElectricity: m.IsRolloverElectricity,
 		IsRolloverWater:       m.IsRolloverWater,
 		IsAnomalyElectricity:  m.IsAnomalyElectricity,
 		IsAnomalyWater:        m.IsAnomalyWater,
-		TenantName:           m.TenantName,
-		CreatedAt:            m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:            m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		TenantName:            m.TenantName,
+		CreatedAt:             m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:             m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -159,24 +197,26 @@ func ToMeterReadingResponseList(readings []MeterReadingWithRoom) []MeterReadingR
 // --- Room History Response ---
 
 type RoomHistoryItem struct {
-	ID                    string `json:"id"`
-	BillingMonth          string `json:"billing_month"`
-	ElectricityPrevious   int    `json:"electricity_previous"`
-	ElectricityCurrent    int    `json:"electricity_current"`
-	ElectricityUsed       int    `json:"electricity_used"`
-	WaterPrevious         int    `json:"water_previous"`
-	WaterCurrent          int    `json:"water_current"`
-	WaterUsed             int    `json:"water_used"`
-	IsRolloverElectricity bool   `json:"is_rollover_electricity"`
-	IsRolloverWater       bool   `json:"is_rollover_water"`
-	IsAnomalyElectricity  bool   `json:"is_anomaly_electricity"`
-	IsAnomalyWater        bool   `json:"is_anomaly_water"`
-	IsEdited              bool   `json:"is_edited"`
-	TenantName            string `json:"tenant_name"`
-	ContractStartDate     string `json:"contract_start_date"`
-	IsCurrentTenant       bool   `json:"is_current_tenant"`
-	CreatedAt             string `json:"created_at"`
-	UpdatedAt             string `json:"updated_at"`
+	ID                    string  `json:"id"`
+	ReadingType           string  `json:"reading_type"`
+	BillingMonth          *string `json:"billing_month"`
+	ReadingDateActual     *string `json:"reading_date_actual"`
+	ElectricityPrevious   int     `json:"electricity_previous"`
+	ElectricityCurrent    int     `json:"electricity_current"`
+	ElectricityUsed       int     `json:"electricity_used"`
+	WaterPrevious         int     `json:"water_previous"`
+	WaterCurrent          int     `json:"water_current"`
+	WaterUsed             int     `json:"water_used"`
+	IsRolloverElectricity bool    `json:"is_rollover_electricity"`
+	IsRolloverWater       bool    `json:"is_rollover_water"`
+	IsAnomalyElectricity  bool    `json:"is_anomaly_electricity"`
+	IsAnomalyWater        bool    `json:"is_anomaly_water"`
+	IsEdited              bool    `json:"is_edited"`
+	TenantName            string  `json:"tenant_name"`
+	ContractStartDate     string  `json:"contract_start_date"`
+	IsCurrentTenant       bool    `json:"is_current_tenant"`
+	CreatedAt             string  `json:"created_at"`
+	UpdatedAt             string  `json:"updated_at"`
 }
 
 // MeterReadingWithTenant holds a reading enriched with tenant context from contract data.
@@ -194,7 +234,9 @@ func ToRoomHistoryItem(m MeterReadingWithTenant) RoomHistoryItem {
 	}
 	return RoomHistoryItem{
 		ID:                    m.ID.String(),
-		BillingMonth:           m.BillingMonth,
+		ReadingType:           string(m.ReadingType),
+		BillingMonth:          m.BillingMonth,
+		ReadingDateActual:     formatDatePtr(m.ReadingDateActual),
 		ElectricityPrevious:   m.ElectricityPrevious,
 		ElectricityCurrent:    m.ElectricityCurrent,
 		ElectricityUsed:       m.ElectricityUsed(),
@@ -234,9 +276,11 @@ type BatchCreateResponse struct {
 }
 
 type LatestReadingResponse struct {
-	ElectricityCurrent int    `json:"electricity_current"`
-	WaterCurrent       int    `json:"water_current"`
-	BillingMonth       string `json:"billing_month"`
+	ReadingType        string  `json:"reading_type"`
+	ElectricityCurrent int     `json:"electricity_current"`
+	WaterCurrent       int     `json:"water_current"`
+	BillingMonth       *string `json:"billing_month"`
+	ReadingDateActual  *string `json:"reading_date_actual"`
 }
 
 type RoomBaselineResponse struct {

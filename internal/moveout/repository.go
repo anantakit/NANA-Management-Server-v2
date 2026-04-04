@@ -17,6 +17,7 @@ type MoveOutRepository interface {
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error)
 	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*MoveOutNotice, error)
 	HasActiveByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 	Create(ctx context.Context, notice *MoveOutNotice) error
 	Update(ctx context.Context, notice *MoveOutNotice) error
 }
@@ -146,6 +147,29 @@ func (r *moveOutRepository) HasActiveByContractID(ctx context.Context, contractI
 		Where("contract_id = ? AND status != ?", contractID, MoveOutStatusCancelled).
 		Count(&count).Error
 	return count > 0, err
+}
+
+func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]bool{}, nil
+	}
+	var results []struct {
+		RoomID uuid.UUID `gorm:"column:room_id"`
+	}
+	err := database.DB(ctx, r.db).
+		Model(&MoveOutNotice{}).
+		Select("DISTINCT contracts.room_id").
+		Joins("JOIN contracts ON contracts.id = move_out_notices.contract_id AND contracts.deleted_at IS NULL").
+		Where("move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ?", MoveOutStatusPending, roomIDs).
+		Scan(&results).Error
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[uuid.UUID]bool, len(results))
+	for _, row := range results {
+		m[row.RoomID] = true
+	}
+	return m, nil
 }
 
 func (r *moveOutRepository) Create(ctx context.Context, notice *MoveOutNotice) error {

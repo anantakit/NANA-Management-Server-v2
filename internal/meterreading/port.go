@@ -23,3 +23,11 @@ type ContractQuerier interface {
 	FindActiveContractStartDatesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]time.Time, error)
 	FindByRoomIDWithTenants(ctx context.Context, roomID uuid.UUID) ([]contract.ContractTenantSummary, error)
 }
+
+// MoveOutChecker checks move-out notice status for rooms.
+// Used to exclude rooms with pending notices from monthly batch,
+// and to validate EXIT reading creation.
+// Implemented by moveout.MoveOutRepository; injected via main.go.
+type MoveOutChecker interface {
+	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+}
