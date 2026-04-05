@@ -25,8 +25,10 @@ internal/
 ├── contract/     ← handler + service + repo + dto + model + port.go
 ├── room/         ← handler + service + repo + dto + model + port.go
 ├── tenant/       ← handler + service + repo + dto + model + port.go
-├── domain/       ← future entities only (bill, meter_reading, payment)
-├── model/        ← GORM structs for future entities (bill, meter_reading, payment)
+├── billing/      ← bills + line items (monthly, settlement)
+├── billingconfig/ ← configurable fees per apartment
+├── meterreading/ ← meter readings (MONTHLY, EXIT)
+├── moveout/      ← move-out notices
 ├── seed/         ← database seeding
 └── shared/       ← cross-cutting infrastructure
     ├── bind/       ← bind.Body(), bind.Query() + validator

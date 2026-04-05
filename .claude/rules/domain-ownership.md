@@ -17,8 +17,10 @@ description: DDD ownership rules — who owns which table, where code belongs, d
 | **tenant** | `tenants` |
 | **contract** | `contracts` |
 | **auth** | `users`, `refresh_tokens` |
-| **billing** (future) | `bills` |
-| **meter** (future) | `meter_readings` |
+| **billing** | `bills`, `bill_line_items` |
+| **billingconfig** | `billing_configs` |
+| **meterreading** | `meter_readings` |
+| **moveout** | `move_out_notices` |
 | **payment** (future) | `payments` |
 
 ```
@@ -49,12 +51,20 @@ apartment ─────── owns: apartments, apartment_bank_accounts
                     reads: nothing cross-feature
 ```
 
+### Implemented
+
+```
+meterreading ── owns: meter_readings       reads: rooms (JOIN)
+billingconfig ─ owns: billing_configs      reads: apartments
+moveout ─────── owns: move_out_notices     reads: contracts, rooms
+billing ─────── owns: bills, bill_line_items
+                reads: contracts, rooms, meter_readings, billing_configs, move_out_notices
+                ports: ContractQuerier, MeterReadingQuerier, BillingConfigQuerier, MoveOutQuerier
+```
+
 ### Future
 
 ```
-meter ──── owns: meter_readings      reads: rooms, users
-billing ── owns: bills               cross-write: contracts? (via port)
-                                     reads: contracts, rooms, meter_readings
 payment ── owns: payments            cross-write: bills.status (via port)
                                      reads: bills, users
 ```

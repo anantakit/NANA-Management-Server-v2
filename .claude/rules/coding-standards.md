@@ -50,8 +50,8 @@ func (r *repo) FindByID(ctx, id) (*Contract, error)
 ```
 
 ### Domain (internal/domain/) — เฉพาะ future entities ที่ยังไม่มี feature
-- ใช้เก็บ struct สำหรับ feature ที่ยังไม่สร้าง (bill, meter_reading, payment)
-- เมื่อสร้าง feature แล้ว → ย้ายเข้า feature package ทันที
+- ใช้เก็บ struct สำหรับ feature ที่ยังไม่สร้าง (payment)
+- billing, meterreading, moveout, billingconfig ย้ายเข้า feature package แล้ว
 - **ห้ามเป็น shared dumping ground**
 
 ### Shared (internal/shared/) — cross-cutting concerns
