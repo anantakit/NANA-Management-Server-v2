@@ -1,5 +1,9 @@
 -- +goose Up
 
+-- Drop legacy bills/payments tables from 00001_init.sql (old schema, never used in production)
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS bills;
+
 CREATE TABLE bills (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     contract_id UUID NOT NULL REFERENCES contracts(id),

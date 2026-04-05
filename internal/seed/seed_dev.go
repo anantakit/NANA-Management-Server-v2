@@ -100,7 +100,7 @@ func seedDevContracts(db *gorm.DB) error {
 // | A101 | 6 months | ~120          | ~12            | Normal — usage 130 → no anomaly        |
 // | A102 | 6 months | ~81           | ~15            | Elec 122 → OK, 123+ → anomaly         |
 // | A103 | 6 months | ~133          | ~20            | Varied — 200 → OK, 201+ → anomaly     |
-// | A104 | 2 months | (not enough)  | (not enough)   | No anomaly even with extreme values    |
+// | A104 | 6 months | ~196          | ~24            | High variance — baseline less reliable |
 // | A105 | 6 months | ~40           | ~8             | Low-usage fan room — anomaly at 61+     |
 // | A106 | 6 months | ~250          | ~30            | Heavy AC user — anomaly at 376+        |
 // | A107 | 6 months | ~100          | ~50            | Water-only anomaly (elec normal)       |
@@ -155,9 +155,9 @@ func seedDevMeterReadings(db *gorm.DB) error {
 		"A103": {
 			{100, 18}, {150, 22}, {120, 19}, {180, 21}, {110, 20}, {140, 23},
 		},
-		// A104: only 2 months → not enough data for baseline
+		// A104: 6 months but high variance → not enough consistency for reliable baseline
 		"A104": {
-			{200, 25}, {190, 22},
+			{200, 25}, {190, 22}, {210, 28}, {180, 20}, {195, 24}, {205, 26},
 		},
 		// A105: low-usage fan room ~40 elec, ~8 water (คนอยู่ไม่ค่อยเปิดไฟ)
 		"A105": {
