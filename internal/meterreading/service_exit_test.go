@@ -67,6 +67,9 @@ func (m *mockMeterRepo) HasMonthlyByRoomAndMonth(ctx context.Context, roomID uui
 	}
 	return false, nil
 }
+func (m *mockMeterRepo) FindMonthlyByRoomsAndMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*MeterReading, error) {
+	return map[uuid.UUID]*MeterReading{}, nil
+}
 func (m *mockMeterRepo) Create(ctx context.Context, reading *MeterReading) error {
 	m.createdReading = reading
 	if m.createFn != nil {

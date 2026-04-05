@@ -272,6 +272,44 @@ func NewPrepaidCreditLine(amount int64, description string, order int) BillLineI
 	}
 }
 
+// --- Batch billing types ---
+
+type BatchBillItemStatus string
+
+const (
+	BatchItemCreated  BatchBillItemStatus = "CREATED"
+	BatchItemExisting BatchBillItemStatus = "EXISTING"
+	BatchItemSkipped  BatchBillItemStatus = "SKIPPED"
+	BatchItemFailed   BatchBillItemStatus = "FAILED"
+)
+
+// ContractBillResult is the per-contract outcome of batch billing.
+type ContractBillResult struct {
+	ContractID uuid.UUID
+	RoomID     uuid.UUID
+	RoomNumber string
+	RoomFloor  int
+	Status     BatchBillItemStatus
+	ReasonCode string     // machine-readable: MOVE_OUT_PENDING, NO_METER_READING, etc.
+	ReasonText string     // Thai human-readable
+	BillID     *uuid.UUID // set when CREATED or EXISTING
+}
+
+// BatchBillSummary aggregates batch results.
+type BatchBillSummary struct {
+	TotalContracts int
+	Created        int
+	Existing       int
+	Skipped        int
+	Failed         int
+}
+
+// BatchBillResult is the complete return value from batch billing.
+type BatchBillResult struct {
+	Summary BatchBillSummary
+	Details []ContractBillResult
+}
+
 // --- Projections ---
 
 // BillWithRelations is a projection for list/detail API responses.

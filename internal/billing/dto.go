@@ -19,6 +19,11 @@ type CreateSettlementBillRequest struct {
 	ContractID string `json:"contract_id" validate:"required,uuid"`
 }
 
+type BatchCreateMonthlyBillsRequest struct {
+	ApartmentID  string `json:"apartment_id" validate:"required,uuid"`
+	BillingMonth string `json:"billing_month" validate:"required,len=7"` // YYYY-MM
+}
+
 type VoidBillRequest struct {
 	Reason string `json:"reason" validate:"required,min=1,max=100"`
 }
@@ -74,6 +79,61 @@ type BillListItemResponse struct {
 	ApartmentName  string    `json:"apartment_name"`
 	ApartmentID    uuid.UUID `json:"apartment_id"`
 	CreatedAt      string    `json:"created_at"`
+}
+
+// --- Batch billing response DTOs ---
+
+type ContractBillResultResponse struct {
+	ContractID string  `json:"contract_id"`
+	RoomNumber string  `json:"room_number"`
+	RoomFloor  int     `json:"room_floor"`
+	Status     string  `json:"status"`
+	ReasonCode string  `json:"reason_code,omitempty"`
+	ReasonText string  `json:"reason_text,omitempty"`
+	BillID     *string `json:"bill_id,omitempty"`
+}
+
+type BatchBillSummaryResponse struct {
+	TotalContracts int `json:"total_contracts"`
+	Created        int `json:"created"`
+	Existing       int `json:"existing"`
+	Skipped        int `json:"skipped"`
+	Failed         int `json:"failed"`
+}
+
+type BatchBillResultResponse struct {
+	Summary BatchBillSummaryResponse     `json:"summary"`
+	Details []ContractBillResultResponse `json:"details"`
+}
+
+func ToBatchBillResultResponse(r BatchBillResult) BatchBillResultResponse {
+	details := make([]ContractBillResultResponse, len(r.Details))
+	for i, d := range r.Details {
+		var billID *string
+		if d.BillID != nil {
+			s := d.BillID.String()
+			billID = &s
+		}
+		details[i] = ContractBillResultResponse{
+			ContractID: d.ContractID.String(),
+			RoomNumber: d.RoomNumber,
+			RoomFloor:  d.RoomFloor,
+			Status:     string(d.Status),
+			ReasonCode: d.ReasonCode,
+			ReasonText: d.ReasonText,
+			BillID:     billID,
+		}
+	}
+	return BatchBillResultResponse{
+		Summary: BatchBillSummaryResponse{
+			TotalContracts: r.Summary.TotalContracts,
+			Created:        r.Summary.Created,
+			Existing:       r.Summary.Existing,
+			Skipped:        r.Summary.Skipped,
+			Failed:         r.Summary.Failed,
+		},
+		Details: details,
+	}
 }
 
 // --- Converters ---

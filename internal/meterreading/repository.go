@@ -37,6 +37,7 @@ type MeterReadingRepository interface {
 	FindLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
 	HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
+	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
 }
@@ -258,6 +259,27 @@ func (r *meterReadingRepository) HasMonthlyByRoomAndMonth(ctx context.Context, r
 		Where("room_id = ? AND reading_type = 'MONTHLY' AND billing_month = ? AND deleted_at IS NULL", roomID, month).
 		Count(&count).Error
 	return count > 0, err
+}
+
+// FindMonthlyByRoomsAndMonth bulk-fetches MONTHLY readings for multiple rooms in a single query.
+// Returns map[roomID]*MeterReading. DB UNIQUE constraint guarantees ≤1 row per room+month.
+func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]*MeterReading{}, nil
+	}
+	var readings []MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id IN ? AND reading_type = ? AND billing_month = ? AND deleted_at IS NULL",
+			roomIDs, ReadingTypeMonthly, month).
+		Find(&readings).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[uuid.UUID]*MeterReading, len(readings))
+	for i := range readings {
+		result[readings[i].RoomID] = &readings[i]
+	}
+	return result, nil
 }
 
 func (r *meterReadingRepository) Create(ctx context.Context, reading *MeterReading) error {

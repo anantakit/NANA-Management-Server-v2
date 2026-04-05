@@ -9,6 +9,7 @@ import (
 
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
+	"nana/internal/meterreading"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
@@ -38,6 +39,7 @@ type BillingService interface {
 	FinalizeBill(ctx context.Context, id uuid.UUID) (*Bill, error)
 	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*Bill, error)
 	MarkPaid(ctx context.Context, id uuid.UUID) (*Bill, error)
+	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest) (*BatchBillResult, error)
 }
 
 type billingService struct {
@@ -139,21 +141,34 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, ErrMeterMonthMismatch
 	}
 
-	// Build line items
-	nextMonth := advanceMonth(req.BillingMonth)
+	return s.buildAndCreateMonthlyBill(ctx, contractID, req.BillingMonth,
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+}
+
+// buildAndCreateMonthlyBill builds line items and persists a DRAFT monthly bill.
+// Caller is responsible for all validation (contract active, no duplicate, valid meter).
+// Used by both CreateMonthlyBill (single) and BatchCreateMonthlyBills (batch).
+func (s *billingService) buildAndCreateMonthlyBill(
+	ctx context.Context,
+	contractID uuid.UUID,
+	billingMonth string,
+	monthlyRent, elecRate, waterRate int64,
+	reading *meterreading.MeterReading,
+) (*Bill, error) {
+	nextMonth := advanceMonth(billingMonth)
 	elecUnits := reading.ElectricityUsed()
 	waterUnits := reading.WaterUsed()
 	items := []BillLineItem{
-		NewRoomRentLine(c.MonthlyRent, fmt.Sprintf("ค่าห้อง %s", nextMonth), 1),
-		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
+		NewRoomRentLine(monthlyRent, fmt.Sprintf("ค่าห้อง %s", nextMonth), 1),
+		NewElectricityLine(elecUnits, elecRate,
 			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), 2),
-		NewWaterLine(waterUnits, c.WaterRatePerUnit,
+		NewWaterLine(waterUnits, waterRate,
 			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), 3),
 	}
 
 	bill := Bill{
 		ContractID:   contractID,
-		BillingMonth: req.BillingMonth,
+		BillingMonth: billingMonth,
 		BillType:     BillTypeMonthly,
 		Status:       BillStatusDraft,
 		LineItems:    items,

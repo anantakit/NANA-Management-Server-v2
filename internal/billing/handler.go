@@ -22,6 +22,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/:id", h.GetByID)
 	r.Post("/monthly", h.CreateMonthly)
 	r.Post("/settlement", h.CreateSettlement)
+	r.Post("/batch-monthly", h.BatchCreateMonthly)
 	r.Patch("/:id/finalize", h.Finalize)
 	r.Patch("/:id/void", h.Void)
 	r.Patch("/:id/paid", h.MarkPaid)
@@ -120,6 +121,20 @@ func (h *BillingHandler) Void(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "ยกเลิกบิลสำเร็จ", ToBillResponse(*bill))
+}
+
+func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {
+	var req BatchCreateMonthlyBillsRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.BatchCreateMonthlyBills(c.Context(), req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สร้างบิลรายเดือนแบบกลุ่มสำเร็จ", ToBatchBillResultResponse(*result))
 }
 
 func (h *BillingHandler) MarkPaid(c fiber.Ctx) error {

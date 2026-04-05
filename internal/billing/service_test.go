@@ -19,13 +19,15 @@ import (
 // --- Hand-written mocks ---
 
 type mockBillingRepo struct {
-	findByIDFn                     func(ctx context.Context, id uuid.UUID) (*Bill, error)
-	findByContractAndMonthFn       func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
-	findNonVoidedByContractMonthFn func(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error)
-	sumPaidFn                      func(ctx context.Context, contractID uuid.UUID, since string) (int64, error)
-	createFn                       func(ctx context.Context, bill *Bill) error
-	updateFn                       func(ctx context.Context, bill *Bill) error
-	apartmentID                    uuid.UUID
+	findByIDFn                          func(ctx context.Context, id uuid.UUID) (*Bill, error)
+	findByContractAndMonthFn            func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
+	findNonVoidedByContractMonthFn      func(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error)
+	findActiveContractsByApartmentIDFn  func(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
+	findExistingByContractsAndMonthFn   func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
+	sumPaidFn                           func(ctx context.Context, contractID uuid.UUID, since string) (int64, error)
+	createFn                            func(ctx context.Context, bill *Bill) error
+	updateFn                            func(ctx context.Context, bill *Bill) error
+	apartmentID                         uuid.UUID
 
 	createdBill  *Bill
 	updatedBills []*Bill
@@ -63,6 +65,18 @@ func (m *mockBillingRepo) FindApartmentIDByRoomID(_ context.Context, _ uuid.UUID
 	}
 	return uuid.Nil, gorm.ErrRecordNotFound
 }
+func (m *mockBillingRepo) FindActiveContractsByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error) {
+	if m.findActiveContractsByApartmentIDFn != nil {
+		return m.findActiveContractsByApartmentIDFn(ctx, apartmentID)
+	}
+	return nil, nil
+}
+func (m *mockBillingRepo) FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error) {
+	if m.findExistingByContractsAndMonthFn != nil {
+		return m.findExistingByContractsAndMonthFn(ctx, contractIDs, month)
+	}
+	return map[uuid.UUID]*Bill{}, nil
+}
 func (m *mockBillingRepo) Create(ctx context.Context, bill *Bill) error {
 	m.createdBill = bill
 	if m.createFn != nil {
@@ -98,8 +112,9 @@ func (m *mockContractQuerier) FindByIDSimple(_ context.Context, _ uuid.UUID) (*c
 }
 
 type mockMeterQuerier struct {
-	reading          *meterreading.MeterReading
-	findByIDSimpleFn func(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
+	reading                      *meterreading.MeterReading
+	findByIDSimpleFn             func(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
+	findMonthlyByRoomsAndMonthFn func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
 }
 
 var _ MeterReadingQuerier = (*mockMeterQuerier)(nil)
@@ -119,6 +134,12 @@ func (m *mockMeterQuerier) FindLatestByRoomID(_ context.Context, _ uuid.UUID) (*
 	}
 	return nil, gorm.ErrRecordNotFound
 }
+func (m *mockMeterQuerier) FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+	if m.findMonthlyByRoomsAndMonthFn != nil {
+		return m.findMonthlyByRoomsAndMonthFn(ctx, roomIDs, month)
+	}
+	return map[uuid.UUID]*meterreading.MeterReading{}, nil
+}
 
 type mockConfigQuerier struct {
 	configs []billingconfig.BillingConfig
@@ -131,7 +152,8 @@ func (m *mockConfigQuerier) FindByApartmentID(_ context.Context, _ uuid.UUID) ([
 }
 
 type mockMoveOutQuerier struct {
-	notice *moveout.MoveOutNotice
+	notice                        *moveout.MoveOutNotice
+	findRoomIDsWithPendingNoticeFn func(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 var _ MoveOutQuerier = (*mockMoveOutQuerier)(nil)
@@ -141,6 +163,12 @@ func (m *mockMoveOutQuerier) FindActiveByContractID(_ context.Context, _ uuid.UU
 		return m.notice, nil
 	}
 	return nil, gorm.ErrRecordNotFound
+}
+func (m *mockMoveOutQuerier) FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	if m.findRoomIDsWithPendingNoticeFn != nil {
+		return m.findRoomIDsWithPendingNoticeFn(ctx, roomIDs)
+	}
+	return map[uuid.UUID]bool{}, nil
 }
 
 type mockTxManager struct{}
@@ -795,4 +823,408 @@ func findLineByType(items []BillLineItem, lt LineItemType) BillLineItem {
 		}
 	}
 	return BillLineItem{}
+}
+
+// ============================================================
+// Batch Monthly Billing Tests
+// ============================================================
+
+func testContractWithRoom(floor int, roomNum string) (ContractWithRoom, *contract.Contract) {
+	c := testContract()
+	c.StartDate = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return ContractWithRoom{
+		ContractID:             c.ID,
+		RoomID:                 c.RoomID,
+		RoomNumber:             roomNum,
+		RoomFloor:              floor,
+		StartDate:              c.StartDate,
+		MonthlyRent:            c.MonthlyRent,
+		ElectricityRatePerUnit: c.ElectricityRatePerUnit,
+		WaterRatePerUnit:       c.WaterRatePerUnit,
+	}, c
+}
+
+func batchSvc(repo *mockBillingRepo, meters *mockMeterQuerier, moveOuts *mockMoveOutQuerier) BillingService {
+	return NewBillingService(repo, &mockContractQuerier{}, meters, &mockConfigQuerier{}, moveOuts, &mockTxManager{})
+}
+
+func TestBatchCreateMonthlyBills_HappyPath(t *testing.T) {
+	cwr1, c1 := testContractWithRoom(1, "101")
+	cwr2, c2 := testContractWithRoom(2, "201")
+	cwr3, c3 := testContractWithRoom(3, "301")
+
+	r1 := testMonthlyReading(c1.RoomID, "2026-03")
+	r2 := testMonthlyReading(c2.RoomID, "2026-03")
+	r3 := testMonthlyReading(c3.RoomID, "2026-03")
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr1, cwr2, cwr3}, nil
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{
+				c1.RoomID: r1, c2.RoomID: r2, c3.RoomID: r3,
+			}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.TotalContracts != 3 {
+		t.Fatalf("total = %d, want 3", result.Summary.TotalContracts)
+	}
+	if result.Summary.Created != 3 {
+		t.Fatalf("created = %d, want 3", result.Summary.Created)
+	}
+	for _, d := range result.Details {
+		if d.Status != BatchItemCreated {
+			t.Errorf("room %s: expected CREATED, got %s", d.RoomNumber, d.Status)
+		}
+		if d.BillID == nil {
+			t.Errorf("room %s: bill_id should be set", d.RoomNumber)
+		}
+	}
+}
+
+func TestBatchCreateMonthlyBills_MixedResults(t *testing.T) {
+	cwr1, c1 := testContractWithRoom(1, "101") // will have meter → created
+	cwr2, c2 := testContractWithRoom(2, "201") // existing bill
+	cwr3, _ := testContractWithRoom(3, "301")  // no meter → skipped
+
+	r1 := testMonthlyReading(c1.RoomID, "2026-03")
+	existingBillID := uuid.New()
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr1, cwr2, cwr3}, nil
+		},
+		findExistingByContractsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*Bill, error) {
+			return map[uuid.UUID]*Bill{
+				c2.ID: {ID: existingBillID},
+			}, nil
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{
+				c1.RoomID: r1,
+				c2.RoomID: testMonthlyReading(c2.RoomID, "2026-03"),
+			}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Created != 1 {
+		t.Errorf("created = %d, want 1", result.Summary.Created)
+	}
+	if result.Summary.Existing != 1 {
+		t.Errorf("existing = %d, want 1", result.Summary.Existing)
+	}
+	if result.Summary.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1", result.Summary.Skipped)
+	}
+
+	// Verify existing has bill_id
+	for _, d := range result.Details {
+		if d.Status == BatchItemExisting && (d.BillID == nil || *d.BillID != existingBillID) {
+			t.Error("existing result should have correct bill_id")
+		}
+		if d.Status == BatchItemSkipped && d.ReasonCode != "NO_METER_READING" {
+			t.Errorf("skipped reason = %s, want NO_METER_READING", d.ReasonCode)
+		}
+	}
+}
+
+func TestBatchCreateMonthlyBills_MoveOutPending(t *testing.T) {
+	cwr, _ := testContractWithRoom(1, "101")
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+	}
+
+	moveOuts := &mockMoveOutQuerier{
+		findRoomIDsWithPendingNoticeFn: func(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+			return map[uuid.UUID]bool{cwr.RoomID: true}, nil
+		},
+	}
+
+	svc := batchSvc(repo, &mockMeterQuerier{}, moveOuts)
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", result.Summary.Skipped)
+	}
+	if result.Details[0].ReasonCode != "MOVE_OUT_PENDING" {
+		t.Errorf("reason = %s, want MOVE_OUT_PENDING", result.Details[0].ReasonCode)
+	}
+}
+
+func TestBatchCreateMonthlyBills_NotBillable_StartAfterMonth(t *testing.T) {
+	cwr, _ := testContractWithRoom(1, "101")
+	cwr.StartDate = time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) // starts May, billing March
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+	}
+
+	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", result.Summary.Skipped)
+	}
+	if result.Details[0].ReasonCode != "NOT_BILLABLE" {
+		t.Errorf("reason = %s, want NOT_BILLABLE", result.Details[0].ReasonCode)
+	}
+}
+
+func TestBatchCreateMonthlyBills_NotBillable_EndedBeforeMonth(t *testing.T) {
+	cwr, _ := testContractWithRoom(1, "101")
+	endDate := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC) // ended Feb, billing March
+	cwr.EndDate = &endDate
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+	}
+
+	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", result.Summary.Skipped)
+	}
+	if result.Details[0].ReasonCode != "NOT_BILLABLE" {
+		t.Errorf("reason = %s, want NOT_BILLABLE", result.Details[0].ReasonCode)
+	}
+}
+
+func TestBatchCreateMonthlyBills_EmptyApartment(t *testing.T) {
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return nil, nil
+		},
+	}
+
+	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.TotalContracts != 0 {
+		t.Fatalf("total = %d, want 0", result.Summary.TotalContracts)
+	}
+}
+
+func TestBatchCreateMonthlyBills_InvalidInput(t *testing.T) {
+	svc := batchSvc(&mockBillingRepo{}, &mockMeterQuerier{}, &mockMoveOutQuerier{})
+
+	_, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: "bad-uuid", BillingMonth: "2026-03",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid UUID")
+	}
+
+	_, err = svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-1",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid month format")
+	}
+}
+
+func TestBatchCreateMonthlyBills_DeterministicOrdering(t *testing.T) {
+	cwr3, _ := testContractWithRoom(3, "301")
+	cwr1, _ := testContractWithRoom(1, "101")
+	cwr2, _ := testContractWithRoom(2, "201")
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			// repo returns sorted by floor, room_number
+			return []ContractWithRoom{cwr1, cwr2, cwr3}, nil
+		},
+	}
+
+	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All skipped (no meters) but ordering should be preserved
+	if len(result.Details) != 3 {
+		t.Fatalf("details count = %d, want 3", len(result.Details))
+	}
+	if result.Details[0].RoomNumber != "101" || result.Details[1].RoomNumber != "201" || result.Details[2].RoomNumber != "301" {
+		t.Errorf("order = %s,%s,%s — want 101,201,301",
+			result.Details[0].RoomNumber, result.Details[1].RoomNumber, result.Details[2].RoomNumber)
+	}
+}
+
+func TestBatchCreateMonthlyBills_IdempotentRerun(t *testing.T) {
+	cwr1, c1 := testContractWithRoom(1, "101")
+	cwr2, c2 := testContractWithRoom(2, "201")
+	bill1ID, bill2ID := uuid.New(), uuid.New()
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr1, cwr2}, nil
+		},
+		findExistingByContractsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*Bill, error) {
+			return map[uuid.UUID]*Bill{
+				c1.ID: {ID: bill1ID},
+				c2.ID: {ID: bill2ID},
+			}, nil
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{
+				c1.RoomID: testMonthlyReading(c1.RoomID, "2026-03"),
+				c2.RoomID: testMonthlyReading(c2.RoomID, "2026-03"),
+			}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Created != 0 {
+		t.Errorf("created = %d, want 0 (idempotent)", result.Summary.Created)
+	}
+	if result.Summary.Existing != 2 {
+		t.Errorf("existing = %d, want 2", result.Summary.Existing)
+	}
+}
+
+func TestBatchCreateMonthlyBills_RaceCondition(t *testing.T) {
+	cwr, c := testContractWithRoom(1, "101")
+	r := testMonthlyReading(c.RoomID, "2026-03")
+	raceBillID := uuid.New()
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+		// Pre-check: no existing bill
+		// But FindByContractAndMonth for re-fetch returns the bill created by another request
+		findByContractAndMonthFn: func(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
+			return &Bill{ID: raceBillID}, nil
+		},
+		// Simulate: create fails with duplicate
+		createFn: func(_ context.Context, _ *Bill) error {
+			return ErrBillAlreadyExists
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Existing != 1 {
+		t.Fatalf("existing = %d, want 1 (race → re-fetch)", result.Summary.Existing)
+	}
+	if result.Details[0].BillID == nil || *result.Details[0].BillID != raceBillID {
+		t.Error("race condition result should have re-fetched bill_id")
+	}
+}
+
+func TestBatchCreateMonthlyBills_CreateFails_SystemError(t *testing.T) {
+	cwr, c := testContractWithRoom(1, "101")
+	r := testMonthlyReading(c.RoomID, "2026-03")
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+		createFn: func(_ context.Context, _ *Bill) error {
+			return errors.New("database connection lost")
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Failed != 1 {
+		t.Fatalf("failed = %d, want 1", result.Summary.Failed)
+	}
+	if result.Details[0].ReasonCode != "SYSTEM_ERROR" {
+		t.Errorf("reason_code = %s, want SYSTEM_ERROR", result.Details[0].ReasonCode)
+	}
+	if result.Details[0].ReasonText != "เกิดข้อผิดพลาดของระบบ" {
+		t.Errorf("reason_text = %s, want generic system error", result.Details[0].ReasonText)
+	}
 }

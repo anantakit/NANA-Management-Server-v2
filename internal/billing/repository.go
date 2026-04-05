@@ -3,7 +3,9 @@ package billing
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"nana/internal/contract"
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
 
@@ -17,6 +19,8 @@ type BillingRepository interface {
 	FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error)
 	FindNonVoidedByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string) ([]Bill, error)
 	FindApartmentIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error)
+	FindActiveContractsByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
+	FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
 	Create(ctx context.Context, bill *Bill) error
 	Update(ctx context.Context, bill *Bill) error
 	SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, sinceMonth string) (int64, error)
@@ -167,6 +171,70 @@ func (r *billingRepository) FindApartmentIDByRoomID(ctx context.Context, roomID 
 		return uuid.Nil, gorm.ErrRecordNotFound
 	}
 	return aptID, nil
+}
+
+// FindActiveContractsByApartmentID returns active contracts with room info for batch billing.
+// Display-read JOIN: contracts + rooms (cross-feature pattern level 1 — domain constant).
+// Ordered by floor ASC, room number ASC for deterministic processing.
+func (r *billingRepository) FindActiveContractsByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error) {
+	var rows []struct {
+		ContractID             uuid.UUID  `gorm:"column:contract_id"`
+		RoomID                 uuid.UUID  `gorm:"column:room_id"`
+		RoomNumber             string     `gorm:"column:room_number"`
+		RoomFloor              int        `gorm:"column:room_floor"`
+		StartDate              time.Time  `gorm:"column:start_date"`
+		EndDate                *time.Time `gorm:"column:end_date"`
+		MonthlyRent            int64      `gorm:"column:monthly_rent"`
+		ElectricityRatePerUnit int64      `gorm:"column:electricity_rate_per_unit"`
+		WaterRatePerUnit       int64      `gorm:"column:water_rate_per_unit"`
+	}
+	err := database.DB(ctx, r.db).
+		Table("contracts c").
+		Select(`c.id AS contract_id, c.room_id, r.number AS room_number, r.floor AS room_floor,
+			c.start_date, c.end_date, c.monthly_rent, c.electricity_rate_per_unit, c.water_rate_per_unit`).
+		Joins("JOIN rooms r ON r.id = c.room_id AND r.deleted_at IS NULL").
+		Where("r.apartment_id = ? AND c.status = ? AND c.deleted_at IS NULL", apartmentID, contract.ContractStatusActive).
+		Order("r.floor ASC, r.number ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ContractWithRoom, len(rows))
+	for i, row := range rows {
+		result[i] = ContractWithRoom{
+			ContractID:             row.ContractID,
+			RoomID:                 row.RoomID,
+			RoomNumber:             row.RoomNumber,
+			RoomFloor:              row.RoomFloor,
+			StartDate:              row.StartDate,
+			EndDate:                row.EndDate,
+			MonthlyRent:            row.MonthlyRent,
+			ElectricityRatePerUnit: row.ElectricityRatePerUnit,
+			WaterRatePerUnit:       row.WaterRatePerUnit,
+		}
+	}
+	return result, nil
+}
+
+// FindExistingByContractsAndMonth bulk-checks for existing non-VOID MONTHLY bills.
+// Returns map[contractID]*Bill with ID always populated.
+func (r *billingRepository) FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error) {
+	if len(contractIDs) == 0 {
+		return map[uuid.UUID]*Bill{}, nil
+	}
+	var bills []Bill
+	err := database.DB(ctx, r.db).
+		Where("contract_id IN ? AND billing_month = ? AND bill_type = ? AND status != ?",
+			contractIDs, month, BillTypeMonthly, BillStatusVoid).
+		Find(&bills).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[uuid.UUID]*Bill, len(bills))
+	for i := range bills {
+		result[bills[i].ContractID] = &bills[i]
+	}
+	return result, nil
 }
 
 func (r *billingRepository) Create(ctx context.Context, bill *Bill) error {
