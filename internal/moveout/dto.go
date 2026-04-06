@@ -11,13 +11,13 @@ type MoveOutListParams struct {
 
 type CreateMoveOutRequest struct {
 	ContractID       string `json:"contract_id" validate:"required,uuid"`
-	NoticeDate       string `json:"notice_date" validate:"required"`
-	ActualMoveOutDate string `json:"actual_move_out_date" validate:"required"`
+	NoticeDate       string `json:"notice_date" validate:"required,datetime=2006-01-02"`
+	ScheduledMoveOutDate string `json:"scheduled_move_out_date" validate:"required,datetime=2006-01-02"`
 	Note             string `json:"note"`
 }
 
 type UpdateMoveOutRequest struct {
-	ActualMoveOutDate *string `json:"actual_move_out_date"`
+	ScheduledMoveOutDate *string `json:"scheduled_move_out_date"`
 	Note              *string `json:"note"`
 }
 
@@ -25,7 +25,7 @@ type MoveOutResponse struct {
 	ID                string  `json:"id"`
 	ContractID        string  `json:"contract_id"`
 	NoticeDate        string  `json:"notice_date"`
-	ActualMoveOutDate string  `json:"actual_move_out_date"`
+	ScheduledMoveOutDate string  `json:"scheduled_move_out_date"`
 	Status            string  `json:"status"`
 	Note              string  `json:"note"`
 	TenantName        string  `json:"tenant_name,omitempty"`
@@ -48,7 +48,7 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 		ID:                m.ID.String(),
 		ContractID:        m.ContractID.String(),
 		NoticeDate:        m.NoticeDate.Format("2006-01-02"),
-		ActualMoveOutDate: m.ActualMoveOutDate.Format("2006-01-02"),
+		ScheduledMoveOutDate: m.ScheduledMoveOutDate.Format("2006-01-02"),
 		Status:            string(m.Status),
 		Note:              m.Note,
 		TenantName:        m.TenantName,

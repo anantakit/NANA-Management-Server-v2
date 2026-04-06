@@ -36,7 +36,7 @@ func TestMoveOutNotice_ValidateDates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &MoveOutNotice{
 				NoticeDate:        tt.notice,
-				ActualMoveOutDate: tt.moveOut,
+				ScheduledMoveOutDate: tt.moveOut,
 			}
 			err := m.ValidateDates()
 			if tt.wantErr {

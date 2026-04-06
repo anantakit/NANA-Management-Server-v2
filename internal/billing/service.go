@@ -213,7 +213,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		return nil, ErrMoveOutNotCompleted
 	}
 
-	moveOutDate := notice.ActualMoveOutDate
+	moveOutDate := notice.ScheduledMoveOutDate
 	billingMonth := toMonth(moveOutDate)
 
 	// Check duplicate settlement

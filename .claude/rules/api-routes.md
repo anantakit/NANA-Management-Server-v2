@@ -69,6 +69,6 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | GET | `/` | List move-out notices (paginated, filter by status/apartment_id, search tenant/room) |
 | GET | `/:id` | Get move-out notice with tenant + room + apartment info (JOIN) |
 | POST | `/` | Create move-out notice (contract must be ACTIVE, one active per contract) |
-| PUT | `/:id` | Update move-out notice (PENDING only: actual_move_out_date, note) |
+| PUT | `/:id` | Update move-out notice (PENDING only: scheduled_move_out_date, note) |
 | POST | `/:id/cancel` | Cancel move-out notice (PENDING only → CANCELLED) |
 | POST | `/:id/complete` | Complete move-out (tx: notice COMPLETED + contract ENDED + room VACANT) |

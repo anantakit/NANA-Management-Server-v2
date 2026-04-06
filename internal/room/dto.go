@@ -32,6 +32,9 @@ type ActiveContractSummary struct {
 	WaterRatePerUnit       float64 `json:"water_rate_per_unit"`
 	StartDate              string  `json:"start_date"`
 	MinMonths              int     `json:"min_months"`
+	MoveOutStatus          string  `json:"move_out_status"`
+	ScheduledMoveOutDate   *string `json:"scheduled_move_out_date"`
+	MoveOutNoticeID        *string `json:"move_out_notice_id"`
 }
 
 type RoomResponse struct {
@@ -61,6 +64,8 @@ type RoomWithContract struct {
 	WaterRatePerUnit       *int64
 	StartDate              *string
 	MinMonths              *int
+	MoveOutNoticeID        *string
+	ScheduledMoveOutDate   *string
 }
 
 func ToRoomResponse(r Room) RoomResponse {
@@ -82,6 +87,10 @@ func toRoomResponseWithContract(r RoomWithContract) RoomResponse {
 	}
 
 	if r.ContractID != nil && *r.ContractID != "" {
+		moveOutStatus := "NONE"
+		if r.MoveOutNoticeID != nil && *r.MoveOutNoticeID != "" {
+			moveOutStatus = "PENDING"
+		}
 		resp.ActiveContract = &ActiveContractSummary{
 			ContractID:             *r.ContractID,
 			TenantID:               derefStr(r.TenantID),
@@ -93,6 +102,9 @@ func toRoomResponseWithContract(r RoomWithContract) RoomResponse {
 			WaterRatePerUnit:       money.ToBaht(derefInt64(r.WaterRatePerUnit)),
 			StartDate:              derefStr(r.StartDate),
 			MinMonths:              derefInt(r.MinMonths),
+			MoveOutStatus:          moveOutStatus,
+			ScheduledMoveOutDate:   r.ScheduledMoveOutDate,
+			MoveOutNoticeID:        r.MoveOutNoticeID,
 		}
 	}
 

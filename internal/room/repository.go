@@ -35,6 +35,15 @@ func NewRoomRepository(db *gorm.DB) RoomRepository {
 	return &roomRepository{db: db}
 }
 
+// Display-read constants for cross-feature JOINs.
+// Import cycle prevents referencing contract.ContractStatusActive / moveout.MoveOutStatusPending
+// directly (contract + moveout depend on room via ports). These mirror the owner's domain values —
+// if those ever change, update here. See cross-feature-patterns.md §3c "Display Read".
+const (
+	joinContractStatusActive = "ACTIVE"
+	joinMoveOutStatusPending = "PENDING"
+)
+
 func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]Room, int64, error) {
 	var total int64
 	query := database.DB(ctx, r.db).Model(&Room{}).Where("apartment_id = ?", apartmentID)
@@ -87,6 +96,8 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 		WaterRatePerUnit       *int64  `gorm:"column:contract_water_rate"`
 		StartDate              *string `gorm:"column:contract_start"`
 		MinMonths              *int    `gorm:"column:contract_min_months"`
+		MoveOutNoticeID        *string `gorm:"column:move_out_notice_id"`
+		ScheduledMoveOutDate   *string `gorm:"column:scheduled_move_out_date"`
 	}
 
 	query := database.DB(ctx, r.db).
@@ -101,9 +112,12 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 			contracts.electricity_rate_per_unit AS contract_elec_rate,
 			contracts.water_rate_per_unit AS contract_water_rate,
 			TO_CHAR(contracts.start_date, 'YYYY-MM-DD') AS contract_start,
-			contracts.min_months AS contract_min_months`).
-		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = 'ACTIVE' AND contracts.deleted_at IS NULL").
+			contracts.min_months AS contract_min_months,
+			move_out_notices.id::text AS move_out_notice_id,
+			TO_CHAR(move_out_notices.scheduled_move_out_date, 'YYYY-MM-DD') AS scheduled_move_out_date`).
+		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = ? AND contracts.deleted_at IS NULL", joinContractStatusActive).
 		Joins("LEFT JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
+		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL", joinMoveOutStatusPending).
 		Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
 
 	if params.Search != "" {
@@ -129,6 +143,8 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 			WaterRatePerUnit:       row.WaterRatePerUnit,
 			StartDate:              row.StartDate,
 			MinMonths:              row.MinMonths,
+			MoveOutNoticeID:        row.MoveOutNoticeID,
+			ScheduledMoveOutDate:   row.ScheduledMoveOutDate,
 		}
 	}
 	return result, total, nil
@@ -147,6 +163,8 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 		WaterRatePerUnit       *int64  `gorm:"column:contract_water_rate"`
 		StartDate              *string `gorm:"column:contract_start"`
 		MinMonths              *int    `gorm:"column:contract_min_months"`
+		MoveOutNoticeID        *string `gorm:"column:move_out_notice_id"`
+		ScheduledMoveOutDate   *string `gorm:"column:scheduled_move_out_date"`
 	}
 
 	var row joinRow
@@ -162,9 +180,12 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 			contracts.electricity_rate_per_unit AS contract_elec_rate,
 			contracts.water_rate_per_unit AS contract_water_rate,
 			TO_CHAR(contracts.start_date, 'YYYY-MM-DD') AS contract_start,
-			contracts.min_months AS contract_min_months`).
-		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = 'ACTIVE' AND contracts.deleted_at IS NULL").
+			contracts.min_months AS contract_min_months,
+			move_out_notices.id::text AS move_out_notice_id,
+			TO_CHAR(move_out_notices.scheduled_move_out_date, 'YYYY-MM-DD') AS scheduled_move_out_date`).
+		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = ? AND contracts.deleted_at IS NULL", joinContractStatusActive).
 		Joins("LEFT JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
+		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL", joinMoveOutStatusPending).
 		Where("rooms.id = ? AND rooms.deleted_at IS NULL", id).
 		Scan(&row).Error
 	if err != nil {
@@ -186,6 +207,8 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 		WaterRatePerUnit:       row.WaterRatePerUnit,
 		StartDate:              row.StartDate,
 		MinMonths:              row.MinMonths,
+		MoveOutNoticeID:        row.MoveOutNoticeID,
+		ScheduledMoveOutDate:   row.ScheduledMoveOutDate,
 	}
 	return &result, nil
 }

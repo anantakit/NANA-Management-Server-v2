@@ -24,7 +24,7 @@ type MoveOutNotice struct {
 	ID                uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
 	ContractID        uuid.UUID      `gorm:"type:uuid;not null" json:"contract_id"`
 	NoticeDate        time.Time      `gorm:"type:date;not null" json:"notice_date"`
-	ActualMoveOutDate time.Time      `gorm:"type:date;not null" json:"actual_move_out_date"`
+	ScheduledMoveOutDate time.Time   `gorm:"column:scheduled_move_out_date;type:date;not null" json:"scheduled_move_out_date"`
 	Status            MoveOutStatus  `gorm:"type:varchar(20);not null;default:'PENDING'" json:"status"`
 	Note              string         `gorm:"type:text;not null;default:''" json:"note"`
 	CreatedAt         time.Time      `gorm:"not null;default:now()" json:"created_at"`
@@ -62,9 +62,9 @@ func (m *MoveOutNotice) IsCancelled() bool {
 	return m.Status == MoveOutStatusCancelled
 }
 
-// ValidateDates checks that actual_move_out_date >= notice_date.
+// ValidateDates checks that scheduled_move_out_date >= notice_date.
 func (m *MoveOutNotice) ValidateDates() error {
-	if m.ActualMoveOutDate.Before(m.NoticeDate) {
+	if m.ScheduledMoveOutDate.Before(m.NoticeDate) {
 		return ErrDateOrderInvalid
 	}
 	return nil

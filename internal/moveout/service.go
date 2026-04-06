@@ -86,7 +86,7 @@ func (s *moveOutService) Create(ctx context.Context, req CreateMoveOutRequest) (
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่แจ้งไม่ถูกต้อง")
 	}
-	moveOutDate, err := time.Parse("2006-01-02", req.ActualMoveOutDate)
+	moveOutDate, err := time.Parse("2006-01-02", req.ScheduledMoveOutDate)
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ย้ายออกไม่ถูกต้อง")
 	}
@@ -94,7 +94,7 @@ func (s *moveOutService) Create(ctx context.Context, req CreateMoveOutRequest) (
 	notice := MoveOutNotice{
 		ContractID:        contractID,
 		NoticeDate:        noticeDate,
-		ActualMoveOutDate: moveOutDate,
+		ScheduledMoveOutDate: moveOutDate,
 		Status:            MoveOutStatusPending,
 		Note:              req.Note,
 	}
@@ -123,12 +123,12 @@ func (s *moveOutService) Update(ctx context.Context, id uuid.UUID, req UpdateMov
 		return nil, respond.ErrBadRequest.WithMessage(ErrNotPending.Error())
 	}
 
-	if req.ActualMoveOutDate != nil {
-		moveOutDate, err := time.Parse("2006-01-02", *req.ActualMoveOutDate)
+	if req.ScheduledMoveOutDate != nil {
+		moveOutDate, err := time.Parse("2006-01-02", *req.ScheduledMoveOutDate)
 		if err != nil {
 			return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ย้ายออกไม่ถูกต้อง")
 		}
-		notice.ActualMoveOutDate = moveOutDate
+		notice.ScheduledMoveOutDate = moveOutDate
 	}
 	if req.Note != nil {
 		notice.Note = *req.Note
@@ -176,22 +176,20 @@ func (s *moveOutService) Complete(ctx context.Context, id uuid.UUID) (*MoveOutWi
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 	}
 
-	// Get contract for room ID
-	c, err := s.contracts.FindByIDSimple(ctx, notice.ContractID)
-	if err != nil {
-		return nil, fmt.Errorf("find contract: %w", err)
-	}
-
 	if err := notice.Complete(); err != nil {
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
 
-	// Transaction: update notice + set contract end date + mark room vacant
+	// Transaction: re-fetch contract inside tx (avoid TOCTOU) + update notice + end contract + mark room vacant
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
 		if err := s.repo.Update(txCtx, notice); err != nil {
 			return err
 		}
-		if err := s.contractCmd.EndContract(txCtx, notice.ContractID, notice.ActualMoveOutDate); err != nil {
+		if err := s.contractCmd.EndContract(txCtx, notice.ContractID, notice.ScheduledMoveOutDate); err != nil {
 			return err
 		}
 		return s.roomCmd.MarkVacant(txCtx, c.RoomID)

@@ -84,7 +84,7 @@ func (r *moveOutRepository) FindAll(ctx context.Context, params MoveOutListParam
 		return nil, 0, err
 	}
 
-	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"notice_date", "actual_move_out_date", "status", "created_at"}, "created_at")
+	col, order := pagination.SafeSort(params.Sort, params.Order, []string{"notice_date", "scheduled_move_out_date", "status", "created_at"}, "created_at")
 	orderClause := fmt.Sprintf("move_out_notices.%s %s", col, order)
 
 	var rows []joinRow
@@ -157,7 +157,7 @@ func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, ro
 		RoomID uuid.UUID `gorm:"column:room_id"`
 	}
 	err := database.DB(ctx, r.db).
-		Model(&MoveOutNotice{}).
+		Table("move_out_notices").
 		Select("DISTINCT contracts.room_id").
 		Joins("JOIN contracts ON contracts.id = move_out_notices.contract_id AND contracts.deleted_at IS NULL").
 		Where("move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ?", MoveOutStatusPending, roomIDs).

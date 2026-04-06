@@ -224,7 +224,7 @@ func completedNotice(contractID uuid.UUID, moveOutDate time.Time) *moveout.MoveO
 		ContractID:        contractID,
 		Status:            moveout.MoveOutStatusCompleted,
 		NoticeDate:        moveOutDate.AddDate(0, -1, 0),
-		ActualMoveOutDate: moveOutDate,
+		ScheduledMoveOutDate: moveOutDate,
 	}
 }
 
@@ -474,7 +474,7 @@ func TestCreateSettlementBill_RejectsWhenOnlyPending(t *testing.T) {
 			ID:                uuid.New(),
 			ContractID:        c.ID,
 			Status:            moveout.MoveOutStatusPending,
-			ActualMoveOutDate: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
+			ScheduledMoveOutDate: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
 		}})
 
 	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
