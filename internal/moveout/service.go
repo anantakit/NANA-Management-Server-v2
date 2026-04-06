@@ -25,6 +25,7 @@ type moveOutService struct {
 	contracts   ContractQuerier
 	contractCmd ContractCommander
 	roomCmd     RoomCommander
+	meterCmd    MeterReadingCommander
 	tx          database.TxManager
 }
 
@@ -35,6 +36,7 @@ func NewMoveOutService(
 	contracts ContractQuerier,
 	contractCmd ContractCommander,
 	roomCmd RoomCommander,
+	meterCmd MeterReadingCommander,
 	tx database.TxManager,
 ) MoveOutService {
 	return &moveOutService{
@@ -42,6 +44,7 @@ func NewMoveOutService(
 		contracts:   contracts,
 		contractCmd: contractCmd,
 		roomCmd:     roomCmd,
+		meterCmd:    meterCmd,
 		tx:          tx,
 	}
 }
@@ -150,20 +153,39 @@ func (s *moveOutService) Update(ctx context.Context, id uuid.UUID, req UpdateMov
 }
 
 func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
-	notice, err := s.repo.FindByIDSimple(ctx, id)
-	if err != nil {
-		return nil, respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
-	}
-
-	if err := notice.Cancel(); err != nil {
-		return nil, respond.ErrBadRequest.WithMessage(err.Error())
-	}
-
-	if err := s.repo.Update(ctx, notice); err != nil {
+	// Transaction: lock notice row + validate + mark CANCELLED + soft-delete
+	// any active EXIT reading for the room. Row lock prevents lost updates
+	// from concurrent status transitions. Soft-deleting the EXIT reading lets
+	// the workflow be re-initiated cleanly without hitting the unique-index.
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		if err := notice.Cancel(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		if err := s.meterCmd.DeleteExitByRoomID(txCtx, c.RoomID); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("cancel move-out notice: %w", err)
 	}
 
-	result, err := s.repo.FindByID(ctx, notice.ID)
+	result, err := s.repo.FindByID(ctx, noticeID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch cancelled notice: %w", err)
 	}
@@ -171,17 +193,17 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 }
 
 func (s *moveOutService) Complete(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
-	notice, err := s.repo.FindByIDSimple(ctx, id)
-	if err != nil {
-		return nil, respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
-	}
-
-	if err := notice.Complete(); err != nil {
-		return nil, respond.ErrBadRequest.WithMessage(err.Error())
-	}
-
-	// Transaction: re-fetch contract inside tx (avoid TOCTOU) + update notice + end contract + mark room vacant
+	// Transaction: lock notice row + validate + mark COMPLETED + end contract + mark room vacant.
+	// Row lock prevents concurrent cancel/complete from racing.
+	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		if err := notice.Complete(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
 		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
 		if err != nil {
 			return fmt.Errorf("find contract: %w", err)
@@ -192,12 +214,19 @@ func (s *moveOutService) Complete(ctx context.Context, id uuid.UUID) (*MoveOutWi
 		if err := s.contractCmd.EndContract(txCtx, notice.ContractID, notice.ScheduledMoveOutDate); err != nil {
 			return err
 		}
-		return s.roomCmd.MarkVacant(txCtx, c.RoomID)
+		if err := s.roomCmd.MarkVacant(txCtx, c.RoomID); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
 	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("complete move-out: %w", err)
 	}
 
-	result, err := s.repo.FindByID(ctx, notice.ID)
+	result, err := s.repo.FindByID(ctx, noticeID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch completed notice: %w", err)
 	}

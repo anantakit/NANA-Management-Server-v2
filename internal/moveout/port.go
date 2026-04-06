@@ -27,3 +27,12 @@ type ContractCommander interface {
 type RoomCommander interface {
 	MarkVacant(ctx context.Context, id uuid.UUID) error
 }
+
+// MeterReadingCommander reverts move-out artifacts on the meter-reading side.
+// Used by Cancel() to soft-delete the room's active EXIT reading so the
+// workflow can be re-initiated cleanly (notice re-created, EXIT re-recorded).
+// Semantic method — consumer ไม่ต้องรู้ว่า EXIT reading เก็บยังไง.
+// Implemented by meterreading.MeterReadingRepository; injected via main.go.
+type MeterReadingCommander interface {
+	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
+}

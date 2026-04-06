@@ -78,6 +78,7 @@ func (m *mockMeterRepo) Create(ctx context.Context, reading *MeterReading) error
 	return nil
 }
 func (m *mockMeterRepo) Update(_ context.Context, _ *MeterReading) error { return nil }
+func (m *mockMeterRepo) DeleteExitByRoomID(_ context.Context, _ uuid.UUID) error { return nil }
 
 // mockRoomQuerier implements RoomQuerier.
 type mockRoomQuerier struct {

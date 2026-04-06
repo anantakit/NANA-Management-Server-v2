@@ -107,13 +107,15 @@ func main() {
 	bcService := billingconfig.NewBillingConfigService(bcRepo, aptRepo)
 	bcHandler := billingconfig.NewBillingConfigHandler(bcService)
 
+	// Wire dependencies — Meter Readings (repo first; service wired after moveOutRepo)
+	meterRepo := meterreading.NewMeterReadingRepository(db)
+
 	// Wire dependencies — Move-Out Notices
 	moveOutRepo := moveout.NewMoveOutRepository(db)
-	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, txManager)
+	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterRepo, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
-	// Wire dependencies — Meter Readings (after moveOutRepo for MoveOutChecker port)
-	meterRepo := meterreading.NewMeterReadingRepository(db)
+	// Meter Reading service (needs moveOutRepo for MoveOutChecker port)
 	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txManager)
 	meterHandler := meterreading.NewMeterReadingHandler(meterService)
 

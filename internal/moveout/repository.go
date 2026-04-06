@@ -9,12 +9,14 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type MoveOutRepository interface {
 	FindAll(ctx context.Context, params MoveOutListParams) ([]MoveOutWithRelations, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error)
+	FindByIDForUpdate(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error)
 	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*MoveOutNotice, error)
 	HasActiveByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
@@ -124,6 +126,21 @@ func (r *moveOutRepository) FindByID(ctx context.Context, id uuid.UUID) (*MoveOu
 func (r *moveOutRepository) FindByIDSimple(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error) {
 	var m MoveOutNotice
 	if err := database.DB(ctx, r.db).Where("id = ?", id).First(&m).Error; err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// FindByIDForUpdate fetches a notice and acquires a row-level lock (SELECT ... FOR UPDATE).
+// Must be called inside a transaction — used by Cancel/Complete to prevent lost updates
+// from concurrent status transitions.
+func (r *moveOutRepository) FindByIDForUpdate(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+	var m MoveOutNotice
+	err := database.DB(ctx, r.db).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", id).
+		First(&m).Error
+	if err != nil {
 		return nil, err
 	}
 	return &m, nil

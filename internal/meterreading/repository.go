@@ -40,6 +40,7 @@ type MeterReadingRepository interface {
 	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
+	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
 }
 
 type meterReadingRepository struct {
@@ -288,4 +289,13 @@ func (r *meterReadingRepository) Create(ctx context.Context, reading *MeterReadi
 
 func (r *meterReadingRepository) Update(ctx context.Context, reading *MeterReading) error {
 	return database.DB(ctx, r.db).Model(reading).Select("*").Omit("deleted_at").Updates(reading).Error
+}
+
+// DeleteExitByRoomID soft-deletes any active EXIT reading for a room.
+// Idempotent: no-op if none exist. Used by move-out cancel to revert exit-meter prep
+// so the workflow can be restarted cleanly (avoids unique-index collision on retry).
+func (r *meterReadingRepository) DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error {
+	return database.DB(ctx, r.db).
+		Where("room_id = ? AND reading_type = ? AND deleted_at IS NULL", roomID, ReadingTypeExit).
+		Delete(&MeterReading{}).Error
 }
