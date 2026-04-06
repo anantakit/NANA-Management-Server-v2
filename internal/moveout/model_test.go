@@ -136,3 +136,92 @@ func TestMoveOutNotice_Complete(t *testing.T) {
 		}
 	})
 }
+
+func TestComputeUrgency(t *testing.T) {
+	today := time.Date(2026, 4, 6, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		scheduled time.Time
+		wantBkt   Urgency
+		wantDays  int
+	}{
+		{"overdue 5 days", today.AddDate(0, 0, -5), UrgencyOverdue, -5},
+		{"today", today, UrgencyToday, 0},
+		{"soon +1", today.AddDate(0, 0, 1), UrgencySoon, 1},
+		{"soon +7", today.AddDate(0, 0, 7), UrgencySoon, 7},
+		{"normal +8", today.AddDate(0, 0, 8), UrgencyNormal, 8},
+		{
+			"non-zero time component still bucketed by date",
+			time.Date(2026, 4, 6, 23, 59, 59, 0, time.UTC),
+			UrgencyToday,
+			0,
+		},
+	}
+
+	// Cross-day boundary: scheduled one second into next day vs today one
+	// second before midnight must yield +1 (catches naive wall-clock diffs).
+	t.Run("cross-day boundary by 2 seconds", func(t *testing.T) {
+		boundaryToday := time.Date(2026, 4, 6, 23, 59, 59, 0, time.UTC)
+		boundaryNext := time.Date(2026, 4, 7, 0, 0, 1, 0, time.UTC)
+		if got := DaysUntil(boundaryNext, boundaryToday); got != 1 {
+			t.Errorf("DaysUntil cross-boundary = %d, want 1", got)
+		}
+		if got := ComputeUrgency(boundaryNext, boundaryToday); got != UrgencySoon {
+			t.Errorf("ComputeUrgency cross-boundary = %q, want SOON", got)
+		}
+	})
+
+	// DST-safe: a 25h spring-forward day in America/Los_Angeles must still
+	// count as exactly 1 day, not 0.
+	t.Run("DST spring forward still 1 day", func(t *testing.T) {
+		la, err := time.LoadLocation("America/Los_Angeles")
+		if err != nil {
+			t.Skip("tz data unavailable:", err)
+		}
+		// 2026-03-08 is the US DST start (spring forward).
+		dstToday := time.Date(2026, 3, 7, 12, 0, 0, 0, la)
+		dstNext := time.Date(2026, 3, 8, 12, 0, 0, 0, la)
+		if got := DaysUntil(dstNext, dstToday); got != 1 {
+			t.Errorf("DaysUntil across DST = %d, want 1", got)
+		}
+	})
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ComputeUrgency(tc.scheduled, today); got != tc.wantBkt {
+				t.Errorf("ComputeUrgency = %q, want %q", got, tc.wantBkt)
+			}
+			if got := DaysUntil(tc.scheduled, today); got != tc.wantDays {
+				t.Errorf("DaysUntil = %d, want %d", got, tc.wantDays)
+			}
+		})
+	}
+}
+
+func TestComputeWorkflowStatus(t *testing.T) {
+	cases := []struct {
+		name         string
+		noticeStatus MoveOutStatus
+		hasMeter     bool
+		want         WorkflowStatus
+	}{
+		{"pending without meter", MoveOutStatusPending, false, WorkflowAwaitingMeter},
+		{"pending with meter", MoveOutStatusPending, true, WorkflowReadyToComplete},
+		{"completed without meter", MoveOutStatusCompleted, false, WorkflowCompleted},
+		{"completed with meter", MoveOutStatusCompleted, true, WorkflowCompleted},
+		{"cancelled without meter", MoveOutStatusCancelled, false, WorkflowCancelled},
+		{"cancelled with meter", MoveOutStatusCancelled, true, WorkflowCancelled},
+		{"unknown falls back to cancelled", MoveOutStatus("WHATEVER"), false, WorkflowCancelled},
+		{"empty falls back to cancelled", MoveOutStatus(""), true, WorkflowCancelled},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ComputeWorkflowStatus(tc.noticeStatus, tc.hasMeter); got != tc.want {
+				t.Errorf("ComputeWorkflowStatus(%q, %v) = %q, want %q",
+					tc.noticeStatus, tc.hasMeter, got, tc.want)
+			}
+		})
+	}
+}
