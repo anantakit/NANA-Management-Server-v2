@@ -72,7 +72,7 @@ func main() {
 
 	// Wire dependencies — Auth
 	userRepo := auth.NewUserRepository(db)
-	authService := auth.NewAuthService(userRepo, cfg)
+	authService := auth.NewAuthService(userRepo, cfg, txManager)
 	authHandler := auth.NewAuthHandler(authService, cfg)
 	authService.StartTokenCleanup(ctx, 1*time.Hour)
 

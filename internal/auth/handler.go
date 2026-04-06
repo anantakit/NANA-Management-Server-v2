@@ -90,13 +90,14 @@ func (h *AuthHandler) ChangePassword(c fiber.Ctx) error {
 		return err
 	}
 
-	if err := h.authService.ChangePassword(c.Context(), userID, req); err != nil {
+	resp, refreshToken, err := h.authService.ChangePassword(c.Context(), userID, req)
+	if err != nil {
 		return respond.Error(c, err)
 	}
 
-	h.clearRefreshTokenCookie(c)
+	h.setRefreshTokenCookie(c, refreshToken)
 
-	return respond.Success(c, "เปลี่ยนรหัสผ่านสำเร็จ", nil)
+	return respond.Success(c, "เปลี่ยนรหัสผ่านสำเร็จ", resp)
 }
 
 func (h *AuthHandler) setRefreshTokenCookie(c fiber.Ctx, token string) {

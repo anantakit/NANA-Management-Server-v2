@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"nana/internal/shared/config"
+	"nana/internal/shared/database"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -21,19 +22,21 @@ type AuthService interface {
 	Login(ctx context.Context, req LoginRequest) (*LoginResponse, string, error)
 	Refresh(ctx context.Context, rawToken string) (*LoginResponse, string, error)
 	Logout(ctx context.Context, userID uuid.UUID, rawToken string) error
-	ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest) error
+	ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest) (*LoginResponse, string, error)
 	StartTokenCleanup(ctx context.Context, interval time.Duration)
 }
 
 type authService struct {
 	userRepo UserRepository
 	cfg      *config.Config
+	tx       database.TxManager
 }
 
-func NewAuthService(userRepo UserRepository, cfg *config.Config) AuthService {
+func NewAuthService(userRepo UserRepository, cfg *config.Config, tx database.TxManager) AuthService {
 	return &authService{
 		userRepo: userRepo,
 		cfg:      cfg,
+		tx:       tx,
 	}
 }
 
@@ -125,33 +128,59 @@ func (s *authService) Logout(ctx context.Context, userID uuid.UUID, rawToken str
 	return nil
 }
 
-func (s *authService) ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest) error {
+func (s *authService) ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest) (*LoginResponse, string, error) {
 	user, err := s.userRepo.FindByID(ctx, userID)
 	if err != nil {
-		return ErrUserNotFound
+		return nil, "", ErrUserNotFound
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
-		return ErrInvalidCredentials
+		return nil, "", ErrInvalidCredentials
 	}
 
 	if err := validatePassword(req.NewPassword); err != nil {
-		return err
+		return nil, "", err
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), 12)
 	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
+		return nil, "", fmt.Errorf("hash password: %w", err)
 	}
 
+	// Atomic: update password + revoke old tokens + issue fresh session.
+	// Without a transaction, a partial failure can lock the user out
+	// (password changed but no new session) or leave old tokens valid (security).
 	user.PasswordHash = string(hash)
 	user.MustChangePassword = false
 
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return fmt.Errorf("update user: %w", err)
+	var resp *LoginResponse
+	var refreshToken string
+	err = s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.userRepo.Update(txCtx, user); err != nil {
+			return fmt.Errorf("update user: %w", err)
+		}
+		if err := s.userRepo.RevokeAllUserTokens(txCtx, userID); err != nil {
+			return fmt.Errorf("revoke tokens: %w", err)
+		}
+		accessToken, err := s.generateAccessToken(user)
+		if err != nil {
+			return fmt.Errorf("generate access token: %w", err)
+		}
+		rt, err := s.createRefreshToken(txCtx, user.ID, uuid.New())
+		if err != nil {
+			return fmt.Errorf("create refresh token: %w", err)
+		}
+		resp = &LoginResponse{
+			AccessToken: accessToken,
+			User:        ToUserResponse(user),
+		}
+		refreshToken = rt
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
 	}
-
-	return s.userRepo.RevokeAllUserTokens(ctx, userID)
+	return resp, refreshToken, nil
 }
 
 func (s *authService) StartTokenCleanup(ctx context.Context, interval time.Duration) {
