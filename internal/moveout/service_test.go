@@ -20,6 +20,8 @@ type mockMoveOutRepo struct {
 	findForUpdateFn func(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error)
 	findByIDFn      func(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	updateFn        func(ctx context.Context, notice *MoveOutNotice) error
+	listActiveFn    func(ctx context.Context, params MoveOutQueueParams) ([]NoticeWithMeterFlag, error)
+	listHistoryFn   func(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error)
 
 	updatedStatus      MoveOutStatus
 	updateCalls        int
@@ -54,6 +56,18 @@ func (m *mockMoveOutRepo) HasActiveByContractID(_ context.Context, _ uuid.UUID) 
 	return false, nil
 }
 func (m *mockMoveOutRepo) FindRoomIDsWithPendingNotice(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+	return nil, nil
+}
+func (m *mockMoveOutRepo) ListActiveWithMeterFlag(ctx context.Context, params MoveOutQueueParams) ([]NoticeWithMeterFlag, error) {
+	if m.listActiveFn != nil {
+		return m.listActiveFn(ctx, params)
+	}
+	return nil, nil
+}
+func (m *mockMoveOutRepo) ListHistory(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error) {
+	if m.listHistoryFn != nil {
+		return m.listHistoryFn(ctx, params)
+	}
 	return nil, nil
 }
 func (m *mockMoveOutRepo) Create(_ context.Context, _ *MoveOutNotice) error { return nil }

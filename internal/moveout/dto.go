@@ -1,6 +1,10 @@
 package moveout
 
-import "nana/internal/shared/pagination"
+import (
+	"time"
+
+	"nana/internal/shared/pagination"
+)
 
 // MoveOutListParams holds query parameters for listing move-out notices.
 type MoveOutListParams struct {
@@ -31,8 +35,47 @@ type MoveOutResponse struct {
 	TenantName        string  `json:"tenant_name,omitempty"`
 	RoomNumber        string  `json:"room_number,omitempty"`
 	ApartmentName     string  `json:"apartment_name,omitempty"`
+	WorkflowStatus    string  `json:"workflow_status,omitempty"`
+	Urgency           string  `json:"urgency,omitempty"`
+	// DaysUntil: no omitempty — 0 means "today" and must stay on the wire.
+	// Pointer would be cleaner but adds nil-checks across the frontend; the
+	// queue endpoint is the only consumer that sets it, so emitting 0 on
+	// non-queue responses is acceptable noise.
+	DaysUntil int `json:"days_until"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
+}
+
+// --- Queue DTOs ---
+
+// MoveOutQueueParams holds query parameters for the move-out queue endpoint.
+// Scope: "active" (default), "history", or "all".
+// ApartmentID is bound as string (matches MoveOutListParams convention) and
+// validated/parsed in the service — go-playground/form has no native uuid decoder.
+type MoveOutQueueParams struct {
+	Scope       string `query:"scope"`
+	Search      string `query:"search"`
+	ApartmentID string `query:"apartment_id"`
+}
+
+type MoveOutQueueSection struct {
+	Items      []MoveOutResponse `json:"items"`
+	Count      int               `json:"count"`
+	Truncated  bool              `json:"truncated"`
+	TotalCount int               `json:"total_count"`
+}
+
+type MoveOutQueueSummary struct {
+	Overdue     int `json:"overdue"`
+	Today       int `json:"today"`
+	ThisWeek    int `json:"this_week"`
+	TotalActive int `json:"total_active"`
+}
+
+type MoveOutQueueResponse struct {
+	Sections map[string]MoveOutQueueSection `json:"sections"`
+	Summary  MoveOutQueueSummary            `json:"summary"`
+	History  MoveOutQueueSection            `json:"history"`
 }
 
 // MoveOutWithRelations is a projection for list/detail with joined data.
@@ -57,6 +100,17 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 		CreatedAt:         m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:         m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+}
+
+// ToMoveOutResponseWithQueue enriches a base response with workflow_status,
+// urgency, and days_until — computed against the supplied "today". Used by
+// the queue endpoint where every item carries effective state.
+func ToMoveOutResponseWithQueue(m MoveOutWithRelations, hasExitMeter bool, today time.Time) MoveOutResponse {
+	resp := ToMoveOutResponse(m)
+	resp.WorkflowStatus = string(ComputeWorkflowStatus(m.Status, hasExitMeter))
+	resp.Urgency = string(ComputeUrgency(m.ScheduledMoveOutDate, today))
+	resp.DaysUntil = DaysUntil(m.ScheduledMoveOutDate, today)
+	return resp
 }
 
 func ToMoveOutResponseList(items []MoveOutWithRelations) []MoveOutResponse {

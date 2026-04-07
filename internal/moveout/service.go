@@ -3,12 +3,23 @@ package moveout
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
+)
+
+// queueSectionCap caps each section's items after the repo's hard cap of 200.
+const queueSectionCap = 100
+
+// Queue scope values — whitelist enforced at service entry.
+const (
+	queueScopeActive  = "active"
+	queueScopeHistory = "history"
+	queueScopeAll     = "all"
 )
 
 type MoveOutService interface {
@@ -18,6 +29,7 @@ type MoveOutService interface {
 	Update(ctx context.Context, id uuid.UUID, req UpdateMoveOutRequest) (*MoveOutWithRelations, error)
 	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	Complete(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	Queue(ctx context.Context, params MoveOutQueueParams) (*MoveOutQueueResponse, error)
 }
 
 type moveOutService struct {
@@ -27,6 +39,9 @@ type moveOutService struct {
 	roomCmd     RoomCommander
 	meterCmd    MeterReadingCommander
 	tx          database.TxManager
+	// now is the clock used by Queue() to compute urgency/days_until.
+	// nil → time.Now (production); tests assign a fixed-time function.
+	now func() time.Time
 }
 
 var _ MoveOutService = (*moveOutService)(nil)
@@ -46,6 +61,146 @@ func NewMoveOutService(
 		roomCmd:     roomCmd,
 		meterCmd:    meterCmd,
 		tx:          tx,
+	}
+}
+
+// Queue assembles the move-out queue: PENDING notices partitioned by
+// has_exit_meter into "awaiting_meter" / "ready_to_complete" sections (sorted
+// by urgency then date), plus a summary computed over the full filtered active
+// set, and optionally a recent-history slice. Empty sections are returned with
+// non-nil zero-length slices for a stable JSON shape.
+func (s *moveOutService) Queue(ctx context.Context, params MoveOutQueueParams) (*MoveOutQueueResponse, error) {
+	scope := params.Scope
+	if scope == "" {
+		scope = queueScopeActive
+	}
+	if scope != queueScopeActive && scope != queueScopeHistory && scope != queueScopeAll {
+		return nil, respond.ErrBadRequest.WithMessage("scope ต้องเป็น active, history หรือ all")
+	}
+	if params.ApartmentID != "" {
+		if _, err := uuid.Parse(params.ApartmentID); err != nil {
+			return nil, respond.ErrBadRequest.WithMessage("รหัสอาคารไม่ถูกต้อง")
+		}
+	}
+
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	today := now()
+
+	resp := &MoveOutQueueResponse{
+		Sections: map[string]MoveOutQueueSection{
+			"awaiting_meter":    emptyQueueSection(),
+			"ready_to_complete": emptyQueueSection(),
+		},
+		History: emptyQueueSection(),
+	}
+
+	if scope == queueScopeActive || scope == queueScopeAll {
+		active, err := s.repo.ListActiveWithMeterFlag(ctx, params)
+		if err != nil {
+			return nil, fmt.Errorf("list active move-out notices: %w", err)
+		}
+
+		var awaiting, ready []NoticeWithMeterFlag
+		summary := MoveOutQueueSummary{TotalActive: len(active)}
+		for _, n := range active {
+			d := DaysUntil(n.ScheduledMoveOutDate, today)
+			switch {
+			case d < 0:
+				summary.Overdue++
+			case d == 0:
+				summary.Today++
+			}
+			if d >= 0 && d <= 7 {
+				summary.ThisWeek++
+			}
+			if n.HasExitMeter {
+				ready = append(ready, n)
+			} else {
+				awaiting = append(awaiting, n)
+			}
+		}
+		sortByUrgencyThenDate(awaiting, today)
+		sortByUrgencyThenDate(ready, today)
+
+		resp.Sections["awaiting_meter"] = buildQueueSection(awaiting, today)
+		resp.Sections["ready_to_complete"] = buildQueueSection(ready, today)
+		resp.Summary = summary
+	}
+
+	if scope == queueScopeHistory || scope == queueScopeAll {
+		history, err := s.repo.ListHistory(ctx, params)
+		if err != nil {
+			return nil, fmt.Errorf("list move-out history: %w", err)
+		}
+		items := make([]MoveOutResponse, len(history))
+		for i, h := range history {
+			items[i] = ToMoveOutResponseWithQueue(h, false, today)
+		}
+		resp.History = MoveOutQueueSection{
+			Items:      items,
+			Count:      len(items),
+			TotalCount: len(items),
+		}
+	}
+
+	return resp, nil
+}
+
+func emptyQueueSection() MoveOutQueueSection {
+	return MoveOutQueueSection{Items: []MoveOutResponse{}}
+}
+
+// buildQueueSection caps notices at queueSectionCap and converts them to
+// response items, recording total/truncated.
+func buildQueueSection(notices []NoticeWithMeterFlag, today time.Time) MoveOutQueueSection {
+	total := len(notices)
+	capped := notices
+	truncated := false
+	if total > queueSectionCap {
+		capped = notices[:queueSectionCap]
+		truncated = true
+	}
+	items := make([]MoveOutResponse, len(capped))
+	for i, n := range capped {
+		items[i] = ToMoveOutResponseWithQueue(n.MoveOutWithRelations, n.HasExitMeter, today)
+	}
+	return MoveOutQueueSection{
+		Items:      items,
+		Count:      len(items),
+		Truncated:  truncated,
+		TotalCount: total,
+	}
+}
+
+// sortByUrgencyThenDate orders notices by urgency bucket
+// (OVERDUE→TODAY→SOON→NORMAL) then ascending scheduled date within a bucket.
+// Stable sort to keep equal-key rows in repo (date-asc) order.
+func sortByUrgencyThenDate(notices []NoticeWithMeterFlag, today time.Time) {
+	sort.SliceStable(notices, func(i, j int) bool {
+		di := DaysUntil(notices[i].ScheduledMoveOutDate, today)
+		dj := DaysUntil(notices[j].ScheduledMoveOutDate, today)
+		ri := urgencyRank(di)
+		rj := urgencyRank(dj)
+		if ri != rj {
+			return ri < rj
+		}
+		return notices[i].ScheduledMoveOutDate.Before(notices[j].ScheduledMoveOutDate)
+	})
+}
+
+func urgencyRank(d int) int {
+	switch {
+	case d < 0:
+		return 0
+	case d == 0:
+		return 1
+	case d <= 7:
+		return 2
+	default:
+		return 3
 	}
 }
 
