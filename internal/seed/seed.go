@@ -56,6 +56,9 @@ func Run(db *gorm.DB, env string) error {
 		if err := seedDevTenantHistory(db); err != nil {
 			return fmt.Errorf("seed dev tenant history: %w", err)
 		}
+		if err := seedDevMoveOuts(db); err != nil {
+			return fmt.Errorf("seed dev move-outs: %w", err)
+		}
 	}
 
 	slog.Info("seed data completed")
