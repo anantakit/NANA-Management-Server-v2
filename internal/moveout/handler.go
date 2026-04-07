@@ -20,6 +20,7 @@ func NewMoveOutHandler(svc MoveOutService) *MoveOutHandler {
 func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	router.Get("/", h.List)
 	router.Post("/", h.Create)
+	router.Get("/queue", h.Queue)
 	router.Get("/:id", h.GetByID)
 	router.Put("/:id", h.Update)
 	router.Post("/:id/cancel", h.Cancel)
@@ -54,6 +55,20 @@ func (h *MoveOutHandler) Create(c fiber.Ctx) error {
 	}
 
 	return respond.Created(c, "สร้างใบแจ้งย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) Queue(c fiber.Ctx) error {
+	var params MoveOutQueueParams
+	if err := bind.Query(c, &params); err != nil {
+		return err
+	}
+
+	result, err := h.svc.Queue(c.Context(), params)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "ดึงคิวใบแจ้งย้ายออกสำเร็จ", result)
 }
 
 func (h *MoveOutHandler) GetByID(c fiber.Ctx) error {
