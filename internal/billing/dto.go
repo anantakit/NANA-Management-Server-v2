@@ -60,6 +60,10 @@ type BillResponse struct {
 	DepositBalance float64            `json:"deposit_balance"`
 	TotalAmount    float64            `json:"total_amount"`
 	Note           string             `json:"note"`
+	TenantName     string             `json:"tenant_name"`
+	RoomNumber     string             `json:"room_number"`
+	ApartmentName  string             `json:"apartment_name"`
+	ApartmentID    uuid.UUID          `json:"apartment_id"`
 	LineItems      []LineItemResponse `json:"line_items,omitempty"`
 	CreatedAt      string             `json:"created_at"`
 	UpdatedAt      string             `json:"updated_at"`
@@ -171,6 +175,15 @@ func ToBillResponse(b Bill) BillResponse {
 		CreatedAt:      b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:      b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+}
+
+func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
+	resp := ToBillResponse(b.Bill)
+	resp.TenantName = b.TenantName
+	resp.RoomNumber = b.RoomNumber
+	resp.ApartmentName = b.ApartmentName
+	resp.ApartmentID = b.ApartmentID
+	return resp
 }
 
 func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {

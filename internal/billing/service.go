@@ -33,12 +33,12 @@ var feeDescriptions = map[billingconfig.FeeType]string{
 
 type BillingService interface {
 	List(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
-	GetByID(ctx context.Context, id uuid.UUID) (*Bill, error)
-	CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*Bill, error)
-	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*Bill, error)
-	FinalizeBill(ctx context.Context, id uuid.UUID) (*Bill, error)
-	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*Bill, error)
-	MarkPaid(ctx context.Context, id uuid.UUID) (*Bill, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
+	CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*BillWithRelations, error)
+	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error)
+	FinalizeBill(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
+	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*BillWithRelations, error)
+	MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest) (*BatchBillResult, error)
 }
 
@@ -76,8 +76,8 @@ func (s *billingService) List(ctx context.Context, params BillListParams) ([]Bil
 	return s.repo.FindAll(ctx, params)
 }
 
-func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*Bill, error) {
-	b, err := s.repo.FindByID(ctx, id)
+func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
+	b, err := s.repo.FindByIDWithRelations(ctx, id)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, ErrBillNotFound
@@ -89,7 +89,7 @@ func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*Bill, erro
 
 // CreateMonthlyBill generates a DRAFT monthly bill.
 // Monthly = ค่าห้องเดือนถัดไป (advance) + ค่าน้ำไฟเดือนนี้ (meter)
-func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*Bill, error) {
+func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง")
@@ -141,8 +141,12 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, ErrMeterMonthMismatch
 	}
 
-	return s.buildAndCreateMonthlyBill(ctx, contractID, req.BillingMonth,
+	bill, err := s.buildAndCreateMonthlyBill(ctx, contractID, req.BillingMonth,
 		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.FindByIDWithRelations(ctx, bill.ID)
 }
 
 // buildAndCreateMonthlyBill builds line items and persists a DRAFT monthly bill.
@@ -185,7 +189,7 @@ func (s *billingService) buildAndCreateMonthlyBill(
 // CreateSettlementBill generates a DRAFT settlement bill for a move-out.
 // Requires move-out notice to be COMPLETED (contract already ENDED, room VACANT).
 // Settlement = pro-rate + EXIT meter + configurable fees + deposit netting
-func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*Bill, error) {
+func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง")
@@ -291,10 +295,10 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		return nil, fmt.Errorf("create settlement bill: %w", err)
 	}
 
-	return s.repo.FindByID(ctx, bill.ID)
+	return s.repo.FindByIDWithRelations(ctx, bill.ID)
 }
 
-func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID) (*Bill, error) {
+func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
 	b, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -310,10 +314,10 @@ func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID) (*Bill,
 	if err := s.repo.Update(ctx, b); err != nil {
 		return nil, fmt.Errorf("finalize bill: %w", err)
 	}
-	return b, nil
+	return s.repo.FindByIDWithRelations(ctx, b.ID)
 }
 
-func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*Bill, error) {
+func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*BillWithRelations, error) {
 	b, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -329,10 +333,10 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 	if err := s.repo.Update(ctx, b); err != nil {
 		return nil, fmt.Errorf("void bill: %w", err)
 	}
-	return b, nil
+	return s.repo.FindByIDWithRelations(ctx, b.ID)
 }
 
-func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*Bill, error) {
+func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
 	b, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -348,7 +352,7 @@ func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*Bill, err
 	if err := s.repo.Update(ctx, b); err != nil {
 		return nil, fmt.Errorf("mark paid: %w", err)
 	}
-	return b, nil
+	return s.repo.FindByIDWithRelations(ctx, b.ID)
 }
 
 // --- Private helpers ---

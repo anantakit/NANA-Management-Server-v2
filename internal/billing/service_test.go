@@ -47,6 +47,20 @@ func (m *mockBillingRepo) FindByID(ctx context.Context, id uuid.UUID) (*Bill, er
 	}
 	return nil, gorm.ErrRecordNotFound
 }
+// FindByIDWithRelations mock จำลอง "latest persisted state by bill ID":
+// match จาก updatedBills ย้อนหลังก่อน (post-mutation state) แล้วค่อย fallback ไป FindByID
+func (m *mockBillingRepo) FindByIDWithRelations(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
+	for i := len(m.updatedBills) - 1; i >= 0; i-- {
+		if m.updatedBills[i].ID == id {
+			return &BillWithRelations{Bill: *m.updatedBills[i]}, nil
+		}
+	}
+	b, err := m.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &BillWithRelations{Bill: *b}, nil
+}
 func (m *mockBillingRepo) FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error) {
 	if m.findByContractAndMonthFn != nil {
 		return m.findByContractAndMonthFn(ctx, contractID, month, bt)

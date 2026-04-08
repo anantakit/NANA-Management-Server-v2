@@ -16,6 +16,7 @@ import (
 type BillingRepository interface {
 	FindAll(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*Bill, error)
+	FindByIDWithRelations(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error)
 	FindNonVoidedByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string) ([]Bill, error)
 	FindApartmentIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error)
@@ -130,6 +131,48 @@ func (r *billingRepository) FindByID(ctx context.Context, id uuid.UUID) (*Bill, 
 		return nil, err
 	}
 	return &b, nil
+}
+
+func (r *billingRepository) FindByIDWithRelations(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
+	var b Bill
+	err := database.DB(ctx, r.db).
+		Preload("LineItems", func(db *gorm.DB) *gorm.DB {
+			return db.Order("sort_order ASC")
+		}).
+		Where("id = ?", id).
+		First(&b).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var rel struct {
+		TenantName    string    `gorm:"column:tenant_name"`
+		RoomNumber    string    `gorm:"column:room_number"`
+		ApartmentName string    `gorm:"column:apartment_name"`
+		ApartmentID   uuid.UUID `gorm:"column:apartment_id"`
+	}
+	err = database.DB(ctx, r.db).
+		Table("contracts c").
+		Select(`t.full_name AS tenant_name,
+			rm.number AS room_number,
+			a.name AS apartment_name,
+			a.id AS apartment_id`).
+		Joins("LEFT JOIN tenants t ON t.id = c.tenant_id AND t.deleted_at IS NULL").
+		Joins("LEFT JOIN rooms rm ON rm.id = c.room_id AND rm.deleted_at IS NULL").
+		Joins("LEFT JOIN apartments a ON a.id = rm.apartment_id AND a.deleted_at IS NULL").
+		Where("c.id = ? AND c.deleted_at IS NULL", b.ContractID).
+		Scan(&rel).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &BillWithRelations{
+		Bill:          b,
+		TenantName:    rel.TenantName,
+		RoomNumber:    rel.RoomNumber,
+		ApartmentName: rel.ApartmentName,
+		ApartmentID:   rel.ApartmentID,
+	}, nil
 }
 
 func (r *billingRepository) FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error) {

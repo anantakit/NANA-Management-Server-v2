@@ -59,7 +59,7 @@ func (h *BillingHandler) GetByID(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "สำเร็จ", ToBillResponse(*bill))
+	return respond.Success(c, "สำเร็จ", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) CreateMonthly(c fiber.Ctx) error {
@@ -73,7 +73,7 @@ func (h *BillingHandler) CreateMonthly(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Created(c, "สร้างบิลรายเดือนสำเร็จ", ToBillResponse(*bill))
+	return respond.Created(c, "สร้างบิลรายเดือนสำเร็จ", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) CreateSettlement(c fiber.Ctx) error {
@@ -87,7 +87,7 @@ func (h *BillingHandler) CreateSettlement(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Created(c, "สร้างบิลย้ายออกสำเร็จ", ToBillResponse(*bill))
+	return respond.Created(c, "สร้างบิลย้ายออกสำเร็จ", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) Finalize(c fiber.Ctx) error {
@@ -101,7 +101,7 @@ func (h *BillingHandler) Finalize(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "ยืนยันบิลสำเร็จ", ToBillResponse(*bill))
+	return respond.Success(c, "ยืนยันบิลสำเร็จ", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) Void(c fiber.Ctx) error {
@@ -120,7 +120,7 @@ func (h *BillingHandler) Void(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "ยกเลิกบิลสำเร็จ", ToBillResponse(*bill))
+	return respond.Success(c, "ยกเลิกบิลสำเร็จ", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {
@@ -148,5 +148,5 @@ func (h *BillingHandler) MarkPaid(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "บันทึกชำระเงินสำเร็จ", ToBillResponse(*bill))
+	return respond.Success(c, "บันทึกชำระเงินสำเร็จ", ToBillResponseWithRelations(*bill))
 }
