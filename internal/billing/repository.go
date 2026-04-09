@@ -327,6 +327,9 @@ func (r *billingRepository) ListBatches(ctx context.Context, params BatchListPar
 	if params.BillingMonth != "" {
 		query = query.Where("billing_month = ?", params.BillingMonth)
 	}
+	if params.Status != "" {
+		query = query.Where("status = ?", params.Status)
+	}
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -336,9 +339,11 @@ func (r *billingRepository) ListBatches(ctx context.Context, params BatchListPar
 	col, order := pagination.SafeSort(params.Sort, params.Order,
 		[]string{"created_at", "billing_month", "status"}, "created_at")
 
+	// Stable ordering: tiebreak by id DESC so "latest" never flips
+	// when two batches share the same created_at (or sort column).
 	var batches []BillGenerationBatch
 	err := query.
-		Order(fmt.Sprintf("%s %s", col, order)).
+		Order(fmt.Sprintf("%s %s, id DESC", col, order)).
 		Offset(params.Offset()).
 		Limit(params.Limit).
 		Find(&batches).Error

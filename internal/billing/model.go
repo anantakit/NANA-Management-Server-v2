@@ -283,6 +283,14 @@ const (
 	BatchStatusFailed    BatchStatus = "FAILED"
 )
 
+func (s BatchStatus) IsValid() bool {
+	switch s {
+	case BatchStatusCompleted, BatchStatusPartial, BatchStatusFailed:
+		return true
+	}
+	return false
+}
+
 type ResultType string
 
 const (

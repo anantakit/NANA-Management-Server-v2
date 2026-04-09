@@ -257,5 +257,8 @@ func (s *billingService) GetBatchItems(ctx context.Context, id uuid.UUID) ([]Bil
 
 func (s *billingService) ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error) {
 	params.Normalize()
+	if params.Status != "" && !BatchStatus(params.Status).IsValid() {
+		return nil, 0, respond.ErrBadRequest.WithMessage("status ไม่ถูกต้อง")
+	}
 	return s.repo.ListBatches(ctx, params)
 }

@@ -91,6 +91,7 @@ type BatchListParams struct {
 	pagination.PaginationParams
 	ApartmentID  string `query:"apartment_id"`
 	BillingMonth string `query:"billing_month"`
+	Status       string `query:"status"`
 }
 
 type BatchSummaryResponse struct {
