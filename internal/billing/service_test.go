@@ -31,6 +31,9 @@ type mockBillingRepo struct {
 
 	createdBill  *Bill
 	updatedBills []*Bill
+
+	createdBatch      *BillGenerationBatch
+	createdBatchItems []BillGenerationBatchItem
 }
 
 var _ BillingRepository = (*mockBillingRepo)(nil)
@@ -110,6 +113,23 @@ func (m *mockBillingRepo) SumPaidByContractSince(ctx context.Context, contractID
 		return m.sumPaidFn(ctx, contractID, since)
 	}
 	return 0, nil
+}
+func (m *mockBillingRepo) CreateBatch(_ context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error {
+	m.createdBatch = batch
+	m.createdBatchItems = items
+	return nil
+}
+func (m *mockBillingRepo) FindBatchByID(_ context.Context, _ uuid.UUID) (*BillGenerationBatch, error) {
+	if m.createdBatch != nil {
+		return m.createdBatch, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (m *mockBillingRepo) FindBatchItemsByBatchID(_ context.Context, _ uuid.UUID) ([]BillGenerationBatchItem, error) {
+	return m.createdBatchItems, nil
+}
+func (m *mockBillingRepo) ListBatches(_ context.Context, _ BatchListParams) ([]BillGenerationBatch, int64, error) {
+	return nil, 0, nil
 }
 
 type mockContractQuerier struct {
@@ -862,6 +882,18 @@ func batchSvc(repo *mockBillingRepo, meters *mockMeterQuerier, moveOuts *mockMov
 	return NewBillingService(repo, &mockContractQuerier{}, meters, &mockConfigQuerier{}, moveOuts, &mockTxManager{})
 }
 
+// runBatch invokes the service and returns (batch header, items captured by the mock repo).
+func runBatch(t *testing.T, svc BillingService, repo *mockBillingRepo, month string) (*BillGenerationBatch, []BillGenerationBatchItem) {
+	t.Helper()
+	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
+		ApartmentID: uuid.New().String(), BillingMonth: month,
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return result, repo.createdBatchItems
+}
+
 func TestBatchCreateMonthlyBills_HappyPath(t *testing.T) {
 	cwr1, c1 := testContractWithRoom(1, "101")
 	cwr2, c2 := testContractWithRoom(2, "201")
@@ -886,23 +918,20 @@ func TestBatchCreateMonthlyBills_HappyPath(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if batch.TotalContracts != 3 {
+		t.Fatalf("total = %d, want 3", batch.TotalContracts)
 	}
-
-	if result.Summary.TotalContracts != 3 {
-		t.Fatalf("total = %d, want 3", result.Summary.TotalContracts)
+	if batch.CreatedCount != 3 {
+		t.Fatalf("created = %d, want 3", batch.CreatedCount)
 	}
-	if result.Summary.Created != 3 {
-		t.Fatalf("created = %d, want 3", result.Summary.Created)
+	if batch.Status != BatchStatusCompleted {
+		t.Errorf("status = %s, want COMPLETED", batch.Status)
 	}
-	for _, d := range result.Details {
-		if d.Status != BatchItemCreated {
-			t.Errorf("room %s: expected CREATED, got %s", d.RoomNumber, d.Status)
+	for _, d := range items {
+		if d.ResultType != ResultCreated {
+			t.Errorf("room %s: expected CREATED, got %s", d.RoomNumber, d.ResultType)
 		}
 		if d.BillID == nil {
 			t.Errorf("room %s: bill_id should be set", d.RoomNumber)
@@ -939,31 +968,26 @@ func TestBatchCreateMonthlyBills_MixedResults(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if batch.CreatedCount != 1 {
+		t.Errorf("created = %d, want 1", batch.CreatedCount)
 	}
-
-	if result.Summary.Created != 1 {
-		t.Errorf("created = %d, want 1", result.Summary.Created)
+	if batch.AlreadyExistsCount != 1 {
+		t.Errorf("already_exists = %d, want 1", batch.AlreadyExistsCount)
 	}
-	if result.Summary.Existing != 1 {
-		t.Errorf("existing = %d, want 1", result.Summary.Existing)
+	if batch.SkippedCount != 1 {
+		t.Errorf("skipped = %d, want 1", batch.SkippedCount)
 	}
-	if result.Summary.Skipped != 1 {
-		t.Errorf("skipped = %d, want 1", result.Summary.Skipped)
+	if batch.Status != BatchStatusPartial {
+		t.Errorf("status = %s, want PARTIAL", batch.Status)
 	}
-
-	// Verify existing has bill_id
-	for _, d := range result.Details {
-		if d.Status == BatchItemExisting && (d.BillID == nil || *d.BillID != existingBillID) {
-			t.Error("existing result should have correct bill_id")
+	for _, d := range items {
+		if d.ResultType == ResultAlreadyExists && (d.BillID == nil || *d.BillID != existingBillID) {
+			t.Error("already_exists result should have correct bill_id")
 		}
-		if d.Status == BatchItemSkipped && d.ReasonCode != "NO_METER_READING" {
-			t.Errorf("skipped reason = %s, want NO_METER_READING", d.ReasonCode)
+		if d.ResultType == ResultSkipped && d.ReasonCode != ReasonMissingMeterReading {
+			t.Errorf("skipped reason = %s, want MISSING_METER_READING", d.ReasonCode)
 		}
 	}
 }
@@ -984,18 +1008,13 @@ func TestBatchCreateMonthlyBills_MoveOutPending(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, &mockMeterQuerier{}, moveOuts)
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	if result.Summary.Skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", result.Summary.Skipped)
+	if batch.SkippedCount != 1 {
+		t.Fatalf("skipped = %d, want 1", batch.SkippedCount)
 	}
-	if result.Details[0].ReasonCode != "MOVE_OUT_PENDING" {
-		t.Errorf("reason = %s, want MOVE_OUT_PENDING", result.Details[0].ReasonCode)
+	if items[0].ReasonCode != ReasonMoveOutPending {
+		t.Errorf("reason = %s, want MOVE_OUT_PENDING", items[0].ReasonCode)
 	}
 }
 
@@ -1010,18 +1029,13 @@ func TestBatchCreateMonthlyBills_NotBillable_StartAfterMonth(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	if result.Summary.Skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", result.Summary.Skipped)
+	if batch.SkippedCount != 1 {
+		t.Fatalf("skipped = %d, want 1", batch.SkippedCount)
 	}
-	if result.Details[0].ReasonCode != "NOT_BILLABLE" {
-		t.Errorf("reason = %s, want NOT_BILLABLE", result.Details[0].ReasonCode)
+	if items[0].ReasonCode != ReasonNotBillable {
+		t.Errorf("reason = %s, want NOT_BILLABLE", items[0].ReasonCode)
 	}
 }
 
@@ -1037,18 +1051,13 @@ func TestBatchCreateMonthlyBills_NotBillable_EndedBeforeMonth(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	if result.Summary.Skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", result.Summary.Skipped)
+	if batch.SkippedCount != 1 {
+		t.Fatalf("skipped = %d, want 1", batch.SkippedCount)
 	}
-	if result.Details[0].ReasonCode != "NOT_BILLABLE" {
-		t.Errorf("reason = %s, want NOT_BILLABLE", result.Details[0].ReasonCode)
+	if items[0].ReasonCode != ReasonNotBillable {
+		t.Errorf("reason = %s, want NOT_BILLABLE", items[0].ReasonCode)
 	}
 }
 
@@ -1060,15 +1069,10 @@ func TestBatchCreateMonthlyBills_EmptyApartment(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	batch, _ := runBatch(t, svc, repo, "2026-03")
 
-	if result.Summary.TotalContracts != 0 {
-		t.Fatalf("total = %d, want 0", result.Summary.TotalContracts)
+	if batch.TotalContracts != 0 {
+		t.Fatalf("total = %d, want 0", batch.TotalContracts)
 	}
 }
 
@@ -1077,14 +1081,14 @@ func TestBatchCreateMonthlyBills_InvalidInput(t *testing.T) {
 
 	_, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
 		ApartmentID: "bad-uuid", BillingMonth: "2026-03",
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid UUID")
 	}
 
 	_, err = svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
 		ApartmentID: uuid.New().String(), BillingMonth: "2026-1",
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid month format")
 	}
@@ -1103,20 +1107,14 @@ func TestBatchCreateMonthlyBills_DeterministicOrdering(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, items := runBatch(t, svc, repo, "2026-03")
 
-	// All skipped (no meters) but ordering should be preserved
-	if len(result.Details) != 3 {
-		t.Fatalf("details count = %d, want 3", len(result.Details))
+	if len(items) != 3 {
+		t.Fatalf("items count = %d, want 3", len(items))
 	}
-	if result.Details[0].RoomNumber != "101" || result.Details[1].RoomNumber != "201" || result.Details[2].RoomNumber != "301" {
+	if items[0].RoomNumber != "101" || items[1].RoomNumber != "201" || items[2].RoomNumber != "301" {
 		t.Errorf("order = %s,%s,%s — want 101,201,301",
-			result.Details[0].RoomNumber, result.Details[1].RoomNumber, result.Details[2].RoomNumber)
+			items[0].RoomNumber, items[1].RoomNumber, items[2].RoomNumber)
 	}
 }
 
@@ -1147,18 +1145,16 @@ func TestBatchCreateMonthlyBills_IdempotentRerun(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	batch, _ := runBatch(t, svc, repo, "2026-03")
 
-	if result.Summary.Created != 0 {
-		t.Errorf("created = %d, want 0 (idempotent)", result.Summary.Created)
+	if batch.CreatedCount != 0 {
+		t.Errorf("created = %d, want 0 (idempotent)", batch.CreatedCount)
 	}
-	if result.Summary.Existing != 2 {
-		t.Errorf("existing = %d, want 2", result.Summary.Existing)
+	if batch.AlreadyExistsCount != 2 {
+		t.Errorf("already_exists = %d, want 2", batch.AlreadyExistsCount)
+	}
+	if batch.Status != BatchStatusCompleted {
+		t.Errorf("status = %s, want COMPLETED", batch.Status)
 	}
 }
 
@@ -1189,19 +1185,54 @@ func TestBatchCreateMonthlyBills_RaceCondition(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if batch.AlreadyExistsCount != 1 {
+		t.Fatalf("already_exists = %d, want 1 (race → re-fetch)", batch.AlreadyExistsCount)
 	}
-
-	if result.Summary.Existing != 1 {
-		t.Fatalf("existing = %d, want 1 (race → re-fetch)", result.Summary.Existing)
-	}
-	if result.Details[0].BillID == nil || *result.Details[0].BillID != raceBillID {
+	if items[0].BillID == nil || *items[0].BillID != raceBillID {
 		t.Error("race condition result should have re-fetched bill_id")
+	}
+	if items[0].ReasonCode != ReasonAlreadyExists {
+		t.Errorf("reason_code = %s, want ALREADY_EXISTS", items[0].ReasonCode)
+	}
+}
+
+func TestBatchCreateMonthlyBills_RaceRefetchFails_SystemError(t *testing.T) {
+	cwr, c := testContractWithRoom(1, "101")
+	r := testMonthlyReading(c.RoomID, "2026-03")
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+		// Pre-check says no existing bill
+		findByContractAndMonthFn: func(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
+			return nil, gorm.ErrRecordNotFound
+		},
+		// Create loses race
+		createFn: func(_ context.Context, _ *Bill) error {
+			return ErrBillAlreadyExists
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
+	batch, items := runBatch(t, svc, repo, "2026-03")
+
+	if batch.FailedCount != 1 {
+		t.Fatalf("failed = %d, want 1 (refetch failed)", batch.FailedCount)
+	}
+	if items[0].ResultType != ResultFailed {
+		t.Errorf("result = %s, want FAILED", items[0].ResultType)
+	}
+	if items[0].ReasonCode != ReasonSystemError {
+		t.Errorf("reason_code = %s, want SYSTEM_ERROR", items[0].ReasonCode)
 	}
 }
 
@@ -1225,20 +1256,52 @@ func TestBatchCreateMonthlyBills_CreateFails_SystemError(t *testing.T) {
 	}
 
 	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
-	result, err := svc.BatchCreateMonthlyBills(context.Background(), BatchCreateMonthlyBillsRequest{
-		ApartmentID: uuid.New().String(), BillingMonth: "2026-03",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	batch, items := runBatch(t, svc, repo, "2026-03")
 
-	if result.Summary.Failed != 1 {
-		t.Fatalf("failed = %d, want 1", result.Summary.Failed)
+	if batch.FailedCount != 1 {
+		t.Fatalf("failed = %d, want 1", batch.FailedCount)
 	}
-	if result.Details[0].ReasonCode != "SYSTEM_ERROR" {
-		t.Errorf("reason_code = %s, want SYSTEM_ERROR", result.Details[0].ReasonCode)
+	if batch.Status != BatchStatusFailed {
+		t.Errorf("status = %s, want FAILED (no bills produced)", batch.Status)
 	}
-	if result.Details[0].ReasonText != "เกิดข้อผิดพลาดของระบบ" {
-		t.Errorf("reason_text = %s, want generic system error", result.Details[0].ReasonText)
+	if items[0].ReasonCode != ReasonSystemError {
+		t.Errorf("reason_code = %s, want SYSTEM_ERROR", items[0].ReasonCode)
+	}
+	if items[0].ReasonText != "เกิดข้อผิดพลาดของระบบ" {
+		t.Errorf("reason_text = %s, want generic system error", items[0].ReasonText)
+	}
+}
+
+// ============================================================
+// Domain: ComputeStatus mapping
+// ============================================================
+
+func TestBatch_ComputeStatus(t *testing.T) {
+	tests := []struct {
+		name                                           string
+		created, alreadyExists, skipped, failed        int
+		want                                           BatchStatus
+	}{
+		{"empty apartment", 0, 0, 0, 0, BatchStatusCompleted},
+		{"all created", 3, 0, 0, 0, BatchStatusCompleted},
+		{"existing counts as success", 0, 3, 0, 0, BatchStatusCompleted},
+		{"some failed with some created", 2, 0, 0, 1, BatchStatusPartial},
+		{"some skipped with some created", 2, 0, 1, 0, BatchStatusPartial},
+		{"all failed", 0, 0, 0, 3, BatchStatusFailed},
+		{"all skipped no failed", 0, 0, 3, 0, BatchStatusPartial},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &BillGenerationBatch{
+				CreatedCount:       tt.created,
+				AlreadyExistsCount: tt.alreadyExists,
+				SkippedCount:       tt.skipped,
+				FailedCount:        tt.failed,
+			}
+			b.ComputeStatus()
+			if b.Status != tt.want {
+				t.Errorf("got %s, want %s", b.Status, tt.want)
+			}
+		})
 	}
 }

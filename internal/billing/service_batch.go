@@ -14,9 +14,9 @@ import (
 )
 
 // BatchCreateMonthlyBills generates monthly bills for all eligible active contracts
-// in an apartment for a given billing month. Best-effort mode: processes every contract
-// independently and returns a structured report.
-func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest) (*BatchBillResult, error) {
+// in an apartment for a given billing month. Persists a BillGenerationBatch run-log
+// with per-contract items so the result can be re-opened later by batch_id.
+func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error) {
 	// --- 1. Validate input ---
 	apartmentID, err := uuid.Parse(req.ApartmentID)
 	if err != nil {
@@ -26,18 +26,67 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 
-	startOfMonth, endOfMonth := parseBillingMonthRange(req.BillingMonth)
+	// Pre-generate batch ID so bills can reference it before the batch row is inserted.
+	batchID := uuid.New()
+	batch := &BillGenerationBatch{
+		ID:           batchID,
+		ApartmentID:  apartmentID,
+		BillingMonth: req.BillingMonth,
+		CreatedBy:    createdBy,
+		CreatedAt:    time.Now().UTC(),
+	}
+	var items []BillGenerationBatchItem
 
-	// --- 2. Fetch candidates ---
+	// --- 2. Run the whole batch inside a transaction ---
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		built, buildErr := s.buildBatchItems(txCtx, apartmentID, req.BillingMonth, batchID)
+		if buildErr != nil {
+			return buildErr
+		}
+		items = built
+
+		// Aggregate counts
+		batch.TotalContracts = len(items)
+		for _, it := range items {
+			switch it.ResultType {
+			case ResultCreated:
+				batch.CreatedCount++
+			case ResultAlreadyExists:
+				batch.AlreadyExistsCount++
+			case ResultSkipped:
+				batch.SkippedCount++
+			case ResultFailed:
+				batch.FailedCount++
+			}
+		}
+		batch.ComputeStatus()
+
+		return s.repo.CreateBatch(txCtx, batch, items)
+	}); err != nil {
+		return nil, fmt.Errorf("batch billing: %w", err)
+	}
+
+	return batch, nil
+}
+
+// buildBatchItems classifies each active contract and attempts to create a bill
+// for the CREATED cases. Runs inside the batch transaction so everything is atomic.
+func (s *billingService) buildBatchItems(
+	ctx context.Context,
+	apartmentID uuid.UUID,
+	billingMonth string,
+	batchID uuid.UUID,
+) ([]BillGenerationBatchItem, error) {
 	contracts, err := s.repo.FindActiveContractsByApartmentID(ctx, apartmentID)
 	if err != nil {
-		return nil, fmt.Errorf("batch billing: find contracts: %w", err)
+		return nil, fmt.Errorf("find contracts: %w", err)
 	}
 	if len(contracts) == 0 {
-		return &BatchBillResult{Details: []ContractBillResult{}}, nil
+		return []BillGenerationBatchItem{}, nil
 	}
 
-	// --- 3. Bulk pre-fetch (3 queries) ---
+	startOfMonth, endOfMonth := parseBillingMonthRange(billingMonth)
+
 	roomIDs := make([]uuid.UUID, len(contracts))
 	contractIDs := make([]uuid.UUID, len(contracts))
 	for i, c := range contracts {
@@ -47,136 +96,115 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 
 	pendingMoveOuts, err := s.moveOuts.FindRoomIDsWithPendingNotice(ctx, roomIDs)
 	if err != nil {
-		return nil, fmt.Errorf("batch billing: check move-outs: %w", err)
+		return nil, fmt.Errorf("check move-outs: %w", err)
 	}
 
-	meterMap, err := s.meters.FindMonthlyByRoomsAndMonth(ctx, roomIDs, req.BillingMonth)
+	meterMap, err := s.meters.FindMonthlyByRoomsAndMonth(ctx, roomIDs, billingMonth)
 	if err != nil {
-		return nil, fmt.Errorf("batch billing: find meters: %w", err)
+		return nil, fmt.Errorf("find meters: %w", err)
 	}
 
-	existingMap, err := s.repo.FindExistingByContractsAndMonth(ctx, contractIDs, req.BillingMonth)
+	existingMap, err := s.repo.FindExistingByContractsAndMonth(ctx, contractIDs, billingMonth)
 	if err != nil {
-		return nil, fmt.Errorf("batch billing: find existing bills: %w", err)
+		return nil, fmt.Errorf("find existing bills: %w", err)
 	}
 
-	// --- 4. Process each contract ---
-	details := make([]ContractBillResult, 0, len(contracts))
-	var summary BatchBillSummary
-	summary.TotalContracts = len(contracts)
+	items := make([]BillGenerationBatchItem, 0, len(contracts))
 
 	for _, c := range contracts {
-		result := ContractBillResult{
+		item := BillGenerationBatchItem{
+			BatchID:    batchID,
 			ContractID: c.ContractID,
 			RoomID:     c.RoomID,
 			RoomNumber: c.RoomNumber,
 			RoomFloor:  c.RoomFloor,
 		}
 
-		// 4a. Move-out: skip if pending (priority — settlement flow takes over)
+		// 1. Move-out: skip if pending (settlement flow takes over)
 		if pendingMoveOuts[c.RoomID] {
-			result.Status = BatchItemSkipped
-			result.ReasonCode = "MOVE_OUT_PENDING"
-			result.ReasonText = "มีใบแจ้งย้ายออกรอดำเนินการ"
-			summary.Skipped++
-			details = append(details, result)
+			item.ResultType = ResultSkipped
+			item.ReasonCode = ReasonMoveOutPending
+			item.ReasonText = "มีใบแจ้งย้ายออกรอดำเนินการ"
+			items = append(items, item)
 			continue
 		}
 
-		// 4b. Billability: skip if not billable for this month
+		// 2. Billability window
 		if c.StartDate.After(endOfMonth) {
-			result.Status = BatchItemSkipped
-			result.ReasonCode = "NOT_BILLABLE"
-			result.ReasonText = "สัญญายังไม่เริ่มในเดือนที่ออกบิล"
-			summary.Skipped++
-			details = append(details, result)
+			item.ResultType = ResultSkipped
+			item.ReasonCode = ReasonNotBillable
+			item.ReasonText = "สัญญายังไม่เริ่มในเดือนที่ออกบิล"
+			items = append(items, item)
 			continue
 		}
 		if c.EndDate != nil && c.EndDate.Before(startOfMonth) {
-			result.Status = BatchItemSkipped
-			result.ReasonCode = "NOT_BILLABLE"
-			result.ReasonText = "สัญญาจบแล้วก่อนเดือนที่ออกบิล"
-			summary.Skipped++
-			details = append(details, result)
+			item.ResultType = ResultSkipped
+			item.ReasonCode = ReasonNotBillable
+			item.ReasonText = "สัญญาจบแล้วก่อนเดือนที่ออกบิล"
+			items = append(items, item)
 			continue
 		}
 
-		// 4c. Meter: skip if not found
+		// 3. Meter reading required
 		reading, hasMeter := meterMap[c.RoomID]
 		if !hasMeter {
-			result.Status = BatchItemSkipped
-			result.ReasonCode = "NO_METER_READING"
-			result.ReasonText = "ยังไม่มีข้อมูลมิเตอร์สำหรับเดือนนี้"
-			summary.Skipped++
-			details = append(details, result)
+			item.ResultType = ResultSkipped
+			item.ReasonCode = ReasonMissingMeterReading
+			item.ReasonText = "ยังไม่มีข้อมูลมิเตอร์สำหรับเดือนนี้"
+			items = append(items, item)
 			continue
 		}
 
-		// 4d. Existing: mark if found (skip create)
+		// 4. Already exists (pre-check)
 		if existing, ok := existingMap[c.ContractID]; ok {
-			result.Status = BatchItemExisting
-			result.ReasonCode = "ALREADY_EXISTS"
-			result.ReasonText = "มีบิลสำหรับเดือนนี้อยู่แล้ว"
-			result.BillID = &existing.ID
-			summary.Existing++
-			details = append(details, result)
+			item.ResultType = ResultAlreadyExists
+			item.ReasonCode = ReasonAlreadyExists
+			item.ReasonText = "มีบิลสำหรับเดือนนี้อยู่แล้ว"
+			item.BillID = &existing.ID
+			items = append(items, item)
 			continue
 		}
 
-		// 4e. Create bill directly (skip re-validation — already pre-checked)
-		bill, createErr := s.buildAndCreateMonthlyBill(ctx, c.ContractID, req.BillingMonth,
-			c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+		// 5. Create bill
+		bill, createErr := s.buildAndCreateMonthlyBill(ctx, c.ContractID, billingMonth,
+			c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, &batchID)
 		if createErr == nil {
-			result.Status = BatchItemCreated
-			result.BillID = &bill.ID
-			summary.Created++
-			details = append(details, result)
+			item.ResultType = ResultCreated
+			item.BillID = &bill.ID
+			items = append(items, item)
 			continue
 		}
 
-		// Race condition: bill created between pre-check and create
+		// 5a. Race: another request created the bill between pre-check and insert
 		if errors.Is(createErr, ErrBillAlreadyExists) {
-			existing, refetchErr := s.repo.FindByContractAndMonth(ctx, c.ContractID, req.BillingMonth, BillTypeMonthly)
+			existing, refetchErr := s.repo.FindByContractAndMonth(ctx, c.ContractID, billingMonth, BillTypeMonthly)
 			if refetchErr == nil {
-				result.Status = BatchItemExisting
-				result.ReasonCode = "ALREADY_EXISTS"
-				result.ReasonText = "มีบิลสำหรับเดือนนี้อยู่แล้ว"
-				result.BillID = &existing.ID
-				summary.Existing++
-				details = append(details, result)
+				item.ResultType = ResultAlreadyExists
+				item.ReasonCode = ReasonAlreadyExists
+				item.ReasonText = "มีบิลสำหรับเดือนนี้อยู่แล้ว"
+				item.BillID = &existing.ID
+				items = append(items, item)
 				continue
 			}
-			// Re-fetch failed — log and classify as system error
 			slog.Warn("batch billing: race re-fetch failed",
-				"contract_id", c.ContractID,
-				"room", c.RoomNumber,
-				"error", refetchErr,
-			)
-			result.Status = BatchItemFailed
-			result.ReasonCode = "SYSTEM_ERROR"
-			result.ReasonText = "เกิดข้อผิดพลาดของระบบ"
-			summary.Failed++
-			details = append(details, result)
+				"contract_id", c.ContractID, "room", c.RoomNumber, "error", refetchErr)
+			item.ResultType = ResultFailed
+			item.ReasonCode = ReasonSystemError
+			item.ReasonText = "เกิดข้อผิดพลาดของระบบ"
+			items = append(items, item)
 			continue
 		}
 
-		// Failed: categorize error
-		result.Status = BatchItemFailed
-		result.ReasonCode, result.ReasonText = classifyBatchError(createErr)
-		summary.Failed++
-		details = append(details, result)
+		// 5b. Other failures — classify
+		item.ResultType = ResultFailed
+		item.ReasonCode, item.ReasonText = classifyBatchError(createErr)
+		items = append(items, item)
 
 		slog.Warn("batch billing: create failed",
-			"contract_id", c.ContractID,
-			"room", c.RoomNumber,
-			"error", createErr,
-		)
+			"contract_id", c.ContractID, "room", c.RoomNumber, "error", createErr)
 	}
 
-	return &BatchBillResult{
-		Summary: summary,
-		Details: details,
-	}, nil
+	return items, nil
 }
 
 // parseBillingMonthRange converts "YYYY-MM" to start and end of that month.
@@ -191,7 +219,6 @@ func parseBillingMonthRange(billingMonth string) (start, end time.Time) {
 
 // classifyBatchError maps errors to reason code + Thai text for batch results.
 func classifyBatchError(err error) (code, text string) {
-	// Map specific known errors to precise reason codes
 	switch {
 	case errors.Is(err, ErrContractNotActive):
 		return "CONTRACT_NOT_ACTIVE", "สัญญาไม่ได้อยู่ในสถานะใช้งาน"
@@ -205,12 +232,30 @@ func classifyBatchError(err error) (code, text string) {
 		return "METER_MONTH_MISMATCH", "เดือนของมิเตอร์ไม่ตรงกับเดือนที่ออกบิล"
 	}
 
-	// Generic classification by HTTP status
 	var appErr *respond.AppError
 	if errors.As(err, &appErr) {
 		if appErr.HTTPStatus >= 400 && appErr.HTTPStatus < 500 {
-			return "VALIDATION_ERROR", appErr.Message
+			return ReasonValidationError, appErr.Message
 		}
 	}
-	return "SYSTEM_ERROR", "เกิดข้อผิดพลาดของระบบ"
+	return ReasonSystemError, "เกิดข้อผิดพลาดของระบบ"
+}
+
+// --- Batch query (for review page) ---
+
+func (s *billingService) GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error) {
+	b, err := s.repo.FindBatchByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("find batch: %w", err)
+	}
+	return b, nil
+}
+
+func (s *billingService) GetBatchItems(ctx context.Context, id uuid.UUID) ([]BillGenerationBatchItem, error) {
+	return s.repo.FindBatchItemsByBatchID(ctx, id)
+}
+
+func (s *billingService) ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error) {
+	params.Normalize()
+	return s.repo.ListBatches(ctx, params)
 }

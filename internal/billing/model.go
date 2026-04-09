@@ -63,6 +63,7 @@ type Bill struct {
 	DepositAmount  int64          `gorm:"not null;default:0" json:"deposit_amount"`
 	DepositBalance int64          `gorm:"not null;default:0" json:"deposit_balance"`
 	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
+	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
 	Note           string         `gorm:"type:text;not null;default:''" json:"note"`
 	CreatedAt      time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -272,43 +273,82 @@ func NewPrepaidCreditLine(amount int64, description string, order int) BillLineI
 	}
 }
 
-// --- Batch billing types ---
+// --- Bill generation batch ---
 
-type BatchBillItemStatus string
+type BatchStatus string
 
 const (
-	BatchItemCreated  BatchBillItemStatus = "CREATED"
-	BatchItemExisting BatchBillItemStatus = "EXISTING"
-	BatchItemSkipped  BatchBillItemStatus = "SKIPPED"
-	BatchItemFailed   BatchBillItemStatus = "FAILED"
+	BatchStatusCompleted BatchStatus = "COMPLETED"
+	BatchStatusPartial   BatchStatus = "PARTIAL"
+	BatchStatusFailed    BatchStatus = "FAILED"
 )
 
-// ContractBillResult is the per-contract outcome of batch billing.
-type ContractBillResult struct {
-	ContractID uuid.UUID
-	RoomID     uuid.UUID
-	RoomNumber string
-	RoomFloor  int
-	Status     BatchBillItemStatus
-	ReasonCode string     // machine-readable: MOVE_OUT_PENDING, NO_METER_READING, etc.
-	ReasonText string     // Thai human-readable
-	BillID     *uuid.UUID // set when CREATED or EXISTING
+type ResultType string
+
+const (
+	ResultCreated       ResultType = "CREATED"
+	ResultAlreadyExists ResultType = "ALREADY_EXISTS"
+	ResultSkipped       ResultType = "SKIPPED"
+	ResultFailed        ResultType = "FAILED"
+)
+
+// Reason codes for batch items (machine-readable, stable).
+const (
+	ReasonMoveOutPending      = "MOVE_OUT_PENDING"
+	ReasonNotBillable         = "NOT_BILLABLE"
+	ReasonMissingMeterReading = "MISSING_METER_READING"
+	ReasonAlreadyExists       = "ALREADY_EXISTS"
+	ReasonValidationError     = "VALIDATION_ERROR"
+	ReasonSystemError         = "SYSTEM_ERROR"
+)
+
+type BillGenerationBatch struct {
+	ID                 uuid.UUID   `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	ApartmentID        uuid.UUID   `gorm:"type:uuid;not null" json:"apartment_id"`
+	BillingMonth       string      `gorm:"type:varchar(7);not null" json:"billing_month"`
+	Status             BatchStatus `gorm:"type:varchar(20);not null" json:"status"`
+	TotalContracts     int         `gorm:"not null;default:0" json:"total_contracts"`
+	CreatedCount       int         `gorm:"not null;default:0;column:created_count" json:"created_count"`
+	AlreadyExistsCount int         `gorm:"not null;default:0;column:already_exists_count" json:"already_exists_count"`
+	SkippedCount       int         `gorm:"not null;default:0;column:skipped_count" json:"skipped_count"`
+	FailedCount        int         `gorm:"not null;default:0;column:failed_count" json:"failed_count"`
+	CreatedBy          *uuid.UUID  `gorm:"type:uuid" json:"created_by,omitempty"`
+	CreatedAt          time.Time   `gorm:"not null;default:now()" json:"created_at"`
 }
 
-// BatchBillSummary aggregates batch results.
-type BatchBillSummary struct {
-	TotalContracts int
-	Created        int
-	Existing       int
-	Skipped        int
-	Failed         int
+func (BillGenerationBatch) TableName() string { return "bill_generation_batches" }
+
+// ComputeStatus derives batch status from counts. Must be called before persist.
+// FAILED  = no bills produced (created + already_exists == 0) AND any failed
+// COMPLETED = no failed, no skipped (everything landed — includes the empty-apartment case)
+// PARTIAL = anything else (at least some bills produced, but some failed/skipped)
+func (b *BillGenerationBatch) ComputeStatus() {
+	landed := b.CreatedCount + b.AlreadyExistsCount
+	switch {
+	case landed == 0 && b.FailedCount > 0:
+		b.Status = BatchStatusFailed
+	case b.FailedCount == 0 && b.SkippedCount == 0:
+		b.Status = BatchStatusCompleted
+	default:
+		b.Status = BatchStatusPartial
+	}
 }
 
-// BatchBillResult is the complete return value from batch billing.
-type BatchBillResult struct {
-	Summary BatchBillSummary
-	Details []ContractBillResult
+type BillGenerationBatchItem struct {
+	ID         uuid.UUID  `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	BatchID    uuid.UUID  `gorm:"type:uuid;not null" json:"batch_id"`
+	ContractID uuid.UUID  `gorm:"type:uuid;not null" json:"contract_id"`
+	RoomID     uuid.UUID  `gorm:"type:uuid;not null" json:"room_id"`
+	RoomNumber string     `gorm:"type:varchar(20);not null" json:"room_number"`
+	RoomFloor  int        `gorm:"not null;default:0" json:"room_floor"`
+	ResultType ResultType `gorm:"type:varchar(20);not null" json:"result_type"`
+	ReasonCode string     `gorm:"type:varchar(40);not null;default:''" json:"reason_code"`
+	ReasonText string     `gorm:"type:text;not null;default:''" json:"reason_text"`
+	BillID     *uuid.UUID `gorm:"type:uuid" json:"bill_id,omitempty"`
+	CreatedAt  time.Time  `gorm:"not null;default:now()" json:"created_at"`
 }
+
+func (BillGenerationBatchItem) TableName() string { return "bill_generation_batch_items" }
 
 // --- Projections ---
 

@@ -39,7 +39,10 @@ type BillingService interface {
 	FinalizeBill(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*BillWithRelations, error)
 	MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
-	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest) (*BatchBillResult, error)
+	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error)
+	GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
+	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BillGenerationBatchItem, error)
+	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 }
 
 type billingService struct {
@@ -142,7 +145,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	}
 
 	bill, err := s.buildAndCreateMonthlyBill(ctx, contractID, req.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +161,7 @@ func (s *billingService) buildAndCreateMonthlyBill(
 	billingMonth string,
 	monthlyRent, elecRate, waterRate int64,
 	reading *meterreading.MeterReading,
+	batchID *uuid.UUID,
 ) (*Bill, error) {
 	nextMonth := advanceMonth(billingMonth)
 	elecUnits := reading.ElectricityUsed()
@@ -175,6 +179,7 @@ func (s *billingService) buildAndCreateMonthlyBill(
 		BillingMonth: billingMonth,
 		BillType:     BillTypeMonthly,
 		Status:       BillStatusDraft,
+		BatchID:      batchID,
 		LineItems:    items,
 	}
 	bill.CalculateTotal()

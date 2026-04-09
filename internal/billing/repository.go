@@ -25,6 +25,11 @@ type BillingRepository interface {
 	Create(ctx context.Context, bill *Bill) error
 	Update(ctx context.Context, bill *Bill) error
 	SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, sinceMonth string) (int64, error)
+
+	CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error
+	FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
+	FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error)
+	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 }
 
 type billingRepository struct {
@@ -278,6 +283,66 @@ func (r *billingRepository) FindExistingByContractsAndMonth(ctx context.Context,
 		result[bills[i].ContractID] = &bills[i]
 	}
 	return result, nil
+}
+
+// CreateBatch persists the batch header + all items in the current transaction.
+// Caller must wrap this in TxManager.RunInTx to keep batch atomic with the bills.
+func (r *billingRepository) CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error {
+	db := database.DB(ctx, r.db)
+	if err := db.Create(batch).Error; err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	for i := range items {
+		items[i].BatchID = batch.ID
+	}
+	return db.Create(&items).Error
+}
+
+func (r *billingRepository) FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error) {
+	var b BillGenerationBatch
+	err := database.DB(ctx, r.db).Where("id = ?", id).First(&b).Error
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (r *billingRepository) FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error) {
+	var items []BillGenerationBatchItem
+	err := database.DB(ctx, r.db).
+		Where("batch_id = ?", batchID).
+		Order("room_floor ASC, room_number ASC").
+		Find(&items).Error
+	return items, err
+}
+
+func (r *billingRepository) ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error) {
+	query := database.DB(ctx, r.db).Model(&BillGenerationBatch{})
+	if params.ApartmentID != "" {
+		query = query.Where("apartment_id = ?", params.ApartmentID)
+	}
+	if params.BillingMonth != "" {
+		query = query.Where("billing_month = ?", params.BillingMonth)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	col, order := pagination.SafeSort(params.Sort, params.Order,
+		[]string{"created_at", "billing_month", "status"}, "created_at")
+
+	var batches []BillGenerationBatch
+	err := query.
+		Order(fmt.Sprintf("%s %s", col, order)).
+		Offset(params.Offset()).
+		Limit(params.Limit).
+		Find(&batches).Error
+	return batches, total, err
 }
 
 func (r *billingRepository) Create(ctx context.Context, bill *Bill) error {

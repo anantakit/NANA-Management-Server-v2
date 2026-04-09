@@ -18,6 +18,12 @@ func NewBillingHandler(svc BillingService) *BillingHandler {
 }
 
 func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
+	// Batches must be registered before /:id to avoid the "batches" literal
+	// being captured as a bill id.
+	r.Get("/batches", h.ListBatches)
+	r.Get("/batches/:id", h.GetBatch)
+	r.Get("/batches/:id/items", h.GetBatchItems)
+
 	r.Get("/", h.List)
 	r.Get("/:id", h.GetByID)
 	r.Post("/monthly", h.CreateMonthly)
@@ -129,12 +135,62 @@ func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {
 		return err
 	}
 
-	result, err := h.svc.BatchCreateMonthlyBills(c.Context(), req)
+	var createdBy *uuid.UUID
+	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
+		createdBy = &uid
+	}
+
+	result, err := h.svc.BatchCreateMonthlyBills(c.Context(), req, createdBy)
 	if err != nil {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "สร้างบิลรายเดือนแบบกลุ่มสำเร็จ", ToBatchBillResultResponse(*result))
+	return respond.Success(c, "สร้างบิลรายเดือนแบบกลุ่มสำเร็จ", ToBatchTriggerResponse(result))
+}
+
+func (h *BillingHandler) GetBatch(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+	batch, err := h.svc.GetBatchByID(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Success(c, "สำเร็จ", ToBatchHeaderResponse(batch))
+}
+
+func (h *BillingHandler) GetBatchItems(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+	items, err := h.svc.GetBatchItems(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	resp := make([]BatchItemResponse, len(items))
+	for i, it := range items {
+		resp[i] = ToBatchItemResponse(it)
+	}
+	return respond.Success(c, "สำเร็จ", resp)
+}
+
+func (h *BillingHandler) ListBatches(c fiber.Ctx) error {
+	var params BatchListParams
+	if err := bind.Query(c, &params); err != nil {
+		return err
+	}
+	batches, total, err := h.svc.ListBatches(c.Context(), params)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	resp := make([]BatchHeaderResponse, len(batches))
+	for i := range batches {
+		resp[i] = ToBatchHeaderResponse(&batches[i])
+	}
+	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
+	return respond.SuccessWithMeta(c, "สำเร็จ", resp, meta)
 }
 
 func (h *BillingHandler) MarkPaid(c fiber.Ctx) error {

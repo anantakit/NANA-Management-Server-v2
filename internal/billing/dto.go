@@ -85,58 +85,99 @@ type BillListItemResponse struct {
 	CreatedAt      string    `json:"created_at"`
 }
 
-// --- Batch billing response DTOs ---
+// --- Batch billing DTOs ---
 
-type ContractBillResultResponse struct {
-	ContractID string  `json:"contract_id"`
-	RoomNumber string  `json:"room_number"`
-	RoomFloor  int     `json:"room_floor"`
-	Status     string  `json:"status"`
-	ReasonCode string  `json:"reason_code,omitempty"`
-	ReasonText string  `json:"reason_text,omitempty"`
-	BillID     *string `json:"bill_id,omitempty"`
+type BatchListParams struct {
+	pagination.PaginationParams
+	ApartmentID  string `query:"apartment_id"`
+	BillingMonth string `query:"billing_month"`
 }
 
-type BatchBillSummaryResponse struct {
-	TotalContracts int `json:"total_contracts"`
-	Created        int `json:"created"`
-	Existing       int `json:"existing"`
-	Skipped        int `json:"skipped"`
-	Failed         int `json:"failed"`
+type BatchSummaryResponse struct {
+	TotalContracts     int `json:"total_contracts"`
+	Created            int `json:"created_count"`
+	AlreadyExistsCount int `json:"already_exists_count"`
+	Skipped            int `json:"skipped_count"`
+	Failed             int `json:"failed_count"`
 }
 
-type BatchBillResultResponse struct {
-	Summary BatchBillSummaryResponse     `json:"summary"`
-	Details []ContractBillResultResponse `json:"details"`
+// BatchTriggerResponse is the terse response from POST /bills/batch-monthly.
+// FE uses this to redirect to the review page.
+type BatchTriggerResponse struct {
+	BatchID      uuid.UUID            `json:"batch_id"`
+	Status       string               `json:"status"`
+	BillingMonth string               `json:"billing_month"`
+	ApartmentID  uuid.UUID            `json:"apartment_id"`
+	Summary      BatchSummaryResponse `json:"summary"`
+	CreatedAt    string               `json:"created_at"`
 }
 
-func ToBatchBillResultResponse(r BatchBillResult) BatchBillResultResponse {
-	details := make([]ContractBillResultResponse, len(r.Details))
-	for i, d := range r.Details {
-		var billID *string
-		if d.BillID != nil {
-			s := d.BillID.String()
-			billID = &s
-		}
-		details[i] = ContractBillResultResponse{
-			ContractID: d.ContractID.String(),
-			RoomNumber: d.RoomNumber,
-			RoomFloor:  d.RoomFloor,
-			Status:     string(d.Status),
-			ReasonCode: d.ReasonCode,
-			ReasonText: d.ReasonText,
-			BillID:     billID,
-		}
+type BatchHeaderResponse struct {
+	ID           uuid.UUID            `json:"id"`
+	ApartmentID  uuid.UUID            `json:"apartment_id"`
+	BillingMonth string               `json:"billing_month"`
+	Status       string               `json:"status"`
+	Summary      BatchSummaryResponse `json:"summary"`
+	CreatedBy    *uuid.UUID           `json:"created_by,omitempty"`
+	CreatedAt    string               `json:"created_at"`
+}
+
+type BatchItemResponse struct {
+	ID         uuid.UUID  `json:"id"`
+	ContractID uuid.UUID  `json:"contract_id"`
+	RoomID     uuid.UUID  `json:"room_id"`
+	RoomNumber string     `json:"room_number"`
+	RoomFloor  int        `json:"room_floor"`
+	ResultType string     `json:"result_type"`
+	ReasonCode string     `json:"reason_code,omitempty"`
+	ReasonText string     `json:"reason_text,omitempty"`
+	BillID     *uuid.UUID `json:"bill_id,omitempty"`
+}
+
+func toBatchSummary(b *BillGenerationBatch) BatchSummaryResponse {
+	return BatchSummaryResponse{
+		TotalContracts:     b.TotalContracts,
+		Created:            b.CreatedCount,
+		AlreadyExistsCount: b.AlreadyExistsCount,
+		Skipped:            b.SkippedCount,
+		Failed:             b.FailedCount,
 	}
-	return BatchBillResultResponse{
-		Summary: BatchBillSummaryResponse{
-			TotalContracts: r.Summary.TotalContracts,
-			Created:        r.Summary.Created,
-			Existing:       r.Summary.Existing,
-			Skipped:        r.Summary.Skipped,
-			Failed:         r.Summary.Failed,
-		},
-		Details: details,
+}
+
+func ToBatchTriggerResponse(b *BillGenerationBatch) BatchTriggerResponse {
+	return BatchTriggerResponse{
+		BatchID:      b.ID,
+		Status:       string(b.Status),
+		BillingMonth: b.BillingMonth,
+		ApartmentID:  b.ApartmentID,
+		Summary:      toBatchSummary(b),
+		CreatedAt:    b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+func ToBatchHeaderResponse(b *BillGenerationBatch) BatchHeaderResponse {
+	return BatchHeaderResponse{
+		ID:           b.ID,
+		ApartmentID:  b.ApartmentID,
+		BillingMonth: b.BillingMonth,
+		Status:       string(b.Status),
+		Summary:      toBatchSummary(b),
+		CreatedBy:    b.CreatedBy,
+		CreatedAt:    b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+}
+
+func ToBatchItemResponse(i BillGenerationBatchItem) BatchItemResponse {
+	return BatchItemResponse{
+		ID:         i.ID,
+		ContractID: i.ContractID,
+		RoomID:     i.RoomID,
+		RoomNumber: i.RoomNumber,
+		RoomFloor:  i.RoomFloor,
+		ResultType: string(i.ResultType),
+		ReasonCode: i.ReasonCode,
+		ReasonText: i.ReasonText,
+		BillID:     i.BillID,
 	}
 }
 
