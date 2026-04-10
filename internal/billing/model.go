@@ -507,6 +507,12 @@ type CommitBatchResult struct {
 
 // --- Projections ---
 
+// BatchItemWithTenant is a projection for batch item API responses (JOIN tenant).
+type BatchItemWithTenant struct {
+	BillGenerationBatchItem
+	TenantName string `json:"tenant_name"`
+}
+
 // BillWithRelations is a projection for list/detail API responses.
 type BillWithRelations struct {
 	Bill

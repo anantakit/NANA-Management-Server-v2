@@ -125,8 +125,12 @@ func (m *mockBillingRepo) FindBatchByID(_ context.Context, _ uuid.UUID) (*BillGe
 	}
 	return nil, gorm.ErrRecordNotFound
 }
-func (m *mockBillingRepo) FindBatchItemsByBatchID(_ context.Context, _ uuid.UUID) ([]BillGenerationBatchItem, error) {
-	return m.createdBatchItems, nil
+func (m *mockBillingRepo) FindBatchItemsByBatchID(_ context.Context, _ uuid.UUID) ([]BatchItemWithTenant, error) {
+	result := make([]BatchItemWithTenant, len(m.createdBatchItems))
+	for i, it := range m.createdBatchItems {
+		result[i] = BatchItemWithTenant{BillGenerationBatchItem: it}
+	}
+	return result, nil
 }
 func (m *mockBillingRepo) ListBatches(_ context.Context, _ BatchListParams) ([]BillGenerationBatch, int64, error) {
 	return nil, 0, nil

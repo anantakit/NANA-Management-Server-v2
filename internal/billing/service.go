@@ -41,7 +41,7 @@ type BillingService interface {
 	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error)
 	CommitBatch(ctx context.Context, batchID uuid.UUID) (*CommitBatchResult, error)
 	GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
-	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BillGenerationBatchItem, error)
+	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 }
 

@@ -381,7 +381,7 @@ func (s *billingService) GetBatchByID(ctx context.Context, id uuid.UUID) (*BillG
 	return b, nil
 }
 
-func (s *billingService) GetBatchItems(ctx context.Context, id uuid.UUID) ([]BillGenerationBatchItem, error) {
+func (s *billingService) GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error) {
 	return s.repo.FindBatchItemsByBatchID(ctx, id)
 }
 

@@ -29,7 +29,7 @@ type BillingRepository interface {
 
 	CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error
 	FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
-	FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error)
+	FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 
 	// Commit flow
@@ -318,13 +318,31 @@ func (r *billingRepository) FindBatchByID(ctx context.Context, id uuid.UUID) (*B
 	return &b, nil
 }
 
-func (r *billingRepository) FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error) {
-	var items []BillGenerationBatchItem
+func (r *billingRepository) FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BatchItemWithTenant, error) {
+	type joinRow struct {
+		BillGenerationBatchItem
+		TenantName string `gorm:"column:tenant_name"`
+	}
+	var rows []joinRow
 	err := database.DB(ctx, r.db).
-		Where("batch_id = ?", batchID).
-		Order("room_floor ASC, room_number ASC").
-		Find(&items).Error
-	return items, err
+		Table("bill_generation_batch_items AS bi").
+		Select("bi.*, t.full_name AS tenant_name").
+		Joins("LEFT JOIN contracts c ON c.id = bi.contract_id AND c.deleted_at IS NULL").
+		Joins("LEFT JOIN tenants t ON t.id = c.tenant_id AND t.deleted_at IS NULL").
+		Where("bi.batch_id = ?", batchID).
+		Order("bi.room_floor ASC, bi.room_number ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make([]BatchItemWithTenant, len(rows))
+	for i, row := range rows {
+		result[i] = BatchItemWithTenant{
+			BillGenerationBatchItem: row.BillGenerationBatchItem,
+			TenantName:             row.TenantName,
+		}
+	}
+	return result, nil
 }
 
 func (r *billingRepository) ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error) {

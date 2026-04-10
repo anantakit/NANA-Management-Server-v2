@@ -131,6 +131,7 @@ type BatchItemResponse struct {
 	RoomID           uuid.UUID              `json:"room_id"`
 	RoomNumber       string                 `json:"room_number"`
 	RoomFloor        int                    `json:"room_floor"`
+	TenantName       string                 `json:"tenant_name"`
 	ResultType       string                 `json:"result_type"`
 	ReasonCode       string                 `json:"reason_code,omitempty"`
 	ReasonText       string                 `json:"reason_text,omitempty"`
@@ -213,13 +214,14 @@ func ToBatchHeaderResponse(b *BillGenerationBatch) BatchHeaderResponse {
 	return resp
 }
 
-func ToBatchItemResponse(i BillGenerationBatchItem) BatchItemResponse {
+func ToBatchItemResponse(i BatchItemWithTenant) BatchItemResponse {
 	resp := BatchItemResponse{
 		ID:         i.ID,
 		ContractID: i.ContractID,
 		RoomID:     i.RoomID,
 		RoomNumber: i.RoomNumber,
 		RoomFloor:  i.RoomFloor,
+		TenantName: i.TenantName,
 		ResultType: string(i.ResultType),
 		ReasonCode: i.ReasonCode,
 		ReasonText: i.ReasonText,
