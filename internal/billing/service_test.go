@@ -287,8 +287,8 @@ func TestCreateMonthlyBill_HappyPath(t *testing.T) {
 	if bill.BillType != BillTypeMonthly {
 		t.Fatalf("expected MONTHLY, got %s", bill.BillType)
 	}
-	if bill.Status != BillStatusDraft {
-		t.Fatalf("expected DRAFT, got %s", bill.Status)
+	if bill.Status != BillStatusFinalized {
+		t.Fatalf("expected FINALIZED, got %s", bill.Status)
 	}
 
 	created := repo.createdBill
@@ -933,9 +933,24 @@ func TestBatchCreateMonthlyBills_HappyPath(t *testing.T) {
 		if d.ResultType != ResultCreated {
 			t.Errorf("room %s: expected CREATED, got %s", d.RoomNumber, d.ResultType)
 		}
-		if d.BillID == nil {
-			t.Errorf("room %s: bill_id should be set", d.RoomNumber)
+		if d.BillID != nil {
+			t.Errorf("room %s: bill_id should be nil (compute-only)", d.RoomNumber)
 		}
+		if len(d.ComputedSnapshot.LineItems) != 3 {
+			t.Errorf("room %s: expected 3 snapshot line items, got %d",
+				d.RoomNumber, len(d.ComputedSnapshot.LineItems))
+		}
+		if d.ComputedSnapshot.TotalAmount != 638000 {
+			t.Errorf("room %s: snapshot total = %d, want 638000",
+				d.RoomNumber, d.ComputedSnapshot.TotalAmount)
+		}
+		if d.ComputedSnapshot.Version != ComputedSnapshotVersion {
+			t.Errorf("room %s: snapshot version = %d, want %d",
+				d.RoomNumber, d.ComputedSnapshot.Version, ComputedSnapshotVersion)
+		}
+	}
+	if repo.createdBill != nil {
+		t.Error("batch should not persist any bill row (compute-only)")
 	}
 }
 
@@ -1155,120 +1170,6 @@ func TestBatchCreateMonthlyBills_IdempotentRerun(t *testing.T) {
 	}
 	if batch.Status != BatchStatusCompleted {
 		t.Errorf("status = %s, want COMPLETED", batch.Status)
-	}
-}
-
-func TestBatchCreateMonthlyBills_RaceCondition(t *testing.T) {
-	cwr, c := testContractWithRoom(1, "101")
-	r := testMonthlyReading(c.RoomID, "2026-03")
-	raceBillID := uuid.New()
-
-	repo := &mockBillingRepo{
-		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
-			return []ContractWithRoom{cwr}, nil
-		},
-		// Pre-check: no existing bill
-		// But FindByContractAndMonth for re-fetch returns the bill created by another request
-		findByContractAndMonthFn: func(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
-			return &Bill{ID: raceBillID}, nil
-		},
-		// Simulate: create fails with duplicate
-		createFn: func(_ context.Context, _ *Bill) error {
-			return ErrBillAlreadyExists
-		},
-	}
-
-	meters := &mockMeterQuerier{
-		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
-			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
-		},
-	}
-
-	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
-	batch, items := runBatch(t, svc, repo, "2026-03")
-
-	if batch.AlreadyExistsCount != 1 {
-		t.Fatalf("already_exists = %d, want 1 (race → re-fetch)", batch.AlreadyExistsCount)
-	}
-	if items[0].BillID == nil || *items[0].BillID != raceBillID {
-		t.Error("race condition result should have re-fetched bill_id")
-	}
-	if items[0].ReasonCode != ReasonAlreadyExists {
-		t.Errorf("reason_code = %s, want ALREADY_EXISTS", items[0].ReasonCode)
-	}
-}
-
-func TestBatchCreateMonthlyBills_RaceRefetchFails_SystemError(t *testing.T) {
-	cwr, c := testContractWithRoom(1, "101")
-	r := testMonthlyReading(c.RoomID, "2026-03")
-
-	repo := &mockBillingRepo{
-		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
-			return []ContractWithRoom{cwr}, nil
-		},
-		// Pre-check says no existing bill
-		findByContractAndMonthFn: func(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
-			return nil, gorm.ErrRecordNotFound
-		},
-		// Create loses race
-		createFn: func(_ context.Context, _ *Bill) error {
-			return ErrBillAlreadyExists
-		},
-	}
-
-	meters := &mockMeterQuerier{
-		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
-			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
-		},
-	}
-
-	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
-	batch, items := runBatch(t, svc, repo, "2026-03")
-
-	if batch.FailedCount != 1 {
-		t.Fatalf("failed = %d, want 1 (refetch failed)", batch.FailedCount)
-	}
-	if items[0].ResultType != ResultFailed {
-		t.Errorf("result = %s, want FAILED", items[0].ResultType)
-	}
-	if items[0].ReasonCode != ReasonSystemError {
-		t.Errorf("reason_code = %s, want SYSTEM_ERROR", items[0].ReasonCode)
-	}
-}
-
-func TestBatchCreateMonthlyBills_CreateFails_SystemError(t *testing.T) {
-	cwr, c := testContractWithRoom(1, "101")
-	r := testMonthlyReading(c.RoomID, "2026-03")
-
-	repo := &mockBillingRepo{
-		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
-			return []ContractWithRoom{cwr}, nil
-		},
-		createFn: func(_ context.Context, _ *Bill) error {
-			return errors.New("database connection lost")
-		},
-	}
-
-	meters := &mockMeterQuerier{
-		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
-			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
-		},
-	}
-
-	svc := batchSvc(repo, meters, &mockMoveOutQuerier{})
-	batch, items := runBatch(t, svc, repo, "2026-03")
-
-	if batch.FailedCount != 1 {
-		t.Fatalf("failed = %d, want 1", batch.FailedCount)
-	}
-	if batch.Status != BatchStatusFailed {
-		t.Errorf("status = %s, want FAILED (no bills produced)", batch.Status)
-	}
-	if items[0].ReasonCode != ReasonSystemError {
-		t.Errorf("reason_code = %s, want SYSTEM_ERROR", items[0].ReasonCode)
-	}
-	if items[0].ReasonText != "เกิดข้อผิดพลาดของระบบ" {
-		t.Errorf("reason_text = %s, want generic system error", items[0].ReasonText)
 	}
 }
 

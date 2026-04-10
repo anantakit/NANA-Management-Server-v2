@@ -183,8 +183,8 @@ func (r *billingRepository) FindByIDWithRelations(ctx context.Context, id uuid.U
 func (r *billingRepository) FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error) {
 	var b Bill
 	err := database.DB(ctx, r.db).
-		Where("contract_id = ? AND billing_month = ? AND bill_type = ? AND status != ?",
-			contractID, billingMonth, billType, BillStatusVoid).
+		Where("contract_id = ? AND billing_month = ? AND bill_type = ? AND status IN ?",
+			contractID, billingMonth, billType, []BillStatus{BillStatusFinalized, BillStatusPaid}).
 		First(&b).Error
 	if err != nil {
 		return nil, err
@@ -264,7 +264,7 @@ func (r *billingRepository) FindActiveContractsByApartmentID(ctx context.Context
 	return result, nil
 }
 
-// FindExistingByContractsAndMonth bulk-checks for existing non-VOID MONTHLY bills.
+// FindExistingByContractsAndMonth bulk-checks for existing FINALIZED/PAID MONTHLY bills.
 // Returns map[contractID]*Bill with ID always populated.
 func (r *billingRepository) FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error) {
 	if len(contractIDs) == 0 {
@@ -272,8 +272,8 @@ func (r *billingRepository) FindExistingByContractsAndMonth(ctx context.Context,
 	}
 	var bills []Bill
 	err := database.DB(ctx, r.db).
-		Where("contract_id IN ? AND billing_month = ? AND bill_type = ? AND status != ?",
-			contractIDs, month, BillTypeMonthly, BillStatusVoid).
+		Where("contract_id IN ? AND billing_month = ? AND bill_type = ? AND status IN ?",
+			contractIDs, month, BillTypeMonthly, []BillStatus{BillStatusFinalized, BillStatusPaid}).
 		Find(&bills).Error
 	if err != nil {
 		return nil, err

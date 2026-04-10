@@ -9,7 +9,6 @@ import (
 
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
-	"nana/internal/meterreading"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
@@ -90,7 +89,7 @@ func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRe
 	return b, nil
 }
 
-// CreateMonthlyBill generates a DRAFT monthly bill.
+// CreateMonthlyBill generates a FINALIZED monthly bill.
 // Monthly = ค่าห้องเดือนถัดไป (advance) + ค่าน้ำไฟเดือนนี้ (meter)
 func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
@@ -144,51 +143,25 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, ErrMeterMonthMismatch
 	}
 
-	bill, err := s.buildAndCreateMonthlyBill(ctx, contractID, req.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, nil)
-	if err != nil {
-		return nil, err
-	}
-	return s.repo.FindByIDWithRelations(ctx, bill.ID)
-}
-
-// buildAndCreateMonthlyBill builds line items and persists a DRAFT monthly bill.
-// Caller is responsible for all validation (contract active, no duplicate, valid meter).
-// Used by both CreateMonthlyBill (single) and BatchCreateMonthlyBills (batch).
-func (s *billingService) buildAndCreateMonthlyBill(
-	ctx context.Context,
-	contractID uuid.UUID,
-	billingMonth string,
-	monthlyRent, elecRate, waterRate int64,
-	reading *meterreading.MeterReading,
-	batchID *uuid.UUID,
-) (*Bill, error) {
-	nextMonth := advanceMonth(billingMonth)
-	elecUnits := reading.ElectricityUsed()
-	waterUnits := reading.WaterUsed()
-	items := []BillLineItem{
-		NewRoomRentLine(monthlyRent, fmt.Sprintf("ค่าห้อง %s", nextMonth), 1),
-		NewElectricityLine(elecUnits, elecRate,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), 2),
-		NewWaterLine(waterUnits, waterRate,
-			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), 3),
-	}
+	snapshot := computeMonthlyBillSnapshot(req.BillingMonth,
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
 
 	bill := Bill{
 		ContractID:   contractID,
-		BillingMonth: billingMonth,
+		BillingMonth: req.BillingMonth,
 		BillType:     BillTypeMonthly,
 		Status:       BillStatusDraft,
-		BatchID:      batchID,
-		LineItems:    items,
+		LineItems:    snapshot.ToLineItems(uuid.Nil),
+		TotalAmount:  snapshot.TotalAmount,
 	}
-	bill.CalculateTotal()
+	if err := bill.Finalize(); err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
 
 	if err := s.repo.Create(ctx, &bill); err != nil {
 		return nil, fmt.Errorf("create monthly bill: %w", err)
 	}
-
-	return s.repo.FindByID(ctx, bill.ID)
+	return s.repo.FindByIDWithRelations(ctx, bill.ID)
 }
 
 // CreateSettlementBill generates a DRAFT settlement bill for a move-out.

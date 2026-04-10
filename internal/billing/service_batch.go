@@ -2,12 +2,11 @@ package billing
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"time"
 
+	"nana/internal/meterreading"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -69,7 +68,7 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 	return batch, nil
 }
 
-// buildBatchItems classifies each active contract and attempts to create a bill
+// buildBatchItems classifies each active contract and computes a snapshot
 // for the CREATED cases. Runs inside the batch transaction so everything is atomic.
 func (s *billingService) buildBatchItems(
 	ctx context.Context,
@@ -165,43 +164,12 @@ func (s *billingService) buildBatchItems(
 			continue
 		}
 
-		// 5. Create bill
-		bill, createErr := s.buildAndCreateMonthlyBill(ctx, c.ContractID, billingMonth,
-			c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, &batchID)
-		if createErr == nil {
-			item.ResultType = ResultCreated
-			item.BillID = &bill.ID
-			items = append(items, item)
-			continue
-		}
-
-		// 5a. Race: another request created the bill between pre-check and insert
-		if errors.Is(createErr, ErrBillAlreadyExists) {
-			existing, refetchErr := s.repo.FindByContractAndMonth(ctx, c.ContractID, billingMonth, BillTypeMonthly)
-			if refetchErr == nil {
-				item.ResultType = ResultAlreadyExists
-				item.ReasonCode = ReasonAlreadyExists
-				item.ReasonText = "มีบิลสำหรับเดือนนี้อยู่แล้ว"
-				item.BillID = &existing.ID
-				items = append(items, item)
-				continue
-			}
-			slog.Warn("batch billing: race re-fetch failed",
-				"contract_id", c.ContractID, "room", c.RoomNumber, "error", refetchErr)
-			item.ResultType = ResultFailed
-			item.ReasonCode = ReasonSystemError
-			item.ReasonText = "เกิดข้อผิดพลาดของระบบ"
-			items = append(items, item)
-			continue
-		}
-
-		// 5b. Other failures — classify
-		item.ResultType = ResultFailed
-		item.ReasonCode, item.ReasonText = classifyBatchError(createErr)
+		// 5. Compute snapshot (no bill row — will be persisted by commit step)
+		snapshot := computeMonthlyBillSnapshot(billingMonth,
+			c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+		item.ResultType = ResultCreated
+		item.ComputedSnapshot = snapshot
 		items = append(items, item)
-
-		slog.Warn("batch billing: create failed",
-			"contract_id", c.ContractID, "room", c.RoomNumber, "error", createErr)
 	}
 
 	return items, nil
@@ -217,28 +185,53 @@ func parseBillingMonthRange(billingMonth string) (start, end time.Time) {
 	return start, end
 }
 
-// classifyBatchError maps errors to reason code + Thai text for batch results.
-func classifyBatchError(err error) (code, text string) {
-	switch {
-	case errors.Is(err, ErrContractNotActive):
-		return "CONTRACT_NOT_ACTIVE", "สัญญาไม่ได้อยู่ในสถานะใช้งาน"
-	case errors.Is(err, ErrMeterNotFound):
-		return "METER_NOT_FOUND", "ไม่พบข้อมูลมิเตอร์"
-	case errors.Is(err, ErrMeterTypeMismatch):
-		return "METER_TYPE_MISMATCH", "มิเตอร์ไม่ใช่ประเภทรายเดือน"
-	case errors.Is(err, ErrMeterRoomMismatch):
-		return "METER_ROOM_MISMATCH", "มิเตอร์ไม่ตรงกับห้องในสัญญา"
-	case errors.Is(err, ErrMeterMonthMismatch):
-		return "METER_MONTH_MISMATCH", "เดือนของมิเตอร์ไม่ตรงกับเดือนที่ออกบิล"
+// computeMonthlyBillSnapshot builds the line items + total for a monthly bill
+// without touching the bills table. Persistence happens later in the commit step.
+func computeMonthlyBillSnapshot(
+	billingMonth string,
+	monthlyRent, elecRate, waterRate int64,
+	reading *meterreading.MeterReading,
+) ComputedSnapshot {
+	nextMonth := advanceMonth(billingMonth)
+	elecUnits := reading.ElectricityUsed()
+	waterUnits := reading.WaterUsed()
+
+	lines := []ComputedLineItem{
+		{
+			Type:        LineItemRoomRent,
+			Description: fmt.Sprintf("ค่าห้อง %s", nextMonth),
+			Amount:      monthlyRent,
+			SortOrder:   1,
+		},
+		{
+			Type:        LineItemElectricity,
+			Description: fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits),
+			Amount:      int64(elecUnits) * elecRate,
+			Quantity:    elecUnits,
+			UnitPrice:   elecRate,
+			SortOrder:   2,
+		},
+		{
+			Type:        LineItemWater,
+			Description: fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits),
+			Amount:      int64(waterUnits) * waterRate,
+			Quantity:    waterUnits,
+			UnitPrice:   waterRate,
+			SortOrder:   3,
+		},
 	}
 
-	var appErr *respond.AppError
-	if errors.As(err, &appErr) {
-		if appErr.HTTPStatus >= 400 && appErr.HTTPStatus < 500 {
-			return ReasonValidationError, appErr.Message
-		}
+	var total int64
+	for _, li := range lines {
+		total += li.Amount
 	}
-	return ReasonSystemError, "เกิดข้อผิดพลาดของระบบ"
+
+	return ComputedSnapshot{
+		Version:     ComputedSnapshotVersion,
+		LineItems:   lines,
+		TotalAmount: total,
+		ComputedAt:  time.Now().UTC(),
+	}
 }
 
 // --- Batch query (for review page) ---

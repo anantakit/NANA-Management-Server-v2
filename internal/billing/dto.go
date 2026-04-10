@@ -121,18 +121,37 @@ type BatchHeaderResponse struct {
 	Summary      BatchSummaryResponse `json:"summary"`
 	CreatedBy    *uuid.UUID           `json:"created_by,omitempty"`
 	CreatedAt    string               `json:"created_at"`
+	CommitStatus *string              `json:"commit_status,omitempty"`
+	CommittedAt  *string              `json:"committed_at,omitempty"`
 }
 
 type BatchItemResponse struct {
-	ID         uuid.UUID  `json:"id"`
-	ContractID uuid.UUID  `json:"contract_id"`
-	RoomID     uuid.UUID  `json:"room_id"`
-	RoomNumber string     `json:"room_number"`
-	RoomFloor  int        `json:"room_floor"`
-	ResultType string     `json:"result_type"`
-	ReasonCode string     `json:"reason_code,omitempty"`
-	ReasonText string     `json:"reason_text,omitempty"`
-	BillID     *uuid.UUID `json:"bill_id,omitempty"`
+	ID               uuid.UUID              `json:"id"`
+	ContractID       uuid.UUID              `json:"contract_id"`
+	RoomID           uuid.UUID              `json:"room_id"`
+	RoomNumber       string                 `json:"room_number"`
+	RoomFloor        int                    `json:"room_floor"`
+	ResultType       string                 `json:"result_type"`
+	ReasonCode       string                 `json:"reason_code,omitempty"`
+	ReasonText       string                 `json:"reason_text,omitempty"`
+	BillID           *uuid.UUID             `json:"bill_id,omitempty"`
+	ComputedSnapshot *SnapshotPreview       `json:"computed_snapshot,omitempty"`
+}
+
+// SnapshotPreview is the API-facing version of ComputedSnapshot.
+// Amounts are converted to baht (float64) for consistency with BillResponse.
+type SnapshotPreview struct {
+	LineItems   []SnapshotLineItemPreview `json:"line_items"`
+	TotalAmount float64                   `json:"total_amount"`
+}
+
+type SnapshotLineItemPreview struct {
+	Type        string  `json:"type"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Quantity    int     `json:"quantity,omitempty"`
+	UnitPrice   float64 `json:"unit_price,omitempty"`
+	SortOrder   int     `json:"sort_order,omitempty"`
 }
 
 func toBatchSummary(b *BillGenerationBatch) BatchSummaryResponse {
@@ -157,7 +176,7 @@ func ToBatchTriggerResponse(b *BillGenerationBatch) BatchTriggerResponse {
 }
 
 func ToBatchHeaderResponse(b *BillGenerationBatch) BatchHeaderResponse {
-	return BatchHeaderResponse{
+	resp := BatchHeaderResponse{
 		ID:           b.ID,
 		ApartmentID:  b.ApartmentID,
 		BillingMonth: b.BillingMonth,
@@ -166,10 +185,19 @@ func ToBatchHeaderResponse(b *BillGenerationBatch) BatchHeaderResponse {
 		CreatedBy:    b.CreatedBy,
 		CreatedAt:    b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+	if b.CommitStatus != nil {
+		s := string(*b.CommitStatus)
+		resp.CommitStatus = &s
+	}
+	if b.CommittedAt != nil {
+		s := b.CommittedAt.Format("2006-01-02T15:04:05Z07:00")
+		resp.CommittedAt = &s
+	}
+	return resp
 }
 
 func ToBatchItemResponse(i BillGenerationBatchItem) BatchItemResponse {
-	return BatchItemResponse{
+	resp := BatchItemResponse{
 		ID:         i.ID,
 		ContractID: i.ContractID,
 		RoomID:     i.RoomID,
@@ -179,6 +207,28 @@ func ToBatchItemResponse(i BillGenerationBatchItem) BatchItemResponse {
 		ReasonCode: i.ReasonCode,
 		ReasonText: i.ReasonText,
 		BillID:     i.BillID,
+	}
+	if i.ResultType == ResultCreated && len(i.ComputedSnapshot.LineItems) > 0 {
+		resp.ComputedSnapshot = toSnapshotPreview(i.ComputedSnapshot)
+	}
+	return resp
+}
+
+func toSnapshotPreview(s ComputedSnapshot) *SnapshotPreview {
+	items := make([]SnapshotLineItemPreview, len(s.LineItems))
+	for i, li := range s.LineItems {
+		items[i] = SnapshotLineItemPreview{
+			Type:        string(li.Type),
+			Description: li.Description,
+			Amount:      money.ToBaht(li.Amount),
+			Quantity:    li.Quantity,
+			UnitPrice:   money.ToBaht(li.UnitPrice),
+			SortOrder:   li.SortOrder,
+		}
+	}
+	return &SnapshotPreview{
+		LineItems:   items,
+		TotalAmount: money.ToBaht(s.TotalAmount),
 	}
 }
 
