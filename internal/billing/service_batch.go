@@ -2,7 +2,9 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // BatchCreateMonthlyBills generates monthly bills for all eligible active contracts
@@ -232,6 +235,140 @@ func computeMonthlyBillSnapshot(
 		TotalAmount: total,
 		ComputedAt:  time.Now().UTC(),
 	}
+}
+
+// CommitBatch reads the computed snapshots from a generate batch and creates
+// Bill(FINALIZED) rows. Per-item transactions ensure partial progress is preserved.
+// Idempotent: retrying after partial commit only processes uncommitted items.
+func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*CommitBatchResult, error) {
+	// 1. Lock batch + read pending items in a short tx, then release.
+	var batch *BillGenerationBatch
+	var items []BillGenerationBatchItem
+
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		b, err := s.repo.LockBatchForCommit(txCtx, batchID)
+		if err != nil {
+			return err
+		}
+		if err := b.CanCommit(); err != nil {
+			return err
+		}
+		batch = b
+
+		pending, err := s.repo.ListCommitPendingItems(txCtx, batchID)
+		if err != nil {
+			return err
+		}
+		items = pending
+		return nil
+	}); err != nil {
+		if isNotFound(err) {
+			return nil, ErrBatchNotFound
+		}
+		if errors.Is(err, ErrBatchAlreadyCommitted) {
+			return nil, respond.ErrConflict.WithMessage("batch ถูก commit ไปแล้ว")
+		}
+		return nil, fmt.Errorf("lock batch: %w", err)
+	}
+
+	// 2. Per-item commit loop
+	successCount := 0
+	failCount := 0
+	var lastInfraErr error
+
+	for _, item := range items {
+		err := s.commitOneItem(ctx, batch, item)
+		if err != nil {
+			if isInfraError(err) {
+				lastInfraErr = err
+				break
+			}
+			// Business error: record in a separate tx so rollback of create doesn't erase it.
+			if logErr := s.repo.UpdateBatchItemCommitError(ctx, item.ID, err.Error()); logErr != nil {
+				slog.Error("failed to record commit error on batch item", "item_id", item.ID, "error", logErr)
+			}
+			failCount++
+			continue
+		}
+		successCount++
+	}
+
+	// 3. Finalize commit status
+	pendingCount := len(items) - successCount - failCount
+	batch.MarkCommitResult(successCount, failCount, pendingCount)
+
+	if batch.CommitStatus != nil {
+		if err := s.repo.UpdateBatchCommitStatus(ctx, batchID, *batch.CommitStatus, batch.CommittedAt); err != nil {
+			slog.Warn("failed to update batch commit status", "batch_id", batchID, "status", *batch.CommitStatus, "error", err)
+		}
+	}
+
+	result := &CommitBatchResult{
+		Batch:        batch,
+		SuccessCount: successCount,
+		FailCount:    failCount,
+		PendingCount: pendingCount,
+	}
+
+	if lastInfraErr != nil {
+		return result, fmt.Errorf("commit batch (partial): %w", lastInfraErr)
+	}
+	return result, nil
+}
+
+// commitOneItem creates a single FINALIZED bill from a batch item's snapshot.
+// Runs in its own transaction so failures are isolated per-item.
+func (s *billingService) commitOneItem(ctx context.Context, batch *BillGenerationBatch, item BillGenerationBatchItem) error {
+	return s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		snapshot := item.ComputedSnapshot
+		if err := snapshot.Validate(); err != nil {
+			return err
+		}
+
+		// Pre-generate bill ID so line items can reference it in a single Create.
+		// BeforeCreate hook skips uuid.New() when ID is already set.
+		billID := uuid.New()
+		bill := &Bill{
+			ID:           billID,
+			ContractID:   item.ContractID,
+			BillingMonth: batch.BillingMonth,
+			BillType:     BillTypeMonthly,
+			Status:       BillStatusFinalized,
+			BatchID:      &item.BatchID,
+			LineItems:    snapshot.ToLineItems(billID),
+		}
+		bill.CalculateTotal()
+
+		if err := s.repo.Create(txCtx, bill); err != nil {
+			return err
+		}
+
+		return s.repo.UpdateBatchItemCommitted(txCtx, item.ID, bill.ID)
+	})
+}
+
+// isInfraError returns true for infrastructure/system errors that should stop the loop.
+// Business errors (validation, snapshot issues) are whitelisted and return false.
+func isInfraError(err error) bool {
+	// Whitelist known business errors — everything else is infra.
+	if errors.Is(err, ErrSnapshotUnsupportedVersion) ||
+		errors.Is(err, ErrSnapshotNoLineItems) ||
+		errors.Is(err, ErrSnapshotNegativeTotal) ||
+		errors.Is(err, ErrBillAlreadyExists) ||
+		errors.Is(err, ErrBatchAlreadyCommitted) {
+		return false
+	}
+	// respond.AppError with 4xx status = business error
+	var appErr *respond.AppError
+	if errors.As(err, &appErr) && appErr.HTTPStatus >= 400 && appErr.HTTPStatus < 500 {
+		return false
+	}
+	return true
+}
+
+// isNotFound checks for gorm.ErrRecordNotFound.
+func isNotFound(err error) bool {
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 // --- Batch query (for review page) ---

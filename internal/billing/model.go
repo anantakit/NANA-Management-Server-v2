@@ -497,6 +497,14 @@ type BillGenerationBatchItem struct {
 
 func (BillGenerationBatchItem) TableName() string { return "bill_generation_batch_items" }
 
+// CommitBatchResult holds the outcome of a commit attempt for API response.
+type CommitBatchResult struct {
+	Batch        *BillGenerationBatch
+	SuccessCount int
+	FailCount    int
+	PendingCount int
+}
+
 // --- Projections ---
 
 // BillWithRelations is a projection for list/detail API responses.

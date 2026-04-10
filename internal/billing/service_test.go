@@ -132,6 +132,50 @@ func (m *mockBillingRepo) ListBatches(_ context.Context, _ BatchListParams) ([]B
 	return nil, 0, nil
 }
 
+// --- Commit flow mocks ---
+
+func (m *mockBillingRepo) LockBatchForCommit(_ context.Context, _ uuid.UUID) (*BillGenerationBatch, error) {
+	if m.createdBatch != nil {
+		return m.createdBatch, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (m *mockBillingRepo) ListCommitPendingItems(_ context.Context, _ uuid.UUID) ([]BillGenerationBatchItem, error) {
+	var pending []BillGenerationBatchItem
+	for _, it := range m.createdBatchItems {
+		if it.ResultType == ResultCreated && it.BillID == nil {
+			pending = append(pending, it)
+		}
+	}
+	return pending, nil
+}
+func (m *mockBillingRepo) UpdateBatchItemCommitted(_ context.Context, itemID uuid.UUID, billID uuid.UUID) error {
+	for i := range m.createdBatchItems {
+		if m.createdBatchItems[i].ID == itemID {
+			m.createdBatchItems[i].BillID = &billID
+			break
+		}
+	}
+	return nil
+}
+func (m *mockBillingRepo) UpdateBatchItemCommitError(_ context.Context, itemID uuid.UUID, reasonText string) error {
+	for i := range m.createdBatchItems {
+		if m.createdBatchItems[i].ID == itemID {
+			m.createdBatchItems[i].ReasonCode = ReasonCodeCommitError
+			m.createdBatchItems[i].ReasonText = reasonText
+			break
+		}
+	}
+	return nil
+}
+func (m *mockBillingRepo) UpdateBatchCommitStatus(_ context.Context, _ uuid.UUID, status CommitStatus, committedAt *time.Time) error {
+	if m.createdBatch != nil {
+		m.createdBatch.CommitStatus = &status
+		m.createdBatch.CommittedAt = committedAt
+	}
+	return nil
+}
+
 type mockContractQuerier struct {
 	contract *contract.Contract
 }

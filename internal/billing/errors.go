@@ -3,6 +3,7 @@ package billing
 import "nana/internal/shared/respond"
 
 var (
+	ErrBatchNotFound       = respond.ErrNotFound.WithMessage("ไม่พบ batch")
 	ErrBillNotFound        = respond.ErrNotFound.WithMessage("ไม่พบบิล")
 	ErrContractNotFound    = respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
 	ErrContractNotActive   = respond.ErrBadRequest.WithMessage("สัญญาไม่ได้อยู่ในสถานะใช้งาน")

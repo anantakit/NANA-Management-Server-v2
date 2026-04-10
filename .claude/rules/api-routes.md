@@ -72,3 +72,19 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | PUT | `/:id` | Update move-out notice (PENDING only: scheduled_move_out_date, note) |
 | POST | `/:id/cancel` | Cancel move-out notice (PENDING only → CANCELLED) |
 | POST | `/:id/complete` | Complete move-out (tx: notice COMPLETED + contract ENDED + room VACANT) |
+
+## Billing (`/api/v1/bills`) — Admin only
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List bills (paginated, filter by contract_id/apartment_id/month/status/bill_type, search) |
+| GET | `/:id` | Get bill with tenant/room/apartment relations + line items |
+| POST | `/monthly` | Create single monthly bill (FINALIZED) |
+| POST | `/settlement` | Create settlement bill (DRAFT) |
+| POST | `/batch-monthly` | Trigger batch monthly generation (compute snapshots, no bills yet) |
+| PATCH | `/:id/finalize` | Transition DRAFT → FINALIZED |
+| PATCH | `/:id/void` | Void bill (DRAFT/FINALIZED → VOID, requires reason) |
+| PATCH | `/:id/paid` | Mark bill as paid (FINALIZED → PAID) |
+| GET | `/batches` | List batch runs (paginated, filter by apartment_id/billing_month/status) |
+| GET | `/batches/:id` | Get batch header with summary counts |
+| GET | `/batches/:id/items` | Get batch items with computed snapshots |
+| POST | `/batches/:id/commit` | Commit batch: create FINALIZED bills from snapshots (idempotent, per-item tx) |

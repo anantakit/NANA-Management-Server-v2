@@ -154,6 +154,23 @@ type SnapshotLineItemPreview struct {
 	SortOrder   int     `json:"sort_order,omitempty"`
 }
 
+// CommitBatchResponse is returned from POST /bills/batches/:id/commit.
+type CommitBatchResponse struct {
+	Batch        BatchHeaderResponse `json:"batch"`
+	SuccessCount int                 `json:"success_count"`
+	FailCount    int                 `json:"fail_count"`
+	PendingCount int                 `json:"pending_count"`
+}
+
+func ToCommitBatchResponse(r *CommitBatchResult) CommitBatchResponse {
+	return CommitBatchResponse{
+		Batch:        ToBatchHeaderResponse(r.Batch),
+		SuccessCount: r.SuccessCount,
+		FailCount:    r.FailCount,
+		PendingCount: r.PendingCount,
+	}
+}
+
 func toBatchSummary(b *BillGenerationBatch) BatchSummaryResponse {
 	return BatchSummaryResponse{
 		TotalContracts:     b.TotalContracts,

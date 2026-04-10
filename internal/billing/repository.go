@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type BillingRepository interface {
@@ -30,6 +31,13 @@ type BillingRepository interface {
 	FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
 	FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
+
+	// Commit flow
+	LockBatchForCommit(ctx context.Context, batchID uuid.UUID) (*BillGenerationBatch, error)
+	ListCommitPendingItems(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error)
+	UpdateBatchItemCommitted(ctx context.Context, itemID uuid.UUID, billID uuid.UUID) error
+	UpdateBatchItemCommitError(ctx context.Context, itemID uuid.UUID, reasonText string) error
+	UpdateBatchCommitStatus(ctx context.Context, batchID uuid.UUID, status CommitStatus, committedAt *time.Time) error
 }
 
 type billingRepository struct {
@@ -369,4 +377,63 @@ func (r *billingRepository) SumPaidByContractSince(ctx context.Context, contract
 			contractID, BillTypeMonthly, BillStatusPaid, sinceMonth).
 		Scan(&total).Error
 	return total, err
+}
+
+// --- Commit flow ---
+
+// LockBatchForCommit acquires a row-level lock (SELECT FOR UPDATE) on the batch.
+// Must be called inside a transaction. Prevents concurrent commit attempts.
+func (r *billingRepository) LockBatchForCommit(ctx context.Context, batchID uuid.UUID) (*BillGenerationBatch, error) {
+	var b BillGenerationBatch
+	err := database.DB(ctx, r.db).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", batchID).
+		First(&b).Error
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// ListCommitPendingItems returns items eligible for commit: CREATED with no bill yet.
+// Idempotent — retrying after partial commit only picks up uncommitted items.
+func (r *billingRepository) ListCommitPendingItems(ctx context.Context, batchID uuid.UUID) ([]BillGenerationBatchItem, error) {
+	var items []BillGenerationBatchItem
+	err := database.DB(ctx, r.db).
+		Where("batch_id = ? AND result_type = ? AND bill_id IS NULL", batchID, ResultCreated).
+		Order("room_floor ASC, room_number ASC").
+		Find(&items).Error
+	return items, err
+}
+
+// UpdateBatchItemCommitted sets bill_id on a batch item after successful bill creation.
+// Must be called in the same tx as Create(bill).
+func (r *billingRepository) UpdateBatchItemCommitted(ctx context.Context, itemID uuid.UUID, billID uuid.UUID) error {
+	return database.DB(ctx, r.db).
+		Model(&BillGenerationBatchItem{}).
+		Where("id = ?", itemID).
+		Update("bill_id", billID).Error
+}
+
+// UpdateBatchItemCommitError records a commit error on a batch item.
+// Called in a separate tx from the failed bill creation (so rollback doesn't erase it).
+func (r *billingRepository) UpdateBatchItemCommitError(ctx context.Context, itemID uuid.UUID, reasonText string) error {
+	return database.DB(ctx, r.db).
+		Model(&BillGenerationBatchItem{}).
+		Where("id = ?", itemID).
+		Updates(map[string]any{
+			"reason_code": ReasonCodeCommitError,
+			"reason_text": reasonText,
+		}).Error
+}
+
+// UpdateBatchCommitStatus updates the commit_status and committed_at on the batch header.
+func (r *billingRepository) UpdateBatchCommitStatus(ctx context.Context, batchID uuid.UUID, status CommitStatus, committedAt *time.Time) error {
+	return database.DB(ctx, r.db).
+		Model(&BillGenerationBatch{}).
+		Where("id = ?", batchID).
+		Updates(map[string]any{
+			"commit_status": status,
+			"committed_at":  committedAt,
+		}).Error
 }

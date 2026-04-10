@@ -23,6 +23,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/batches", h.ListBatches)
 	r.Get("/batches/:id", h.GetBatch)
 	r.Get("/batches/:id/items", h.GetBatchItems)
+	r.Post("/batches/:id/commit", h.CommitBatch)
 
 	r.Get("/", h.List)
 	r.Get("/:id", h.GetByID)
@@ -146,6 +147,24 @@ func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "สร้างบิลรายเดือนแบบกลุ่มสำเร็จ", ToBatchTriggerResponse(result))
+}
+
+func (h *BillingHandler) CommitBatch(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.CommitBatch(c.Context(), id)
+	if err != nil {
+		// Partial commit: return 200 with result so FE can see progress.
+		if result != nil {
+			return respond.Success(c, "commit บางส่วนล้มเหลว กรุณาลองใหม่", ToCommitBatchResponse(result))
+		}
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "commit บิลสำเร็จ", ToCommitBatchResponse(result))
 }
 
 func (h *BillingHandler) GetBatch(c fiber.Ctx) error {
