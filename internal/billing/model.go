@@ -1,7 +1,10 @@
 package billing
 
 import (
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,6 +52,7 @@ var (
 	ErrAlreadyVoided  = errors.New("บิลถูกยกเลิกแล้ว")
 	ErrAlreadyPaid    = errors.New("บิลถูกชำระแล้ว")
 	ErrVoidReasonEmpty = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
+	ErrBatchAlreadyCommitted = errors.New("batch ถูก commit ไปแล้ว")
 )
 
 // --- Models ---
@@ -308,7 +312,107 @@ const (
 	ReasonAlreadyExists       = "ALREADY_EXISTS"
 	ReasonValidationError     = "VALIDATION_ERROR"
 	ReasonSystemError         = "SYSTEM_ERROR"
+	ReasonCodeCommitError     = "COMMIT_ERROR"
 )
+
+// --- Commit status (batch-level) ---
+
+type CommitStatus string
+
+const (
+	CommitStatusCommitted          CommitStatus = "COMMITTED"
+	CommitStatusPartiallyCommitted CommitStatus = "PARTIALLY_COMMITTED"
+	CommitStatusFailed             CommitStatus = "FAILED"
+)
+
+// --- Computed snapshot (per-item, serialized to jsonb) ---
+
+const ComputedSnapshotVersion = 1
+
+var (
+	ErrSnapshotUnsupportedVersion = errors.New("snapshot ไม่รองรับเวอร์ชันนี้")
+	ErrSnapshotNoLineItems        = errors.New("snapshot ต้องมีรายการอย่างน้อย 1 รายการ")
+	ErrSnapshotNegativeTotal      = errors.New("snapshot มียอดรวมติดลบ")
+)
+
+type ComputedLineItem struct {
+	Type        LineItemType   `json:"type"`
+	Description string         `json:"description"`
+	Amount      int64          `json:"amount"`
+	Quantity    int            `json:"quantity,omitempty"`
+	UnitPrice   int64          `json:"unit_price,omitempty"`
+	SortOrder   int            `json:"sort_order,omitempty"`
+	Meta        map[string]any `json:"meta,omitempty"`
+}
+
+type ComputedSnapshot struct {
+	Version     int                `json:"version"`
+	LineItems   []ComputedLineItem `json:"line_items"`
+	TotalAmount int64              `json:"total_amount"`
+	ComputedAt  time.Time          `json:"computed_at"`
+	SourceHash  string             `json:"source_hash,omitempty"`
+}
+
+// Scan implements sql.Scanner for jsonb column.
+func (s *ComputedSnapshot) Scan(value any) error {
+	if value == nil {
+		*s = ComputedSnapshot{}
+		return nil
+	}
+	var data []byte
+	switch v := value.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return fmt.Errorf("computed_snapshot: unsupported scan type %T", value)
+	}
+	if len(data) == 0 {
+		*s = ComputedSnapshot{}
+		return nil
+	}
+	return json.Unmarshal(data, s)
+}
+
+// Value implements driver.Valuer for jsonb column.
+func (s ComputedSnapshot) Value() (driver.Value, error) {
+	if s.Version == 0 && len(s.LineItems) == 0 && s.TotalAmount == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(s)
+}
+
+// Validate checks snapshot invariants before commit.
+func (s *ComputedSnapshot) Validate() error {
+	if s.Version != ComputedSnapshotVersion {
+		return ErrSnapshotUnsupportedVersion
+	}
+	if len(s.LineItems) == 0 {
+		return ErrSnapshotNoLineItems
+	}
+	if s.TotalAmount < 0 {
+		return ErrSnapshotNegativeTotal
+	}
+	return nil
+}
+
+// ToLineItems converts snapshot items into BillLineItem rows for a given bill.
+func (s *ComputedSnapshot) ToLineItems(billID uuid.UUID) []BillLineItem {
+	items := make([]BillLineItem, 0, len(s.LineItems))
+	for _, li := range s.LineItems {
+		items = append(items, BillLineItem{
+			BillID:      billID,
+			LineType:    li.Type,
+			Description: li.Description,
+			Amount:      li.Amount,
+			Quantity:    li.Quantity,
+			UnitPrice:   li.UnitPrice,
+			SortOrder:   li.SortOrder,
+		})
+	}
+	return items
+}
 
 type BillGenerationBatch struct {
 	ID                 uuid.UUID   `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
@@ -322,6 +426,40 @@ type BillGenerationBatch struct {
 	FailedCount        int         `gorm:"not null;default:0;column:failed_count" json:"failed_count"`
 	CreatedBy          *uuid.UUID  `gorm:"type:uuid" json:"created_by,omitempty"`
 	CreatedAt          time.Time   `gorm:"not null;default:now()" json:"created_at"`
+	CommitStatus       *CommitStatus `gorm:"type:varchar(32)" json:"commit_status,omitempty"`
+	CommittedAt        *time.Time    `gorm:"type:timestamptz" json:"committed_at,omitempty"`
+}
+
+// CanCommit returns nil if the batch is eligible for a commit attempt.
+// Already-committed batches are rejected; NULL/PARTIALLY_COMMITTED/FAILED are retryable.
+func (b *BillGenerationBatch) CanCommit() error {
+	if b.CommitStatus != nil && *b.CommitStatus == CommitStatusCommitted {
+		return ErrBatchAlreadyCommitted
+	}
+	return nil
+}
+
+// MarkCommitResult sets CommitStatus + CommittedAt based on per-item tallies.
+// pendingCount > 0 keeps CommitStatus as NULL (defensive — caller shouldn't do this).
+func (b *BillGenerationBatch) MarkCommitResult(successCount, failCount, pendingCount int) {
+	if pendingCount > 0 {
+		return
+	}
+	now := time.Now()
+	switch {
+	case successCount > 0 && failCount == 0:
+		s := CommitStatusCommitted
+		b.CommitStatus = &s
+		b.CommittedAt = &now
+	case successCount > 0 && failCount > 0:
+		s := CommitStatusPartiallyCommitted
+		b.CommitStatus = &s
+		b.CommittedAt = &now
+	case successCount == 0 && failCount > 0:
+		s := CommitStatusFailed
+		b.CommitStatus = &s
+		b.CommittedAt = nil
+	}
 }
 
 func (BillGenerationBatch) TableName() string { return "bill_generation_batches" }
@@ -352,8 +490,9 @@ type BillGenerationBatchItem struct {
 	ResultType ResultType `gorm:"type:varchar(20);not null" json:"result_type"`
 	ReasonCode string     `gorm:"type:varchar(40);not null;default:''" json:"reason_code"`
 	ReasonText string     `gorm:"type:text;not null;default:''" json:"reason_text"`
-	BillID     *uuid.UUID `gorm:"type:uuid" json:"bill_id,omitempty"`
-	CreatedAt  time.Time  `gorm:"not null;default:now()" json:"created_at"`
+	BillID           *uuid.UUID       `gorm:"type:uuid" json:"bill_id,omitempty"`
+	ComputedSnapshot ComputedSnapshot `gorm:"type:jsonb;not null;default:'{}'::jsonb" json:"computed_snapshot"`
+	CreatedAt        time.Time        `gorm:"not null;default:now()" json:"created_at"`
 }
 
 func (BillGenerationBatchItem) TableName() string { return "bill_generation_batch_items" }

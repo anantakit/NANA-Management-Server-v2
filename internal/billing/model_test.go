@@ -1,8 +1,146 @@
 package billing
 
 import (
+	"errors"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 )
+
+// --- ComputedSnapshot ---
+
+func validSnapshot() ComputedSnapshot {
+	return ComputedSnapshot{
+		Version: ComputedSnapshotVersion,
+		LineItems: []ComputedLineItem{
+			{Type: LineItemRoomRent, Description: "ค่าห้อง", Amount: 500000, SortOrder: 1},
+			{Type: LineItemElectricity, Description: "ค่าไฟ", Amount: 30000, Quantity: 50, UnitPrice: 600, SortOrder: 2},
+		},
+		TotalAmount: 530000,
+		ComputedAt:  time.Now(),
+	}
+}
+
+func TestComputedSnapshot_Validate(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		s := validSnapshot()
+		if err := s.Validate(); err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+	})
+	t.Run("unsupported version", func(t *testing.T) {
+		s := validSnapshot()
+		s.Version = 2
+		if err := s.Validate(); !errors.Is(err, ErrSnapshotUnsupportedVersion) {
+			t.Fatalf("expected ErrSnapshotUnsupportedVersion, got %v", err)
+		}
+	})
+	t.Run("empty line items", func(t *testing.T) {
+		s := validSnapshot()
+		s.LineItems = nil
+		if err := s.Validate(); !errors.Is(err, ErrSnapshotNoLineItems) {
+			t.Fatalf("expected ErrSnapshotNoLineItems, got %v", err)
+		}
+	})
+	t.Run("negative total", func(t *testing.T) {
+		s := validSnapshot()
+		s.TotalAmount = -1
+		if err := s.Validate(); !errors.Is(err, ErrSnapshotNegativeTotal) {
+			t.Fatalf("expected ErrSnapshotNegativeTotal, got %v", err)
+		}
+	})
+}
+
+func TestComputedSnapshot_ToLineItems(t *testing.T) {
+	s := validSnapshot()
+	billID := uuid.New()
+	items := s.ToLineItems(billID)
+	if len(items) != len(s.LineItems) {
+		t.Fatalf("expected %d items, got %d", len(s.LineItems), len(items))
+	}
+	for i, it := range items {
+		if it.BillID != billID {
+			t.Errorf("item %d: BillID = %v, want %v", i, it.BillID, billID)
+		}
+		if it.LineType != s.LineItems[i].Type {
+			t.Errorf("item %d: LineType = %v, want %v", i, it.LineType, s.LineItems[i].Type)
+		}
+		if it.Amount != s.LineItems[i].Amount {
+			t.Errorf("item %d: Amount = %v, want %v", i, it.Amount, s.LineItems[i].Amount)
+		}
+	}
+}
+
+// --- BillGenerationBatch commit helpers ---
+
+func TestBillGenerationBatch_CanCommit(t *testing.T) {
+	committed := CommitStatusCommitted
+	partial := CommitStatusPartiallyCommitted
+	failed := CommitStatusFailed
+	tests := []struct {
+		name    string
+		status  *CommitStatus
+		wantErr error
+	}{
+		{"nil ok", nil, nil},
+		{"already committed", &committed, ErrBatchAlreadyCommitted},
+		{"partial retryable", &partial, nil},
+		{"failed retryable", &failed, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &BillGenerationBatch{CommitStatus: tt.status}
+			err := b.CanCommit()
+			if tt.wantErr == nil && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestBillGenerationBatch_MarkCommitResult(t *testing.T) {
+	t.Run("all success → COMMITTED", func(t *testing.T) {
+		b := &BillGenerationBatch{}
+		b.MarkCommitResult(5, 0, 0)
+		if b.CommitStatus == nil || *b.CommitStatus != CommitStatusCommitted {
+			t.Fatalf("expected COMMITTED, got %v", b.CommitStatus)
+		}
+		if b.CommittedAt == nil {
+			t.Fatalf("expected CommittedAt set")
+		}
+	})
+	t.Run("mixed → PARTIALLY_COMMITTED", func(t *testing.T) {
+		b := &BillGenerationBatch{}
+		b.MarkCommitResult(3, 2, 0)
+		if b.CommitStatus == nil || *b.CommitStatus != CommitStatusPartiallyCommitted {
+			t.Fatalf("expected PARTIALLY_COMMITTED, got %v", b.CommitStatus)
+		}
+		if b.CommittedAt == nil {
+			t.Fatalf("expected CommittedAt set")
+		}
+	})
+	t.Run("all failed → FAILED", func(t *testing.T) {
+		b := &BillGenerationBatch{}
+		b.MarkCommitResult(0, 3, 0)
+		if b.CommitStatus == nil || *b.CommitStatus != CommitStatusFailed {
+			t.Fatalf("expected FAILED, got %v", b.CommitStatus)
+		}
+		if b.CommittedAt != nil {
+			t.Fatalf("expected CommittedAt nil on FAILED")
+		}
+	})
+	t.Run("pending > 0 → no change", func(t *testing.T) {
+		b := &BillGenerationBatch{}
+		b.MarkCommitResult(1, 0, 2)
+		if b.CommitStatus != nil {
+			t.Fatalf("expected nil, got %v", b.CommitStatus)
+		}
+	})
+}
 
 // --- Status checks ---
 
