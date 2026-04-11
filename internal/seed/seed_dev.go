@@ -585,5 +585,133 @@ func seedDevTenantHistory(db *gorm.DB) error {
 	}
 
 	slog.Info("seeded dev tenant history", "rooms", "A108, A109")
+
+	// --- B103: VACANT room with ended + terminated history ---
+	// Tests: history section on Edit Room for a room that's currently empty
+	// but has past rental episodes (2 ENDED, 1 TERMINATED)
+	if err := seedB103History(db, apt); err != nil {
+		return fmt.Errorf("seed B103 history: %w", err)
+	}
+
+	return nil
+}
+
+// seedB103History creates contract history for B103 (a VACANT room).
+//
+// | Tenant         | Period              | Status      | Scenario                   |
+// |----------------|---------------------|-------------|----------------------------|
+// | กานต์ ชัยศรี     | ม.ค.–มิ.ย. 2567     | ENDED       | Normal full-stay           |
+// | พิมพ์ ลาวัลย์    | ก.ย.–พ.ย. 2567      | TERMINATED  | Broke lease early          |
+// | อนันต์ ยศศิริ   | ม.ค.–เม.ย. 2568     | ENDED       | Most recent ended tenant   |
+func seedB103History(db *gorm.DB, apt apartment.Apartment) error {
+	var b103 room.Room
+	if err := db.Where("apartment_id = ? AND number = ?", apt.ID, "B103").First(&b103).Error; err != nil {
+		slog.Warn("room B103 not found for history seed")
+		return nil
+	}
+
+	// Idempotent check
+	var count int64
+	if err := db.Model(&contract.Contract{}).Where("room_id = ?", b103.ID).Count(&count).Error; err != nil {
+		return fmt.Errorf("check B103 contracts: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	// Create tenants
+	historyTenants := []struct {
+		FullName         string
+		IDCard           string
+		Phone            string
+		Address          string
+		EmergencyContact string
+	}{
+		{FullName: "กานต์ ชัยศรี", IDCard: "1100100200001", Phone: "0811001100", Address: "12 ถ.รามคำแหง กรุงเทพฯ", EmergencyContact: "กุล ชัยศรี 0811002200"},
+		{FullName: "พิมพ์ ลาวัลย์", IDCard: "1100100200002", Phone: "0822003300", Address: "34 ถ.ลาดพร้าว กรุงเทพฯ", EmergencyContact: "พัชรา ลาวัลย์ 0822004400"},
+		{FullName: "อนันต์ ยศศิริ", IDCard: "1100100200003", Phone: "0833005500", Address: "56 ถ.ศรีนครินทร์ กรุงเทพฯ", EmergencyContact: "อรุณ ยศศิริ 0833006600"},
+	}
+
+	tenants := make([]tenant.Tenant, len(historyTenants))
+	for i, t := range historyTenants {
+		var existing int64
+		if err := db.Model(&tenant.Tenant{}).Where("id_card = ?", t.IDCard).Count(&existing).Error; err != nil {
+			return fmt.Errorf("check tenant %s: %w", t.FullName, err)
+		}
+		tn := tenant.Tenant{
+			FullName:         t.FullName,
+			IDCard:           t.IDCard,
+			Phone:            t.Phone,
+			Address:          t.Address,
+			EmergencyContact: t.EmergencyContact,
+		}
+		if existing == 0 {
+			if err := db.Create(&tn).Error; err != nil {
+				return fmt.Errorf("create tenant %s: %w", t.FullName, err)
+			}
+		} else {
+			if err := db.Where("id_card = ?", t.IDCard).First(&tn).Error; err != nil {
+				return fmt.Errorf("find tenant %s: %w", t.FullName, err)
+			}
+		}
+		tenants[i] = tn
+	}
+
+	// Contract 1: กานต์ ชัยศรี — Jan–Jun 2024 (ENDED)
+	kantEnd := time.Date(2024, 6, 30, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&contract.Contract{
+		TenantID:               tenants[0].ID,
+		RoomID:                 b103.ID,
+		StartDate:              time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		MinMonths:              6,
+		MonthlyRent:            b103.BaseRent,
+		DepositAmount:          b103.BaseDeposit,
+		DepositStatus:          contract.DepositStatusRefunded,
+		ElectricityRatePerUnit: apt.ElectricityRatePerUnit,
+		WaterRatePerUnit:       apt.WaterRatePerUnit,
+		Status:                 contract.ContractStatusEnded,
+		EndDate:                &kantEnd,
+	}).Error; err != nil {
+		return fmt.Errorf("create B103 contract 1: %w", err)
+	}
+
+	// Contract 2: พิมพ์ ลาวัลย์ — Sep–Nov 2024 (TERMINATED, broke lease)
+	pimEnd := time.Date(2024, 11, 15, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&contract.Contract{
+		TenantID:               tenants[1].ID,
+		RoomID:                 b103.ID,
+		StartDate:              time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC),
+		MinMonths:              6,
+		MonthlyRent:            b103.BaseRent,
+		DepositAmount:          b103.BaseDeposit,
+		DepositStatus:          contract.DepositStatusForfeited,
+		ElectricityRatePerUnit: apt.ElectricityRatePerUnit,
+		WaterRatePerUnit:       apt.WaterRatePerUnit,
+		Status:                 contract.ContractStatusTerminated,
+		EndDate:                &pimEnd,
+	}).Error; err != nil {
+		return fmt.Errorf("create B103 contract 2: %w", err)
+	}
+
+	// Contract 3: อนันต์ ยศศิริ — Jan–Apr 2025 (ENDED, most recent)
+	ananEnd := time.Date(2025, 4, 30, 0, 0, 0, 0, time.UTC)
+	if err := db.Create(&contract.Contract{
+		TenantID:               tenants[2].ID,
+		RoomID:                 b103.ID,
+		StartDate:              time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		MinMonths:              3,
+		MonthlyRent:            b103.BaseRent,
+		DepositAmount:          b103.BaseDeposit,
+		DepositStatus:          contract.DepositStatusRefunded,
+		ElectricityRatePerUnit: apt.ElectricityRatePerUnit,
+		WaterRatePerUnit:       apt.WaterRatePerUnit,
+		Status:                 contract.ContractStatusEnded,
+		EndDate:                &ananEnd,
+	}).Error; err != nil {
+		return fmt.Errorf("create B103 contract 3: %w", err)
+	}
+
+	// B103 stays VACANT (all contracts ended, no active tenant)
+	slog.Info("seeded B103 contract history", "contracts", 3)
 	return nil
 }

@@ -30,6 +30,7 @@ type ContractListParams struct {
 	pagination.PaginationParams
 	Status      string `query:"status" validate:"omitempty,oneof=ACTIVE ENDED TERMINATED"`
 	ApartmentID string `query:"apartment_id" validate:"omitempty,uuid"`
+	RoomID      string `query:"room_id" validate:"omitempty,uuid"`
 }
 
 type ContractResponse struct {

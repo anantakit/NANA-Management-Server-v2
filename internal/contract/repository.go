@@ -50,6 +50,9 @@ func (r *contractRepository) FindAll(ctx context.Context, params ContractListPar
 	if params.ApartmentID != "" {
 		query = query.Where("rooms.apartment_id = ?", params.ApartmentID)
 	}
+	if params.RoomID != "" {
+		query = query.Where("contracts.room_id = ?", params.RoomID)
+	}
 	if params.Search != "" {
 		search := "%" + params.Search + "%"
 		query = query.Where("(tenants.full_name ILIKE ? OR rooms.number ILIKE ?)", search, search)
