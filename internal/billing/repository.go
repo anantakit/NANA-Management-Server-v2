@@ -16,6 +16,7 @@ import (
 
 type BillingRepository interface {
 	FindAll(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
+	GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*Bill, error)
 	FindByIDWithRelations(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error)
@@ -454,4 +455,30 @@ func (r *billingRepository) UpdateBatchCommitStatus(ctx context.Context, batchID
 			"commit_status": status,
 			"committed_at":  committedAt,
 		}).Error
+}
+
+// GetSummary returns aggregate bill counts and total amount, filtered by apartment + month.
+// Uses the same base JOIN as FindAll so apartment filtering works consistently.
+func (r *billingRepository) GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error) {
+	query := r.baseJoinQuery(ctx)
+
+	if params.ApartmentID != "" {
+		query = query.Where("apartments.id = ?", params.ApartmentID)
+	}
+	if params.Month != "" {
+		query = query.Where("bills.billing_month = ?", params.Month)
+	}
+
+	var result BillSummaryRaw
+	err := query.Select(`
+		COUNT(*) AS total_count,
+		COUNT(*) FILTER (WHERE bills.status = 'FINALIZED') AS pending_count,
+		COUNT(*) FILTER (WHERE bills.status = 'PAID') AS paid_count,
+		COUNT(*) FILTER (WHERE bills.status = 'VOID') AS voided_count,
+		COALESCE(SUM(bills.total_amount) FILTER (WHERE bills.status != 'VOID'), 0) AS total_amount
+	`).Scan(&result).Error
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
 }

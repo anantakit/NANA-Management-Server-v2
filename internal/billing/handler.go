@@ -2,6 +2,7 @@ package billing
 
 import (
 	"nana/internal/shared/bind"
+	"nana/internal/shared/money"
 	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
@@ -25,6 +26,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/batches/:id/items", h.GetBatchItems)
 	r.Post("/batches/:id/commit", h.CommitBatch)
 
+	r.Get("/summary", h.Summary)
 	r.Get("/", h.List)
 	r.Get("/:id", h.GetByID)
 	r.Post("/monthly", h.CreateMonthly)
@@ -53,6 +55,26 @@ func (h *BillingHandler) List(c fiber.Ctx) error {
 
 	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
 	return respond.SuccessWithMeta(c, "สำเร็จ", items, meta)
+}
+
+func (h *BillingHandler) Summary(c fiber.Ctx) error {
+	var params BillSummaryParams
+	if err := bind.Query(c, &params); err != nil {
+		return err
+	}
+
+	raw, err := h.svc.GetSummary(c.Context(), params)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สำเร็จ", BillSummaryResponse{
+		TotalCount:   raw.TotalCount,
+		PendingCount: raw.PendingCount,
+		PaidCount:    raw.PaidCount,
+		VoidedCount:  raw.VoidedCount,
+		TotalAmount:  money.ToBaht(raw.TotalAmount),
+	})
 }
 
 func (h *BillingHandler) GetByID(c fiber.Ctx) error {

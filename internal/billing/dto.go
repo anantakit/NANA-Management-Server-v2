@@ -37,6 +37,22 @@ type BillListParams struct {
 	BillType    string `query:"bill_type"`
 }
 
+// BillSummaryParams filters for the summary aggregate endpoint.
+// Scoped to apartment + billing month (same as the list page's primary context).
+type BillSummaryParams struct {
+	ApartmentID string `query:"apartment_id"`
+	Month       string `query:"month"`
+}
+
+// BillSummaryResponse returns aggregate counts and total for a filtered bill set.
+type BillSummaryResponse struct {
+	TotalCount   int     `json:"total_count"`
+	PendingCount int     `json:"pending_count"`
+	PaidCount    int     `json:"paid_count"`
+	VoidedCount  int     `json:"voided_count"`
+	TotalAmount  float64 `json:"total_amount"` // baht, sum of non-VOID bills
+}
+
 // --- Response DTOs ---
 
 type LineItemResponse struct {

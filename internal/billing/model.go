@@ -521,3 +521,12 @@ type BillWithRelations struct {
 	ApartmentName string    `json:"apartment_name"`
 	ApartmentID   uuid.UUID `json:"apartment_id"`
 }
+
+// BillSummaryRaw holds aggregate counts from the summary query (satang).
+type BillSummaryRaw struct {
+	TotalCount   int   `gorm:"column:total_count"`
+	PendingCount int   `gorm:"column:pending_count"`
+	PaidCount    int   `gorm:"column:paid_count"`
+	VoidedCount  int   `gorm:"column:voided_count"`
+	TotalAmount  int64 `gorm:"column:total_amount"` // satang, sum of non-VOID
+}

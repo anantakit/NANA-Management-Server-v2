@@ -41,6 +41,9 @@ var _ BillingRepository = (*mockBillingRepo)(nil)
 func (m *mockBillingRepo) FindAll(_ context.Context, _ BillListParams) ([]BillWithRelations, int64, error) {
 	return nil, 0, nil
 }
+func (m *mockBillingRepo) GetSummary(_ context.Context, _ BillSummaryParams) (*BillSummaryRaw, error) {
+	return &BillSummaryRaw{}, nil
+}
 func (m *mockBillingRepo) FindByID(ctx context.Context, id uuid.UUID) (*Bill, error) {
 	if m.findByIDFn != nil {
 		return m.findByIDFn(ctx, id)

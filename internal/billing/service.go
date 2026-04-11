@@ -32,6 +32,7 @@ var feeDescriptions = map[billingconfig.FeeType]string{
 
 type BillingService interface {
 	List(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
+	GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*BillWithRelations, error)
 	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error)
@@ -77,6 +78,10 @@ func NewBillingService(
 func (s *billingService) List(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error) {
 	params.Normalize()
 	return s.repo.FindAll(ctx, params)
+}
+
+func (s *billingService) GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error) {
+	return s.repo.GetSummary(ctx, params)
 }
 
 func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
