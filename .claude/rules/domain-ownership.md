@@ -57,6 +57,7 @@ apartment ─────── owns: apartments, apartment_bank_accounts
 meterreading ── owns: meter_readings       reads: rooms (JOIN)
 billingconfig ─ owns: billing_configs      reads: apartments
 moveout ─────── owns: move_out_notices     reads: contracts, rooms
+                ports: ContractQuerier, ContractCommander, RoomCommander, MeterReadingCommander, BillingCommander
 billing ─────── owns: bills, bill_line_items
                 reads: contracts, rooms, meter_readings, billing_configs, move_out_notices
                 ports: ContractQuerier, MeterReadingQuerier, BillingConfigQuerier, MoveOutQuerier

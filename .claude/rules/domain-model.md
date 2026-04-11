@@ -23,7 +23,9 @@ Apartment 1──N Room 1──N Contract N──1 Tenant
 - ContractStatus: `ACTIVE`, `ENDED`, `TERMINATED`
 - DepositStatus: `COLLECTED`, `REFUNDED`, `FORFEITED`
 - BillType: `MONTHLY`, `SETTLEMENT`
-- BillStatus: `PENDING`, `PAID`
+- BillStatus: `DRAFT`, `FINALIZED`, `PAID`, `VOID`
+- MoveOutStatus: `PENDING_METER`, `PENDING_SETTLEMENT`, `PENDING_PAYMENT`, `READY_TO_CLOSE`, `COMPLETED`, `CANCELLED`
+- PaymentOutcome: `PAID_EXTRA`, `REFUNDED`, `ZERO_BALANCE`
 - PaymentMethod: `CASH`, `TRANSFER`
 - UserRole: `admin`, `manager`
 

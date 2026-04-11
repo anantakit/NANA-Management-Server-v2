@@ -67,11 +67,18 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | List move-out notices (paginated, filter by status/apartment_id, search tenant/room) |
+| GET | `/queue` | Queue view: 4 sections (pending_meter/settlement/payment/ready_to_close) + summary + history |
 | GET | `/:id` | Get move-out notice with tenant + room + apartment info (JOIN) |
-| POST | `/` | Create move-out notice (contract must be ACTIVE, one active per contract) |
-| PUT | `/:id` | Update move-out notice (PENDING only: scheduled_move_out_date, note) |
-| POST | `/:id/cancel` | Cancel move-out notice (PENDING only → CANCELLED) |
-| POST | `/:id/complete` | Complete move-out (tx: notice COMPLETED + contract ENDED + room VACANT) |
+| POST | `/` | Create move-out notice (contract must be ACTIVE, one active per contract) → PENDING_METER |
+| PUT | `/:id` | Update move-out notice (PENDING_METER only: scheduled_move_out_date, note) |
+| POST | `/:id/cancel` | Cancel (PENDING_METER/PENDING_SETTLEMENT → CANCELLED, reverts EXIT meter) |
+| POST | `/:id/record-meter` | Record EXIT meter (PENDING_METER → PENDING_SETTLEMENT) |
+| PUT | `/:id/update-meter` | Update EXIT meter (PENDING_SETTLEMENT stays; PENDING_PAYMENT voids draft → PENDING_SETTLEMENT) |
+| POST | `/:id/generate-settlement` | Generate DRAFT settlement bill (PENDING_SETTLEMENT → PENDING_PAYMENT) |
+| POST | `/:id/regenerate-settlement` | Void old draft + create new (PENDING_PAYMENT stays) |
+| POST | `/:id/record-payment` | Record payment outcome (PENDING_PAYMENT → READY_TO_CLOSE) |
+| POST | `/:id/reopen` | Reopen for correction (READY_TO_CLOSE → PENDING_PAYMENT) |
+| POST | `/:id/close` | Close move-out (READY_TO_CLOSE → COMPLETED, tx: contract ENDED + room VACANT) |
 
 ## Billing (`/api/v1/bills`) — Admin only
 | Method | Path | Description |
