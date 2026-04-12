@@ -110,10 +110,8 @@ func main() {
 	// Wire dependencies — Meter Readings (repo first; service wired after moveOutRepo)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 
-	// Wire dependencies — Move-Out Notices
+	// Wire dependencies — Move-Out Notices (billingService injected below after billing init)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
-	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterRepo, txManager)
-	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
 	// Meter Reading service (needs moveOutRepo for MoveOutChecker port)
 	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txManager)
@@ -123,6 +121,10 @@ func main() {
 	billRepo := billing.NewBillingRepository(db)
 	billService := billing.NewBillingService(billRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txManager)
 	billHandler := billing.NewBillingHandler(billService)
+
+	// Wire Move-Out service (needs billingService as BillingCommander)
+	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterRepo, billService, txManager)
+	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{

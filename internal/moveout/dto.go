@@ -14,43 +14,50 @@ type MoveOutListParams struct {
 }
 
 type CreateMoveOutRequest struct {
-	ContractID       string `json:"contract_id" validate:"required,uuid"`
-	NoticeDate       string `json:"notice_date" validate:"required,datetime=2006-01-02"`
+	ContractID           string `json:"contract_id" validate:"required,uuid"`
+	NoticeDate           string `json:"notice_date" validate:"required,datetime=2006-01-02"`
 	ScheduledMoveOutDate string `json:"scheduled_move_out_date" validate:"required,datetime=2006-01-02"`
-	Note             string `json:"note"`
+	Note                 string `json:"note"`
 }
 
 type UpdateMoveOutRequest struct {
 	ScheduledMoveOutDate *string `json:"scheduled_move_out_date"`
-	Note              *string `json:"note"`
+	Note                 *string `json:"note"`
 }
 
+// RecordPaymentOutcomeRequest holds the body for POST /:id/record-payment.
+type RecordPaymentOutcomeRequest struct {
+	PaymentOutcome string `json:"payment_outcome" validate:"required,oneof=PAID_EXTRA REFUNDED ZERO_BALANCE"`
+	PaymentNote    string `json:"payment_note"`
+}
+
+// --- Response ---
+
 type MoveOutResponse struct {
-	ID                string  `json:"id"`
-	ContractID        string  `json:"contract_id"`
-	NoticeDate        string  `json:"notice_date"`
-	ScheduledMoveOutDate string  `json:"scheduled_move_out_date"`
-	Status            string  `json:"status"`
-	Note              string  `json:"note"`
-	TenantName        string  `json:"tenant_name,omitempty"`
-	RoomNumber        string  `json:"room_number,omitempty"`
-	ApartmentName     string  `json:"apartment_name,omitempty"`
-	Urgency           string  `json:"urgency,omitempty"`
-	// DaysUntil: no omitempty — 0 means "today" and must stay on the wire.
-	// Pointer would be cleaner but adds nil-checks across the frontend; the
-	// queue endpoint is the only consumer that sets it, so emitting 0 on
-	// non-queue responses is acceptable noise.
-	DaysUntil int `json:"days_until"`
-	CreatedAt         string  `json:"created_at"`
-	UpdatedAt         string  `json:"updated_at"`
+	ID                   string   `json:"id"`
+	ContractID           string   `json:"contract_id"`
+	NoticeDate           string   `json:"notice_date"`
+	ScheduledMoveOutDate string   `json:"scheduled_move_out_date"`
+	Status               string   `json:"status"`
+	Note                 string   `json:"note"`
+	TenantName           string   `json:"tenant_name,omitempty"`
+	RoomNumber           string   `json:"room_number,omitempty"`
+	ApartmentName        string   `json:"apartment_name,omitempty"`
+	Urgency              string   `json:"urgency,omitempty"`
+	DaysUntil            int      `json:"days_until"`
+	SettlementBillID     string   `json:"settlement_bill_id,omitempty"`
+	NetAmount            *float64 `json:"net_amount,omitempty"`
+	PaymentOutcome       string   `json:"payment_outcome,omitempty"`
+	PaymentNote          string   `json:"payment_note,omitempty"`
+	ClosedAt             string   `json:"closed_at,omitempty"`
+	CreatedAt            string   `json:"created_at"`
+	UpdatedAt            string   `json:"updated_at"`
 }
 
 // --- Queue DTOs ---
 
 // MoveOutQueueParams holds query parameters for the move-out queue endpoint.
 // Scope: "active" (default), "history", or "all".
-// ApartmentID is bound as string (matches MoveOutListParams convention) and
-// validated/parsed in the service — go-playground/form has no native uuid decoder.
 type MoveOutQueueParams struct {
 	Scope       string `query:"scope"`
 	Search      string `query:"search"`
@@ -85,25 +92,44 @@ type MoveOutWithRelations struct {
 	ApartmentName string
 }
 
+// --- Mappers ---
+
 func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
-	return MoveOutResponse{
-		ID:                m.ID.String(),
-		ContractID:        m.ContractID.String(),
-		NoticeDate:        m.NoticeDate.Format("2006-01-02"),
+	resp := MoveOutResponse{
+		ID:                   m.ID.String(),
+		ContractID:           m.ContractID.String(),
+		NoticeDate:           m.NoticeDate.Format("2006-01-02"),
 		ScheduledMoveOutDate: m.ScheduledMoveOutDate.Format("2006-01-02"),
-		Status:            string(m.Status),
-		Note:              m.Note,
-		TenantName:        m.TenantName,
-		RoomNumber:        m.RoomNumber,
-		ApartmentName:     m.ApartmentName,
-		CreatedAt:         m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:         m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		Status:               string(m.Status),
+		Note:                 m.Note,
+		TenantName:           m.TenantName,
+		RoomNumber:           m.RoomNumber,
+		ApartmentName:        m.ApartmentName,
+		CreatedAt:            m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:            m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+	// V2 fields
+	if m.SettlementBillID != nil {
+		resp.SettlementBillID = m.SettlementBillID.String()
+	}
+	if m.NetAmount != nil {
+		v := float64(*m.NetAmount) / 100
+		resp.NetAmount = &v
+	}
+	if m.PaymentOutcome != nil {
+		resp.PaymentOutcome = string(*m.PaymentOutcome)
+	}
+	if m.PaymentNote != "" {
+		resp.PaymentNote = m.PaymentNote
+	}
+	if m.ClosedAt != nil {
+		resp.ClosedAt = m.ClosedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	return resp
 }
 
 // ToMoveOutResponseWithQueue enriches a base response with urgency and
-// days_until — computed against the supplied "today". Used by the queue
-// endpoint where every item carries effective state.
+// days_until — computed against the supplied "today".
 func ToMoveOutResponseWithQueue(m MoveOutWithRelations, today time.Time) MoveOutResponse {
 	resp := ToMoveOutResponse(m)
 	resp.Urgency = string(ComputeUrgency(m.ScheduledMoveOutDate, today))

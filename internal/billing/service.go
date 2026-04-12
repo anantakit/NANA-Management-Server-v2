@@ -9,6 +9,7 @@ import (
 
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
+	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
@@ -44,6 +45,10 @@ type BillingService interface {
 	GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
 	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
+
+	// Move-out workflow ports (satisfies moveout.BillingCommander)
+	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error)
+	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
 }
 
 type billingService struct {
@@ -450,4 +455,121 @@ func advanceMonth(month string) string {
 func daysInMonth(t time.Time) int {
 	y, m, _ := t.Date()
 	return time.Date(y, m+1, 0, 0, 0, 0, 0, t.Location()).Day()
+}
+
+// --- Move-out workflow ports ---
+
+// GenerateSettlement creates a DRAFT settlement bill for the given contract
+// and move-out date. Called by the move-out service within its transaction
+// context — must NOT start its own transaction.
+//
+// Snapshots line items at creation time: pro-rate rent, EXIT meter charges,
+// configurable fees, prepaid credit. Voids any existing monthly bills for
+// the same month before creating the settlement.
+func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
+	c, err := s.contracts.FindByIDSimple(ctx, contractID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrContractNotFound
+		}
+		return nil, fmt.Errorf("find contract: %w", err)
+	}
+
+	// Get EXIT reading for the room
+	exitReading, err := s.meters.FindLatestByRoomID(ctx, c.RoomID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrExitReadingMissing
+		}
+		return nil, fmt.Errorf("find exit reading: %w", err)
+	}
+	if !exitReading.IsExit() {
+		return nil, ErrExitReadingMissing
+	}
+
+	billingMonth := toMonth(moveOutDate)
+
+	// Build line items
+	var items []BillLineItem
+	order := 1
+
+	// Pro-rate rent
+	items, order = s.addProrateRent(items, order, c, moveOutDate)
+
+	// Electricity + Water from EXIT reading
+	elecUnits := exitReading.ElectricityUsed()
+	waterUnits := exitReading.WaterUsed()
+	items = append(items,
+		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
+			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
+	)
+	order++
+	items = append(items,
+		NewWaterLine(waterUnits, c.WaterRatePerUnit,
+			fmt.Sprintf("ค่าน้ำ %d หน่วย (ย้ายออก)", waterUnits), order),
+	)
+	order++
+
+	// Configurable fees
+	items, order, err = s.addConfigFees(ctx, items, order, c.RoomID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prepaid credit
+	items, order, err = s.addPrepaidCredit(ctx, items, order, contractID, billingMonth)
+	if err != nil {
+		return nil, err
+	}
+	_ = order
+
+	bill := Bill{
+		ContractID:    contractID,
+		BillingMonth:  billingMonth,
+		BillType:      BillTypeSettlement,
+		Status:        BillStatusDraft,
+		DepositAmount: c.DepositAmount,
+		LineItems:     items,
+	}
+	bill.CalculateTotal()
+
+	// Void existing monthly bills + create settlement (within caller's tx)
+	if err := s.voidExistingMonthlyBills(ctx, contractID, billingMonth); err != nil {
+		return nil, err
+	}
+	if err := s.repo.Create(ctx, &bill); err != nil {
+		return nil, fmt.Errorf("create settlement bill: %w", err)
+	}
+
+	// Compute net amount and deposit used
+	netAmount := bill.TotalAmount - bill.DepositAmount
+	depositUsed := bill.DepositAmount
+	if bill.TotalAmount < bill.DepositAmount {
+		depositUsed = bill.TotalAmount
+	}
+	if depositUsed < 0 {
+		depositUsed = 0
+	}
+
+	return &moveout.SettlementBillResult{
+		BillID:      bill.ID,
+		NetAmount:   netAmount,
+		DepositUsed: depositUsed,
+	}, nil
+}
+
+// VoidSettlement marks a settlement bill as VOIDED with the given reason.
+// Called by the move-out service within its transaction context.
+func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error {
+	b, err := s.repo.FindByID(ctx, billID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrBillNotFound
+		}
+		return fmt.Errorf("find bill for void: %w", err)
+	}
+	if err := b.Void(reason); err != nil {
+		return respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	return s.repo.Update(ctx, b)
 }

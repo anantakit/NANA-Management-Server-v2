@@ -28,11 +28,35 @@ type RoomCommander interface {
 	MarkVacant(ctx context.Context, id uuid.UUID) error
 }
 
-// MeterReadingCommander reverts move-out artifacts on the meter-reading side.
-// Used by Cancel() to soft-delete the room's active EXIT reading so the
-// workflow can be re-initiated cleanly (notice re-created, EXIT re-recorded).
-// Semantic method — consumer ไม่ต้องรู้ว่า EXIT reading เก็บยังไง.
+// MeterReadingCommander manages move-out artifacts on the meter-reading side.
 // Implemented by meterreading.MeterReadingRepository; injected via main.go.
 type MeterReadingCommander interface {
+	// DeleteExitByRoomID soft-deletes the room's active EXIT reading.
+	// Used by Cancel() so the workflow can be re-initiated cleanly.
 	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
+}
+
+// --- Billing port ---
+
+// SettlementBillResult holds the output of settlement bill generation.
+// Defined in the moveout package to avoid circular imports (billing → moveout
+// is already established; this DTO lets billing satisfy BillingCommander
+// without moveout importing billing).
+type SettlementBillResult struct {
+	BillID      uuid.UUID
+	NetAmount   int64 // satang: positive = tenant pays, negative = refund
+	DepositUsed int64 // satang: how much deposit was consumed by charges
+}
+
+// BillingCommander generates and voids settlement bills.
+// Implemented by billing.BillingService; injected via main.go.
+type BillingCommander interface {
+	// GenerateSettlement creates a DRAFT settlement bill for the given contract
+	// and move-out date. Snapshots line items at creation time (D1).
+	// Must be called within the caller's transaction context.
+	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
+
+	// VoidSettlement marks a settlement bill as VOIDED with the given reason.
+	// Must be called within the caller's transaction context.
+	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
 }

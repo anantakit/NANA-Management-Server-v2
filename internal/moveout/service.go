@@ -3,7 +3,6 @@ package moveout
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	"nana/internal/shared/database"
@@ -12,24 +11,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// queueSectionCap caps each section's items after the repo's hard cap of 200.
-const queueSectionCap = 100
-
-// Queue scope values — whitelist enforced at service entry.
-const (
-	queueScopeActive  = "active"
-	queueScopeHistory = "history"
-	queueScopeAll     = "all"
-)
-
 type MoveOutService interface {
 	List(ctx context.Context, params MoveOutListParams) ([]MoveOutWithRelations, int64, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	Create(ctx context.Context, req CreateMoveOutRequest) (*MoveOutWithRelations, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateMoveOutRequest) (*MoveOutWithRelations, error)
-	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
-	Complete(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	Queue(ctx context.Context, params MoveOutQueueParams) (*MoveOutQueueResponse, error)
+
+	// Forward commands
+	RecordExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error)
+	CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+
+	// Correction commands
+	UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	RegenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	ReopenForCorrection(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 }
 
 type moveOutService struct {
@@ -38,8 +37,9 @@ type moveOutService struct {
 	contractCmd ContractCommander
 	roomCmd     RoomCommander
 	meterCmd    MeterReadingCommander
+	billingCmd  BillingCommander
 	tx          database.TxManager
-	// now is the clock used by Queue() to compute urgency/days_until.
+	// now is the clock used by Queue()/CloseMoveOut() for time-dependent logic.
 	// nil → time.Now (production); tests assign a fixed-time function.
 	now func() time.Time
 }
@@ -52,6 +52,7 @@ func NewMoveOutService(
 	contractCmd ContractCommander,
 	roomCmd RoomCommander,
 	meterCmd MeterReadingCommander,
+	billingCmd BillingCommander,
 	tx database.TxManager,
 ) MoveOutService {
 	return &moveOutService{
@@ -60,149 +61,20 @@ func NewMoveOutService(
 		contractCmd: contractCmd,
 		roomCmd:     roomCmd,
 		meterCmd:    meterCmd,
+		billingCmd:  billingCmd,
 		tx:          tx,
 	}
 }
 
-// Queue assembles the move-out queue: PENDING notices partitioned by
-// has_exit_meter into "awaiting_meter" / "ready_to_complete" sections (sorted
-// by urgency then date), plus a summary computed over the full filtered active
-// set, and optionally a recent-history slice. Empty sections are returned with
-// non-nil zero-length slices for a stable JSON shape.
-func (s *moveOutService) Queue(ctx context.Context, params MoveOutQueueParams) (*MoveOutQueueResponse, error) {
-	scope := params.Scope
-	if scope == "" {
-		scope = queueScopeActive
+// clock returns the current time, using the injected clock if available.
+func (s *moveOutService) clock() time.Time {
+	if s.now != nil {
+		return s.now()
 	}
-	if scope != queueScopeActive && scope != queueScopeHistory && scope != queueScopeAll {
-		return nil, respond.ErrBadRequest.WithMessage("scope ต้องเป็น active, history หรือ all")
-	}
-	if params.ApartmentID != "" {
-		if _, err := uuid.Parse(params.ApartmentID); err != nil {
-			return nil, respond.ErrBadRequest.WithMessage("รหัสอาคารไม่ถูกต้อง")
-		}
-	}
-
-	now := s.now
-	if now == nil {
-		now = time.Now
-	}
-	today := now()
-
-	resp := &MoveOutQueueResponse{
-		Sections: map[string]MoveOutQueueSection{
-			"awaiting_meter":    emptyQueueSection(),
-			"ready_to_complete": emptyQueueSection(),
-		},
-		History: emptyQueueSection(),
-	}
-
-	if scope == queueScopeActive || scope == queueScopeAll {
-		active, err := s.repo.ListActiveWithMeterFlag(ctx, params)
-		if err != nil {
-			return nil, fmt.Errorf("list active move-out notices: %w", err)
-		}
-
-		var awaiting, ready []NoticeWithMeterFlag
-		summary := MoveOutQueueSummary{TotalActive: len(active)}
-		for _, n := range active {
-			d := DaysUntil(n.ScheduledMoveOutDate, today)
-			switch {
-			case d < 0:
-				summary.Overdue++
-			case d == 0:
-				summary.Today++
-			}
-			if d >= 0 && d <= 7 {
-				summary.ThisWeek++
-			}
-			if n.HasExitMeter {
-				ready = append(ready, n)
-			} else {
-				awaiting = append(awaiting, n)
-			}
-		}
-		sortByUrgencyThenDate(awaiting, today)
-		sortByUrgencyThenDate(ready, today)
-
-		resp.Sections["awaiting_meter"] = buildQueueSection(awaiting, today)
-		resp.Sections["ready_to_complete"] = buildQueueSection(ready, today)
-		resp.Summary = summary
-	}
-
-	if scope == queueScopeHistory || scope == queueScopeAll {
-		history, err := s.repo.ListHistory(ctx, params)
-		if err != nil {
-			return nil, fmt.Errorf("list move-out history: %w", err)
-		}
-		items := make([]MoveOutResponse, len(history))
-		for i, h := range history {
-			items[i] = ToMoveOutResponseWithQueue(h, today)
-		}
-		resp.History = MoveOutQueueSection{
-			Items:      items,
-			Count:      len(items),
-			TotalCount: len(items),
-		}
-	}
-
-	return resp, nil
+	return time.Now()
 }
 
-func emptyQueueSection() MoveOutQueueSection {
-	return MoveOutQueueSection{Items: []MoveOutResponse{}}
-}
-
-// buildQueueSection caps notices at queueSectionCap and converts them to
-// response items, recording total/truncated.
-func buildQueueSection(notices []NoticeWithMeterFlag, today time.Time) MoveOutQueueSection {
-	total := len(notices)
-	capped := notices
-	truncated := false
-	if total > queueSectionCap {
-		capped = notices[:queueSectionCap]
-		truncated = true
-	}
-	items := make([]MoveOutResponse, len(capped))
-	for i, n := range capped {
-		items[i] = ToMoveOutResponseWithQueue(n.MoveOutWithRelations, today)
-	}
-	return MoveOutQueueSection{
-		Items:      items,
-		Count:      len(items),
-		Truncated:  truncated,
-		TotalCount: total,
-	}
-}
-
-// sortByUrgencyThenDate orders notices by urgency bucket
-// (OVERDUE→TODAY→SOON→NORMAL) then ascending scheduled date within a bucket.
-// Stable sort to keep equal-key rows in repo (date-asc) order.
-func sortByUrgencyThenDate(notices []NoticeWithMeterFlag, today time.Time) {
-	sort.SliceStable(notices, func(i, j int) bool {
-		di := DaysUntil(notices[i].ScheduledMoveOutDate, today)
-		dj := DaysUntil(notices[j].ScheduledMoveOutDate, today)
-		ri := urgencyRank(di)
-		rj := urgencyRank(dj)
-		if ri != rj {
-			return ri < rj
-		}
-		return notices[i].ScheduledMoveOutDate.Before(notices[j].ScheduledMoveOutDate)
-	})
-}
-
-func urgencyRank(d int) int {
-	switch {
-	case d < 0:
-		return 0
-	case d == 0:
-		return 1
-	case d <= 7:
-		return 2
-	default:
-		return 3
-	}
-}
+// --- CRUD ---
 
 func (s *moveOutService) List(ctx context.Context, params MoveOutListParams) ([]MoveOutWithRelations, int64, error) {
 	return s.repo.FindAll(ctx, params)
@@ -222,7 +94,6 @@ func (s *moveOutService) Create(ctx context.Context, req CreateMoveOutRequest) (
 		return nil, respond.ErrBadRequest.WithMessage("รหัสสัญญาไม่ถูกต้อง")
 	}
 
-	// Verify contract exists and is active
 	c, err := s.contracts.FindByIDSimple(ctx, contractID)
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบสัญญา")
@@ -231,7 +102,6 @@ func (s *moveOutService) Create(ctx context.Context, req CreateMoveOutRequest) (
 		return nil, respond.ErrBadRequest.WithMessage("สัญญานี้ไม่ได้อยู่ในสถานะใช้งาน")
 	}
 
-	// Check no existing active notice for this contract
 	hasActive, err := s.repo.HasActiveByContractID(ctx, contractID)
 	if err != nil {
 		return nil, fmt.Errorf("check active notice: %w", err)
@@ -250,11 +120,11 @@ func (s *moveOutService) Create(ctx context.Context, req CreateMoveOutRequest) (
 	}
 
 	notice := MoveOutNotice{
-		ContractID:        contractID,
-		NoticeDate:        noticeDate,
+		ContractID:           contractID,
+		NoticeDate:           noticeDate,
 		ScheduledMoveOutDate: moveOutDate,
-		Status:            MoveOutStatusPendingMeter,
-		Note:              req.Note,
+		Status:               MoveOutStatusPendingMeter,
+		Note:                 req.Note,
 	}
 
 	if err := notice.ValidateDates(); err != nil {
@@ -307,28 +177,22 @@ func (s *moveOutService) Update(ctx context.Context, id uuid.UUID, req UpdateMov
 	return result, nil
 }
 
-func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
-	// Transaction: lock notice row + validate + mark CANCELLED + soft-delete
-	// any active EXIT reading for the room. Row lock prevents lost updates
-	// from concurrent status transitions. Soft-deleting the EXIT reading lets
-	// the workflow be re-initiated cleanly without hitting the unique-index.
+// --- Forward commands ---
+
+// RecordExitMeter advances PENDING_METER → PENDING_SETTLEMENT.
+// The EXIT reading must be created separately via the meter-reading endpoint
+// before calling this command.
+func (s *moveOutService) RecordExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
-		if err := notice.Cancel(); err != nil {
+		if err := notice.AdvanceToSettlement(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
-		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
-		if err != nil {
-			return fmt.Errorf("find contract: %w", err)
-		}
 		if err := s.repo.Update(txCtx, notice); err != nil {
-			return err
-		}
-		if err := s.meterCmd.DeleteExitByRoomID(txCtx, c.RoomID); err != nil {
 			return err
 		}
 		noticeID = notice.ID
@@ -337,28 +201,89 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 		if _, ok := respond.Is(err); ok {
 			return nil, err
 		}
-		return nil, fmt.Errorf("cancel move-out notice: %w", err)
+		return nil, fmt.Errorf("record exit meter: %w", err)
 	}
-
-	result, err := s.repo.FindByID(ctx, noticeID)
-	if err != nil {
-		return nil, fmt.Errorf("fetch cancelled notice: %w", err)
-	}
-	return result, nil
+	return s.repo.FindByID(ctx, noticeID)
 }
 
-func (s *moveOutService) Complete(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
-	// Transaction: lock notice row + validate + mark COMPLETED + end contract + mark room vacant.
-	// Row lock prevents concurrent cancel/complete from racing.
+// GenerateSettlement creates a DRAFT settlement bill and advances
+// PENDING_SETTLEMENT → PENDING_PAYMENT. Snapshots at creation time (D1).
+// Invariant D9: 1 active (non-VOIDED) settlement draft per notice.
+func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
-		// TODO(V2): replace with full Close() workflow (settlement + payment).
-		// For now, directly transition to COMPLETED to keep the old endpoint working.
-		notice.Status = MoveOutStatusCompleted
+		if err := notice.CanRecordSettlement(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, notice.ScheduledMoveOutDate)
+		if err != nil {
+			if _, ok := respond.Is(err); ok {
+				return err
+			}
+			return fmt.Errorf("generate settlement: %w", err)
+		}
+		if err := notice.RecordSettlement(result.BillID, result.NetAmount); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("generate settlement: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// RecordPaymentOutcome records how the settlement was resolved and advances
+// PENDING_PAYMENT → READY_TO_CLOSE.
+func (s *moveOutService) RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		outcome := PaymentOutcome(req.PaymentOutcome)
+		if err := notice.RecordPayment(outcome, req.PaymentNote); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("record payment outcome: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// CloseMoveOut transitions READY_TO_CLOSE → COMPLETED, ends the contract,
+// and marks the room vacant — all atomically. Requires settlement_bill_id +
+// payment_outcome (D5).
+func (s *moveOutService) CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	now := s.clock()
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		if err := notice.Close(now); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
 		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
 		if err != nil {
 			return fmt.Errorf("find contract: %w", err)
@@ -378,12 +303,161 @@ func (s *moveOutService) Complete(ctx context.Context, id uuid.UUID) (*MoveOutWi
 		if _, ok := respond.Is(err); ok {
 			return nil, err
 		}
-		return nil, fmt.Errorf("complete move-out: %w", err)
+		return nil, fmt.Errorf("close move-out: %w", err)
 	}
+	return s.repo.FindByID(ctx, noticeID)
+}
 
-	result, err := s.repo.FindByID(ctx, noticeID)
-	if err != nil {
-		return nil, fmt.Errorf("fetch completed notice: %w", err)
+// Cancel transitions a non-terminal notice to CANCELLED. Voids the settlement
+// draft if one exists (D8) and soft-deletes the EXIT reading.
+func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		// Guard first — avoid side effects if cancel is not valid
+		if err := notice.CanCancel(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		// Void settlement draft if exists (D8: ห้าม hard delete)
+		if notice.SettlementBillID != nil {
+			if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "CANCELLED_MOVE_OUT"); err != nil {
+				return fmt.Errorf("void settlement: %w", err)
+			}
+		}
+		notice.Status = MoveOutStatusCancelled
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		if err := s.meterCmd.DeleteExitByRoomID(txCtx, c.RoomID); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("cancel move-out notice: %w", err)
 	}
-	return result, nil
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// --- Correction commands ---
+
+// UpdateExitMeter signals that the EXIT reading has been modified.
+// - PENDING_SETTLEMENT: no-op (settlement not yet generated)
+// - PENDING_PAYMENT: voids the settlement draft, reverts → PENDING_SETTLEMENT
+func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		switch {
+		case notice.IsPendingSettlement():
+			// No state change — meter can be changed freely before settlement
+		case notice.IsPendingPayment():
+			// Void the settlement draft (D8)
+			if notice.SettlementBillID != nil {
+				if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "EXIT_METER_UPDATED"); err != nil {
+					return fmt.Errorf("void settlement: %w", err)
+				}
+			}
+			notice.Status = MoveOutStatusPendingSettlement
+			notice.SettlementBillID = nil
+			notice.NetAmount = nil
+		default:
+			return respond.ErrBadRequest.WithMessage("แก้ไขมิเตอร์ย้ายออกได้เฉพาะสถานะรอสร้างบิลหรือรอชำระ")
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("update exit meter: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// RegenerateSettlement voids the current settlement draft and creates a new
+// one from fresh data. Stays in PENDING_PAYMENT.
+func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		if !notice.IsPendingPayment() {
+			return respond.ErrBadRequest.WithMessage("สร้างบิลใหม่ได้เฉพาะสถานะรอชำระ")
+		}
+		// Void existing settlement (D8)
+		if notice.SettlementBillID != nil {
+			if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "REGENERATED"); err != nil {
+				return fmt.Errorf("void settlement: %w", err)
+			}
+		}
+		// Generate fresh settlement
+		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, notice.ScheduledMoveOutDate)
+		if err != nil {
+			if _, ok := respond.Is(err); ok {
+				return err
+			}
+			return fmt.Errorf("regenerate settlement: %w", err)
+		}
+		notice.SettlementBillID = &result.BillID
+		notice.NetAmount = &result.NetAmount
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("regenerate settlement: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// ReopenForCorrection reverts READY_TO_CLOSE → PENDING_PAYMENT, clearing the
+// payment outcome so the operator can re-record it.
+func (s *moveOutService) ReopenForCorrection(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		if !notice.IsReadyToClose() {
+			return respond.ErrBadRequest.WithMessage("เปิดแก้ไขได้เฉพาะสถานะพร้อมปิด")
+		}
+		notice.Status = MoveOutStatusPendingPayment
+		notice.PaymentOutcome = nil
+		notice.PaymentNote = ""
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("reopen for correction: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
 }

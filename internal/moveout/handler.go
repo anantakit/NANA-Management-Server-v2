@@ -23,8 +23,18 @@ func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	router.Get("/queue", h.Queue)
 	router.Get("/:id", h.GetByID)
 	router.Put("/:id", h.Update)
+
+	// Forward commands
+	router.Post("/:id/record-exit-meter", h.RecordExitMeter)
+	router.Post("/:id/generate-settlement", h.GenerateSettlement)
+	router.Post("/:id/record-payment", h.RecordPaymentOutcome)
+	router.Post("/:id/close", h.CloseMoveOut)
 	router.Post("/:id/cancel", h.Cancel)
-	router.Post("/:id/complete", h.Complete)
+
+	// Correction commands
+	router.Post("/:id/update-exit-meter", h.UpdateExitMeter)
+	router.Post("/:id/regenerate-settlement", h.RegenerateSettlement)
+	router.Post("/:id/reopen", h.ReopenForCorrection)
 }
 
 func (h *MoveOutHandler) List(c fiber.Ctx) error {
@@ -104,6 +114,69 @@ func (h *MoveOutHandler) Update(c fiber.Ctx) error {
 	return respond.Success(c, "อัปเดตใบแจ้งย้ายออกสำเร็จ", ToMoveOutResponse(*result))
 }
 
+// --- Forward commands ---
+
+func (h *MoveOutHandler) RecordExitMeter(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.RecordExitMeter(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "บันทึกมิเตอร์ย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) GenerateSettlement(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.GenerateSettlement(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สร้างบิลสรุปสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) RecordPaymentOutcome(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	var req RecordPaymentOutcomeRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.RecordPaymentOutcome(c.Context(), id, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "บันทึกผลการชำระสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) CloseMoveOut(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.CloseMoveOut(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "ปิดการย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+}
+
 func (h *MoveOutHandler) Cancel(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -118,16 +191,46 @@ func (h *MoveOutHandler) Cancel(c fiber.Ctx) error {
 	return respond.Success(c, "ยกเลิกใบแจ้งย้ายออกสำเร็จ", ToMoveOutResponse(*result))
 }
 
-func (h *MoveOutHandler) Complete(c fiber.Ctx) error {
+// --- Correction commands ---
+
+func (h *MoveOutHandler) UpdateExitMeter(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
 	}
 
-	result, err := h.svc.Complete(c.Context(), id)
+	result, err := h.svc.UpdateExitMeter(c.Context(), id)
 	if err != nil {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "ดำเนินการย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+	return respond.Success(c, "อัปเดตมิเตอร์ย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) RegenerateSettlement(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.RegenerateSettlement(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สร้างบิลสรุปใหม่สำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) ReopenForCorrection(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.ReopenForCorrection(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "เปิดแก้ไขสำเร็จ", ToMoveOutResponse(*result))
 }

@@ -20,18 +20,10 @@ type MoveOutRepository interface {
 	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*MoveOutNotice, error)
 	HasActiveByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
-	ListActiveWithMeterFlag(ctx context.Context, params MoveOutQueueParams) ([]NoticeWithMeterFlag, error)
+	ListActive(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error)
 	ListHistory(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error)
 	Create(ctx context.Context, notice *MoveOutNotice) error
 	Update(ctx context.Context, notice *MoveOutNotice) error
-}
-
-// NoticeWithMeterFlag pairs a queue projection with whether the room currently
-// has an active EXIT meter reading — used to compute workflow_status without
-// a follow-up query per row.
-type NoticeWithMeterFlag struct {
-	MoveOutWithRelations
-	HasExitMeter bool
 }
 
 type moveOutRepository struct {
@@ -142,8 +134,8 @@ func (r *moveOutRepository) FindByIDSimple(ctx context.Context, id uuid.UUID) (*
 }
 
 // FindByIDForUpdate fetches a notice and acquires a row-level lock (SELECT ... FOR UPDATE).
-// Must be called inside a transaction — used by Cancel/Complete to prevent lost updates
-// from concurrent status transitions.
+// Must be called inside a transaction — used by workflow commands to prevent
+// lost updates from concurrent status transitions.
 func (r *moveOutRepository) FindByIDForUpdate(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error) {
 	var m MoveOutNotice
 	err := database.DB(ctx, r.db).
@@ -156,6 +148,9 @@ func (r *moveOutRepository) FindByIDForUpdate(ctx context.Context, id uuid.UUID)
 	return &m, nil
 }
 
+// FindActiveByContractID returns any non-CANCELLED notice for the contract.
+// Includes COMPLETED — billing V1 CreateSettlementBill depends on finding
+// COMPLETED notices through this method.
 func (r *moveOutRepository) FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*MoveOutNotice, error) {
 	var m MoveOutNotice
 	err := database.DB(ctx, r.db).
@@ -171,7 +166,7 @@ func (r *moveOutRepository) HasActiveByContractID(ctx context.Context, contractI
 	var count int64
 	err := database.DB(ctx, r.db).
 		Model(&MoveOutNotice{}).
-		Where("contract_id = ? AND status != ?", contractID, MoveOutStatusCancelled).
+		Where("contract_id = ? AND status NOT IN ?", contractID, []MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled}).
 		Count(&count).Error
 	return count > 0, err
 }
@@ -200,25 +195,9 @@ func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, ro
 	return m, nil
 }
 
-// queueRow scans the active-queue projection — base joinRow columns plus the
-// EXISTS-derived has_exit_meter flag.
-type queueRow struct {
-	MoveOutNotice
-	TenantName    string `gorm:"column:tenant_name"`
-	RoomNumber    string `gorm:"column:room_number"`
-	ApartmentName string `gorm:"column:apartment_name"`
-	HasExitMeter  bool   `gorm:"column:has_exit_meter"`
-}
-
-// ListActiveWithMeterFlag returns all PENDING notices with the contract's
-// tenant/room/apartment columns and a has_exit_meter flag derived from a
-// correlated EXISTS subquery against meter_readings. Hard cap at 200 to bound
-// memory before the per-section cap downstream.
-//
-// Display read: JOIN to meter_readings is allowed (queue endpoint owner).
-// Encoding 'EXIT' here is a level-1 logic leak (simple enum) — when the
-// reading-type definition grows complex, switch to a meterreading port.
-func (r *moveOutRepository) ListActiveWithMeterFlag(ctx context.Context, params MoveOutQueueParams) ([]NoticeWithMeterFlag, error) {
+// ListActive returns all non-terminal notices with relations, partitioned by
+// status in the service layer. Hard cap at 200.
+func (r *moveOutRepository) ListActive(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 	query := r.baseJoinQuery(ctx).
 		Where("move_out_notices.status NOT IN ?", []MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled})
 
@@ -230,41 +209,24 @@ func (r *moveOutRepository) ListActiveWithMeterFlag(ctx context.Context, params 
 		query = query.Where("(tenants.full_name ILIKE ? OR rooms.number ILIKE ?)", s, s)
 	}
 
-	selectCols := r.selectColumns() + `,
-		EXISTS (
-			SELECT 1 FROM meter_readings mr
-			WHERE mr.room_id = rooms.id
-			  AND mr.reading_type = 'EXIT'
-			  AND mr.deleted_at IS NULL
-		) AS has_exit_meter`
-
-	var rows []queueRow
+	var rows []joinRow
 	if err := query.
-		Select(selectCols).
+		Select(r.selectColumns()).
 		Order("move_out_notices.scheduled_move_out_date ASC").
 		Limit(200).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	out := make([]NoticeWithMeterFlag, len(rows))
+	out := make([]MoveOutWithRelations, len(rows))
 	for i, row := range rows {
-		out[i] = NoticeWithMeterFlag{
-			MoveOutWithRelations: MoveOutWithRelations{
-				MoveOutNotice: row.MoveOutNotice,
-				TenantName:    row.TenantName,
-				RoomNumber:    row.RoomNumber,
-				ApartmentName: row.ApartmentName,
-			},
-			HasExitMeter: row.HasExitMeter,
-		}
+		out[i] = rowToRelation(row)
 	}
 	return out, nil
 }
 
 // ListHistory returns COMPLETED + CANCELLED notices ordered by recency.
-// Capped at 100 — the queue history view is a recent-activity panel, not a
-// full audit log.
+// Capped at 100.
 func (r *moveOutRepository) ListHistory(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 	query := r.baseJoinQuery(ctx).
 		Where("move_out_notices.status IN ?", []MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled})

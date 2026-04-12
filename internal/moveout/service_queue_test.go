@@ -8,91 +8,76 @@ import (
 	"github.com/google/uuid"
 )
 
-// Queue happy path: 4 PENDING notices spread across urgency buckets, each
-// either with or without an EXIT meter. Verify partition, sort order, and
-// summary counts using a fixed clock.
-func TestMoveOutService_Queue_PartitionsSortsSummarizes(t *testing.T) {
+// Queue happy path: 4 active notices across different statuses and urgency
+// buckets. Verify partition into 4 sections, sort order, and summary counts.
+func TestQueue_PartitionsSortsSummarizes(t *testing.T) {
 	today := time.Date(2026, 4, 6, 0, 0, 0, 0, time.UTC)
 	fixedNow := func() time.Time { return today }
 
-	mk := func(name string, daysFromToday int, hasExitMeter bool) NoticeWithMeterFlag {
-		return NoticeWithMeterFlag{
-			MoveOutWithRelations: MoveOutWithRelations{
-				MoveOutNotice: MoveOutNotice{
-					ID:                   uuid.New(),
-					ContractID:           uuid.New(),
-					NoticeDate:           today.AddDate(0, 0, -10),
-					ScheduledMoveOutDate: today.AddDate(0, 0, daysFromToday),
-					Status:               MoveOutStatusPendingMeter,
-				},
-				TenantName:    name,
-				RoomNumber:    "101",
-				ApartmentName: "นานาคอร์ท",
+	mk := func(name string, daysFromToday int, status MoveOutStatus) MoveOutWithRelations {
+		return MoveOutWithRelations{
+			MoveOutNotice: MoveOutNotice{
+				ID:                   uuid.New(),
+				ContractID:           uuid.New(),
+				NoticeDate:           today.AddDate(0, 0, -10),
+				ScheduledMoveOutDate: today.AddDate(0, 0, daysFromToday),
+				Status:               status,
 			},
-			HasExitMeter: hasExitMeter,
+			TenantName:    name,
+			RoomNumber:    "101",
+			ApartmentName: "นานาคอร์ท",
 		}
 	}
 
-	overdueNoMeter := mk("overdue", -5, false) // OVERDUE → awaiting
-	todayMeter := mk("today", 0, true)         // TODAY    → ready
-	soonNoMeter := mk("soon", 4, false)        // SOON     → awaiting
-	normalMeter := mk("normal", 24, true)      // NORMAL   → ready
+	overduePendingMeter := mk("overdue", -5, MoveOutStatusPendingMeter)
+	todayPendingSettlement := mk("today", 0, MoveOutStatusPendingSettlement)
+	soonPendingPayment := mk("soon", 4, MoveOutStatusPendingPayment)
+	normalReadyToClose := mk("normal", 24, MoveOutStatusReadyToClose)
 
 	repo := &mockMoveOutRepo{
-		listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]NoticeWithMeterFlag, error) {
-			// Repo returns date-asc; service must re-sort by urgency rank.
-			return []NoticeWithMeterFlag{overdueNoMeter, todayMeter, soonNoMeter, normalMeter}, nil
+		listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]MoveOutWithRelations, error) {
+			return []MoveOutWithRelations{overduePendingMeter, todayPendingSettlement, soonPendingPayment, normalReadyToClose}, nil
 		},
 	}
 
-	svc := &moveOutService{
-		repo: repo,
-		now:  fixedNow,
-	}
+	svc := &moveOutService{repo: repo, now: fixedNow}
 
 	res, err := svc.Queue(context.Background(), MoveOutQueueParams{Scope: "active"})
 	if err != nil {
 		t.Fatalf("Queue: unexpected error: %v", err)
 	}
 
-	awaiting, ok := res.Sections["awaiting_meter"]
-	if !ok {
-		t.Fatal("missing awaiting_meter section")
-	}
-	ready, ok := res.Sections["ready_to_complete"]
-	if !ok {
-		t.Fatal("missing ready_to_complete section")
-	}
-
-	// Partition
-	if awaiting.Count != 2 {
-		t.Errorf("awaiting count: got %d, want 2", awaiting.Count)
-	}
-	if ready.Count != 2 {
-		t.Errorf("ready count: got %d, want 2", ready.Count)
+	// 4 sections exist
+	for _, key := range []string{"pending_meter", "pending_settlement", "pending_payment", "ready_to_close"} {
+		sec, ok := res.Sections[key]
+		if !ok {
+			t.Fatalf("missing section %q", key)
+		}
+		if sec.Count != 1 {
+			t.Errorf("section %q count: got %d, want 1", key, sec.Count)
+		}
 	}
 
-	// Sort order: awaiting → OVERDUE first (rank 0), SOON second (rank 2)
-	if awaiting.Items[0].TenantName != "overdue" {
-		t.Errorf("awaiting[0]: got %q, want overdue", awaiting.Items[0].TenantName)
+	// Verify items landed in correct sections
+	if res.Sections["pending_meter"].Items[0].TenantName != "overdue" {
+		t.Errorf("pending_meter[0]: got %q, want overdue", res.Sections["pending_meter"].Items[0].TenantName)
 	}
-	if awaiting.Items[1].TenantName != "soon" {
-		t.Errorf("awaiting[1]: got %q, want soon", awaiting.Items[1].TenantName)
+	if res.Sections["pending_settlement"].Items[0].TenantName != "today" {
+		t.Errorf("pending_settlement[0]: got %q, want today", res.Sections["pending_settlement"].Items[0].TenantName)
 	}
-	// ready → TODAY first (rank 1), NORMAL second (rank 3)
-	if ready.Items[0].TenantName != "today" {
-		t.Errorf("ready[0]: got %q, want today", ready.Items[0].TenantName)
+	if res.Sections["pending_payment"].Items[0].TenantName != "soon" {
+		t.Errorf("pending_payment[0]: got %q, want soon", res.Sections["pending_payment"].Items[0].TenantName)
 	}
-	if ready.Items[1].TenantName != "normal" {
-		t.Errorf("ready[1]: got %q, want normal", ready.Items[1].TenantName)
+	if res.Sections["ready_to_close"].Items[0].TenantName != "normal" {
+		t.Errorf("ready_to_close[0]: got %q, want normal", res.Sections["ready_to_close"].Items[0].TenantName)
 	}
 
-	// Enriched fields populated
-	if awaiting.Items[0].Urgency != string(UrgencyOverdue) {
-		t.Errorf("overdue urgency: got %q, want OVERDUE", awaiting.Items[0].Urgency)
+	// Enriched fields
+	if res.Sections["pending_meter"].Items[0].Urgency != string(UrgencyOverdue) {
+		t.Errorf("overdue urgency: got %q, want OVERDUE", res.Sections["pending_meter"].Items[0].Urgency)
 	}
-	if ready.Items[0].DaysUntil != 0 {
-		t.Errorf("today days_until: got %d, want 0", ready.Items[0].DaysUntil)
+	if res.Sections["pending_settlement"].Items[0].DaysUntil != 0 {
+		t.Errorf("today days_until: got %d, want 0", res.Sections["pending_settlement"].Items[0].DaysUntil)
 	}
 
 	// Summary: overdue=1, today=1, this_week=2 (today + soon, days 0..7), total=4
@@ -109,14 +94,6 @@ func TestMoveOutService_Queue_PartitionsSortsSummarizes(t *testing.T) {
 		t.Errorf("summary.total_active: got %d, want 4", res.Summary.TotalActive)
 	}
 
-	// Stable shape: not truncated, count == len(items)
-	if awaiting.Truncated || ready.Truncated {
-		t.Errorf("unexpected truncation: awaiting=%v ready=%v", awaiting.Truncated, ready.Truncated)
-	}
-	if awaiting.Count != len(awaiting.Items) || ready.Count != len(ready.Items) {
-		t.Errorf("count != len(items)")
-	}
-
 	// History section is empty (scope=active) but non-nil
 	if res.History.Items == nil {
 		t.Error("history.items must be non-nil for stable JSON shape")
@@ -128,31 +105,25 @@ func TestMoveOutService_Queue_PartitionsSortsSummarizes(t *testing.T) {
 
 // Truncation: when a section exceeds queueSectionCap (100), Items must be
 // capped, Count == len(Items), Truncated == true, and TotalCount must reflect
-// the *full* pre-cap size — frontend uses TotalCount to render "+N more".
-// Off-by-one risk: cap boundary is the most likely place for a logic slip.
-func TestMoveOutService_Queue_TruncatesSectionAtCap(t *testing.T) {
+// the *full* pre-cap size.
+func TestQueue_TruncatesSectionAtCap(t *testing.T) {
 	today := time.Date(2026, 4, 7, 0, 0, 0, 0, time.UTC)
 
-	// 105 awaiting-meter notices, all in NORMAL bucket (same urgency rank
-	// → stable sort by date asc, which equals input order here).
 	const total = 105
-	notices := make([]NoticeWithMeterFlag, total)
+	notices := make([]MoveOutWithRelations, total)
 	for i := 0; i < total; i++ {
-		notices[i] = NoticeWithMeterFlag{
-			MoveOutWithRelations: MoveOutWithRelations{
-				MoveOutNotice: MoveOutNotice{
-					ID:                   uuid.New(),
-					NoticeDate:           today,
-					ScheduledMoveOutDate: today.AddDate(0, 0, 30+i),
-					Status:               MoveOutStatusPendingMeter,
-				},
+		notices[i] = MoveOutWithRelations{
+			MoveOutNotice: MoveOutNotice{
+				ID:                   uuid.New(),
+				NoticeDate:           today,
+				ScheduledMoveOutDate: today.AddDate(0, 0, 30+i),
+				Status:               MoveOutStatusPendingMeter,
 			},
-			HasExitMeter: false,
 		}
 	}
 
 	repo := &mockMoveOutRepo{
-		listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]NoticeWithMeterFlag, error) {
+		listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 			return notices, nil
 		},
 	}
@@ -163,57 +134,48 @@ func TestMoveOutService_Queue_TruncatesSectionAtCap(t *testing.T) {
 		t.Fatalf("Queue: unexpected error: %v", err)
 	}
 
-	awaiting := res.Sections["awaiting_meter"]
-	if !awaiting.Truncated {
-		t.Error("awaiting.truncated: got false, want true")
+	pm := res.Sections["pending_meter"]
+	if !pm.Truncated {
+		t.Error("pending_meter.truncated: got false, want true")
 	}
-	if awaiting.Count != queueSectionCap {
-		t.Errorf("awaiting.count: got %d, want %d", awaiting.Count, queueSectionCap)
+	if pm.Count != queueSectionCap {
+		t.Errorf("pending_meter.count: got %d, want %d", pm.Count, queueSectionCap)
 	}
-	if len(awaiting.Items) != queueSectionCap {
-		t.Errorf("len(items): got %d, want %d", len(awaiting.Items), queueSectionCap)
+	if len(pm.Items) != queueSectionCap {
+		t.Errorf("len(items): got %d, want %d", len(pm.Items), queueSectionCap)
 	}
-	if awaiting.TotalCount != total {
-		t.Errorf("awaiting.total_count: got %d, want %d (must reflect pre-cap size)", awaiting.TotalCount, total)
+	if pm.TotalCount != total {
+		t.Errorf("pending_meter.total_count: got %d, want %d", pm.TotalCount, total)
 	}
 
-	// Summary must count the full pre-cap set (TotalActive == total),
-	// otherwise the dashboard under-reports load.
 	if res.Summary.TotalActive != total {
 		t.Errorf("summary.total_active: got %d, want %d", res.Summary.TotalActive, total)
 	}
 }
 
 // Scope routing: each scope is its own code path — a single typo in the
-// if-conditions would silently swallow a whole section. Asserts via call
-// counters on the mock so a typo can't be masked by coincidentally-correct
-// result shape.
-func TestMoveOutService_Queue_ScopeRouting(t *testing.T) {
+// if-conditions would silently swallow a whole section.
+func TestQueue_ScopeRouting(t *testing.T) {
 	today := time.Date(2026, 4, 7, 0, 0, 0, 0, time.UTC)
 
-	activeNotice := NoticeWithMeterFlag{
-		MoveOutWithRelations: MoveOutWithRelations{
-			MoveOutNotice: MoveOutNotice{
-				ID:                   uuid.New(),
-				ScheduledMoveOutDate: today,
-				Status:               MoveOutStatusPendingMeter,
-			},
+	activeNotice := MoveOutWithRelations{
+		MoveOutNotice: MoveOutNotice{
+			ID:                   uuid.New(),
+			ScheduledMoveOutDate: today,
+			Status:               MoveOutStatusPendingMeter,
 		},
-		HasExitMeter: true,
 	}
 	historyNotices := []MoveOutWithRelations{
 		{MoveOutNotice: MoveOutNotice{ID: uuid.New(), ScheduledMoveOutDate: today.AddDate(0, 0, -3), Status: MoveOutStatusCompleted}},
 		{MoveOutNotice: MoveOutNotice{ID: uuid.New(), ScheduledMoveOutDate: today.AddDate(0, 0, -1), Status: MoveOutStatusCancelled}},
 	}
 
-	// newSvc returns a fresh service plus pointers to per-subtest call
-	// counters, so subtests are independent.
 	newSvc := func() (*moveOutService, *int, *int) {
 		activeCalls, historyCalls := 0, 0
 		repo := &mockMoveOutRepo{
-			listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]NoticeWithMeterFlag, error) {
+			listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 				activeCalls++
-				return []NoticeWithMeterFlag{activeNotice}, nil
+				return []MoveOutWithRelations{activeNotice}, nil
 			},
 			listHistoryFn: func(_ context.Context, _ MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 				historyCalls++
@@ -230,7 +192,7 @@ func TestMoveOutService_Queue_ScopeRouting(t *testing.T) {
 			t.Fatalf("Queue: %v", err)
 		}
 		if *activeCalls != 0 {
-			t.Errorf("ListActiveWithMeterFlag calls: got %d, want 0", *activeCalls)
+			t.Errorf("ListActive calls: got %d, want 0", *activeCalls)
 		}
 		if *historyCalls != 1 {
 			t.Errorf("ListHistory calls: got %d, want 1", *historyCalls)
@@ -238,9 +200,12 @@ func TestMoveOutService_Queue_ScopeRouting(t *testing.T) {
 		if res.History.Count != 2 {
 			t.Errorf("history.count: got %d, want 2", res.History.Count)
 		}
-		// Active sections must be non-nil empty slices for stable JSON shape.
-		if res.Sections["awaiting_meter"].Items == nil || res.Sections["ready_to_complete"].Items == nil {
-			t.Error("active sections must be non-nil empty slices")
+		// All 4 active sections must be non-nil empty slices
+		for _, key := range []string{"pending_meter", "pending_settlement", "pending_payment", "ready_to_close"} {
+			sec := res.Sections[key]
+			if sec.Items == nil {
+				t.Errorf("section %q items must be non-nil", key)
+			}
 		}
 		if res.Summary.TotalActive != 0 {
 			t.Errorf("summary.total_active: got %d, want 0", res.Summary.TotalActive)
@@ -254,13 +219,13 @@ func TestMoveOutService_Queue_ScopeRouting(t *testing.T) {
 			t.Fatalf("Queue: %v", err)
 		}
 		if *activeCalls != 1 {
-			t.Errorf("ListActiveWithMeterFlag calls: got %d, want 1", *activeCalls)
+			t.Errorf("ListActive calls: got %d, want 1", *activeCalls)
 		}
 		if *historyCalls != 1 {
 			t.Errorf("ListHistory calls: got %d, want 1", *historyCalls)
 		}
-		if got := res.Sections["ready_to_complete"].Count; got != 1 {
-			t.Errorf("ready_to_complete.count: got %d, want 1", got)
+		if got := res.Sections["pending_meter"].Count; got != 1 {
+			t.Errorf("pending_meter.count: got %d, want 1", got)
 		}
 		if res.History.Count != 2 {
 			t.Errorf("history.count: got %d, want 2", res.History.Count)
@@ -269,4 +234,50 @@ func TestMoveOutService_Queue_ScopeRouting(t *testing.T) {
 			t.Errorf("summary.total_active: got %d, want 1", res.Summary.TotalActive)
 		}
 	})
+}
+
+// Urgency sort within a single section: OVERDUE first, then TODAY, SOON, NORMAL.
+func TestQueue_UrgencySortWithinSection(t *testing.T) {
+	today := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+
+	mk := func(name string, daysFromToday int) MoveOutWithRelations {
+		return MoveOutWithRelations{
+			MoveOutNotice: MoveOutNotice{
+				ID:                   uuid.New(),
+				ScheduledMoveOutDate: today.AddDate(0, 0, daysFromToday),
+				Status:               MoveOutStatusPendingMeter,
+			},
+			TenantName: name,
+		}
+	}
+
+	// Insert in non-urgency order; service must re-sort
+	normal := mk("normal", 20)
+	overdue := mk("overdue", -3)
+	soon := mk("soon", 5)
+	todayItem := mk("today", 0)
+
+	repo := &mockMoveOutRepo{
+		listActiveFn: func(_ context.Context, _ MoveOutQueueParams) ([]MoveOutWithRelations, error) {
+			return []MoveOutWithRelations{normal, overdue, soon, todayItem}, nil
+		},
+	}
+	svc := &moveOutService{repo: repo, now: func() time.Time { return today }}
+
+	res, err := svc.Queue(context.Background(), MoveOutQueueParams{Scope: "active"})
+	if err != nil {
+		t.Fatalf("Queue: %v", err)
+	}
+
+	items := res.Sections["pending_meter"].Items
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+
+	expected := []string{"overdue", "today", "soon", "normal"}
+	for i, want := range expected {
+		if items[i].TenantName != want {
+			t.Errorf("items[%d]: got %q, want %q", i, items[i].TenantName, want)
+		}
+	}
 }
