@@ -46,6 +46,7 @@ type ContractResponse struct {
 	WaterRatePerUnit       float64 `json:"water_rate_per_unit"`
 	Status                 string  `json:"status"`
 	EndDate                *string `json:"end_date"`
+	MoveOutNoticeID        *string `json:"move_out_notice_id"`
 	TenantName             string  `json:"tenant_name"`
 	TenantPhone            string  `json:"tenant_phone"`
 	RoomNumber             string  `json:"room_number"`
@@ -58,11 +59,12 @@ type ContractResponse struct {
 // ContractWithRelations holds joined data from contracts + tenants + rooms + apartments.
 type ContractWithRelations struct {
 	Contract
-	TenantName    string
-	TenantPhone   string
-	RoomNumber    string
-	ApartmentID   uuid.UUID
-	ApartmentName string
+	TenantName      string
+	TenantPhone     string
+	RoomNumber      string
+	ApartmentID     uuid.UUID
+	ApartmentName   string
+	MoveOutNoticeID *string
 }
 
 func ToContractResponse(c ContractWithRelations) ContractResponse {
@@ -85,6 +87,7 @@ func ToContractResponse(c ContractWithRelations) ContractResponse {
 		WaterRatePerUnit:       money.ToBaht(c.WaterRatePerUnit),
 		Status:                 string(c.Status),
 		EndDate:                endDate,
+		MoveOutNoticeID:        c.MoveOutNoticeID,
 		TenantName:             c.TenantName,
 		TenantPhone:            c.TenantPhone,
 		RoomNumber:             c.RoomNumber,

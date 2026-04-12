@@ -67,21 +67,24 @@ func (r *contractRepository) FindAll(ctx context.Context, params ContractListPar
 
 	type joinRow struct {
 		Contract
-		TenantName    string    `gorm:"column:tenant_name"`
-		TenantPhone   string    `gorm:"column:tenant_phone"`
-		RoomNumber    string    `gorm:"column:room_number"`
-		ApartmentID   uuid.UUID `gorm:"column:apt_id"`
-		ApartmentName string    `gorm:"column:apt_name"`
+		TenantName      string    `gorm:"column:tenant_name"`
+		TenantPhone     string    `gorm:"column:tenant_phone"`
+		RoomNumber      string    `gorm:"column:room_number"`
+		ApartmentID     uuid.UUID `gorm:"column:apt_id"`
+		ApartmentName   string    `gorm:"column:apt_name"`
+		MoveOutNoticeID *string   `gorm:"column:move_out_notice_id"`
 	}
 
 	var rows []joinRow
 	err := query.
+		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status NOT IN ('COMPLETED','CANCELLED') AND move_out_notices.deleted_at IS NULL").
 		Select(`contracts.*,
 			tenants.full_name AS tenant_name,
 			tenants.phone AS tenant_phone,
 			rooms.number AS room_number,
 			apartments.id AS apt_id,
-			apartments.name AS apt_name`).
+			apartments.name AS apt_name,
+			move_out_notices.id::text AS move_out_notice_id`).
 		Order(orderClause).
 		Offset(params.Offset()).
 		Limit(params.Limit).
@@ -93,12 +96,13 @@ func (r *contractRepository) FindAll(ctx context.Context, params ContractListPar
 	result := make([]ContractWithRelations, len(rows))
 	for i, row := range rows {
 		result[i] = ContractWithRelations{
-			Contract:      row.Contract,
-			TenantName:    row.TenantName,
-			TenantPhone:   row.TenantPhone,
-			RoomNumber:    row.RoomNumber,
-			ApartmentID:   row.ApartmentID,
-			ApartmentName: row.ApartmentName,
+			Contract:        row.Contract,
+			TenantName:      row.TenantName,
+			TenantPhone:     row.TenantPhone,
+			RoomNumber:      row.RoomNumber,
+			ApartmentID:     row.ApartmentID,
+			ApartmentName:   row.ApartmentName,
+			MoveOutNoticeID: row.MoveOutNoticeID,
 		}
 	}
 	return result, total, nil
@@ -107,11 +111,12 @@ func (r *contractRepository) FindAll(ctx context.Context, params ContractListPar
 func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*ContractWithRelations, error) {
 	type joinRow struct {
 		Contract
-		TenantName    string    `gorm:"column:tenant_name"`
-		TenantPhone   string    `gorm:"column:tenant_phone"`
-		RoomNumber    string    `gorm:"column:room_number"`
-		ApartmentID   uuid.UUID `gorm:"column:apt_id"`
-		ApartmentName string    `gorm:"column:apt_name"`
+		TenantName      string    `gorm:"column:tenant_name"`
+		TenantPhone     string    `gorm:"column:tenant_phone"`
+		RoomNumber      string    `gorm:"column:room_number"`
+		ApartmentID     uuid.UUID `gorm:"column:apt_id"`
+		ApartmentName   string    `gorm:"column:apt_name"`
+		MoveOutNoticeID *string   `gorm:"column:move_out_notice_id"`
 	}
 
 	var row joinRow
@@ -122,10 +127,12 @@ func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*Contr
 			tenants.phone AS tenant_phone,
 			rooms.number AS room_number,
 			apartments.id AS apt_id,
-			apartments.name AS apt_name`).
+			apartments.name AS apt_name,
+			move_out_notices.id::text AS move_out_notice_id`).
 		Joins("JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
 		Joins("JOIN rooms ON rooms.id = contracts.room_id AND rooms.deleted_at IS NULL").
 		Joins("JOIN apartments ON apartments.id = rooms.apartment_id AND apartments.deleted_at IS NULL").
+		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status NOT IN ('COMPLETED','CANCELLED') AND move_out_notices.deleted_at IS NULL").
 		Where("contracts.id = ? AND contracts.deleted_at IS NULL", id).
 		Scan(&row).Error
 	if err != nil {
@@ -136,12 +143,13 @@ func (r *contractRepository) FindByID(ctx context.Context, id uuid.UUID) (*Contr
 	}
 
 	result := ContractWithRelations{
-		Contract:      row.Contract,
-		TenantName:    row.TenantName,
-		TenantPhone:   row.TenantPhone,
-		RoomNumber:    row.RoomNumber,
-		ApartmentID:   row.ApartmentID,
-		ApartmentName: row.ApartmentName,
+		Contract:        row.Contract,
+		TenantName:      row.TenantName,
+		TenantPhone:     row.TenantPhone,
+		RoomNumber:      row.RoomNumber,
+		ApartmentID:     row.ApartmentID,
+		ApartmentName:   row.ApartmentName,
+		MoveOutNoticeID: row.MoveOutNoticeID,
 	}
 	return &result, nil
 }
