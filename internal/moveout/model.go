@@ -12,26 +12,45 @@ import (
 
 type MoveOutStatus string
 
-// NOTE: when adding a status, update ComputeWorkflowStatus below — unknown
-// values fall through to WorkflowCancelled and silently disappear from queues.
 const (
-	MoveOutStatusPending   MoveOutStatus = "PENDING"
-	MoveOutStatusCompleted MoveOutStatus = "COMPLETED"
-	MoveOutStatusCancelled MoveOutStatus = "CANCELLED"
+	MoveOutStatusPendingMeter      MoveOutStatus = "PENDING_METER"
+	MoveOutStatusPendingSettlement MoveOutStatus = "PENDING_SETTLEMENT"
+	MoveOutStatusPendingPayment    MoveOutStatus = "PENDING_PAYMENT"
+	MoveOutStatusReadyToClose      MoveOutStatus = "READY_TO_CLOSE"
+	MoveOutStatusCompleted         MoveOutStatus = "COMPLETED"
+	MoveOutStatusCancelled         MoveOutStatus = "CANCELLED"
+)
+
+type PaymentOutcome string
+
+const (
+	PaymentOutcomePaidExtra   PaymentOutcome = "PAID_EXTRA"
+	PaymentOutcomeRefunded    PaymentOutcome = "REFUNDED"
+	PaymentOutcomeZeroBalance PaymentOutcome = "ZERO_BALANCE"
 )
 
 // --- Model ---
 
 type MoveOutNotice struct {
-	ID                uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	ContractID        uuid.UUID      `gorm:"type:uuid;not null" json:"contract_id"`
-	NoticeDate        time.Time      `gorm:"type:date;not null" json:"notice_date"`
-	ScheduledMoveOutDate time.Time   `gorm:"column:scheduled_move_out_date;type:date;not null" json:"scheduled_move_out_date"`
-	Status            MoveOutStatus  `gorm:"type:varchar(20);not null;default:'PENDING'" json:"status"`
-	Note              string         `gorm:"type:text;not null;default:''" json:"note"`
-	CreatedAt         time.Time      `gorm:"not null;default:now()" json:"created_at"`
-	UpdatedAt         time.Time      `gorm:"not null;default:now()" json:"updated_at"`
-	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                   uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	ContractID           uuid.UUID      `gorm:"type:uuid;not null" json:"contract_id"`
+	NoticeDate           time.Time      `gorm:"type:date;not null" json:"notice_date"`
+	ScheduledMoveOutDate time.Time      `gorm:"column:scheduled_move_out_date;type:date;not null" json:"scheduled_move_out_date"`
+	Status               MoveOutStatus  `gorm:"type:varchar(20);not null;default:'PENDING_METER'" json:"status"`
+	Note                 string         `gorm:"type:text;not null;default:''" json:"note"`
+
+	// V2 workflow columns
+	SettlementBillID *uuid.UUID      `gorm:"type:uuid" json:"settlement_bill_id,omitempty"`
+	NetAmount        *int64          `gorm:"type:bigint" json:"net_amount,omitempty"`
+	PaymentOutcome   *PaymentOutcome `gorm:"type:varchar(20)" json:"payment_outcome,omitempty"`
+	PaymentNote      string          `gorm:"type:text;not null;default:''" json:"payment_note"`
+	ClosedAt         *time.Time      `gorm:"type:timestamptz" json:"closed_at,omitempty"`
+	LastActionBy     *uuid.UUID      `gorm:"type:uuid" json:"last_action_by,omitempty"`
+	LastActionAt     *time.Time      `gorm:"type:timestamptz" json:"last_action_at,omitempty"`
+
+	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (MoveOutNotice) TableName() string { return "move_out_notices" }
@@ -46,23 +65,31 @@ func (m *MoveOutNotice) BeforeCreate(tx *gorm.DB) error {
 // --- Domain errors ---
 
 var (
-	ErrDateOrderInvalid = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันแจ้ง")
-	ErrNotPending       = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอดำเนินการ")
+	ErrDateOrderInvalid       = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันแจ้ง")
+	ErrCannotCancel            = errors.New("ยกเลิกได้เฉพาะสถานะรอจดมิเตอร์หรือรอสร้างบิล")
+	ErrCannotRecordSettlement  = errors.New("สร้างบิลได้เฉพาะสถานะรอสร้างบิล")
+	ErrCannotRecordPayment     = errors.New("บันทึกชำระได้เฉพาะสถานะรอชำระ")
+	ErrCannotClose             = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
+	ErrMissingSettlementBill   = errors.New("ต้องมีบิลสรุปก่อนปิด")
+	ErrMissingPaymentOutcome   = errors.New("ต้องระบุผลการชำระก่อนปิด")
+	ErrNotPendingMeter         = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอจดมิเตอร์")
 )
 
+// --- Status checks ---
+
+func (m *MoveOutNotice) IsPendingMeter() bool      { return m.Status == MoveOutStatusPendingMeter }
+func (m *MoveOutNotice) IsPendingSettlement() bool  { return m.Status == MoveOutStatusPendingSettlement }
+func (m *MoveOutNotice) IsPendingPayment() bool     { return m.Status == MoveOutStatusPendingPayment }
+func (m *MoveOutNotice) IsReadyToClose() bool       { return m.Status == MoveOutStatusReadyToClose }
+func (m *MoveOutNotice) IsCompleted() bool           { return m.Status == MoveOutStatusCompleted }
+func (m *MoveOutNotice) IsCancelled() bool           { return m.Status == MoveOutStatusCancelled }
+
+// IsTerminal returns true for COMPLETED or CANCELLED (no further transitions).
+func (m *MoveOutNotice) IsTerminal() bool {
+	return m.IsCompleted() || m.IsCancelled()
+}
+
 // --- Domain methods (pure, no DB, no side effects) ---
-
-func (m *MoveOutNotice) IsPending() bool {
-	return m.Status == MoveOutStatusPending
-}
-
-func (m *MoveOutNotice) IsCompleted() bool {
-	return m.Status == MoveOutStatusCompleted
-}
-
-func (m *MoveOutNotice) IsCancelled() bool {
-	return m.Status == MoveOutStatusCancelled
-}
 
 // ValidateDates checks that scheduled_move_out_date >= notice_date.
 func (m *MoveOutNotice) ValidateDates() error {
@@ -72,37 +99,104 @@ func (m *MoveOutNotice) ValidateDates() error {
 	return nil
 }
 
-// CanCancel checks if the notice can be cancelled.
+// --- Guard methods ---
+
+// CanCancel returns nil if the notice can be cancelled.
+// Only PENDING_METER and PENDING_SETTLEMENT are cancellable.
 func (m *MoveOutNotice) CanCancel() error {
-	if !m.IsPending() {
-		return ErrNotPending
+	if m.IsPendingMeter() || m.IsPendingSettlement() {
+		return nil
+	}
+	return ErrCannotCancel
+}
+
+// CanAdvanceToSettlement returns nil if the notice can move to PENDING_SETTLEMENT.
+func (m *MoveOutNotice) CanAdvanceToSettlement() error {
+	if !m.IsPendingMeter() {
+		return ErrNotPendingMeter
 	}
 	return nil
 }
 
-// CanComplete checks if the notice can be completed.
-func (m *MoveOutNotice) CanComplete() error {
-	if !m.IsPending() {
-		return ErrNotPending
+// CanRecordSettlement returns nil if a settlement bill can be attached.
+func (m *MoveOutNotice) CanRecordSettlement() error {
+	if !m.IsPendingSettlement() {
+		return ErrCannotRecordSettlement
 	}
 	return nil
 }
 
-// Cancel transitions the notice to CANCELLED.
+// CanRecordPayment returns nil if payment outcome can be recorded.
+func (m *MoveOutNotice) CanRecordPayment() error {
+	if !m.IsPendingPayment() {
+		return ErrCannotRecordPayment
+	}
+	return nil
+}
+
+// CanClose returns nil if the notice can be closed (completed).
+func (m *MoveOutNotice) CanClose() error {
+	if !m.IsReadyToClose() {
+		return ErrCannotClose
+	}
+	if m.SettlementBillID == nil {
+		return ErrMissingSettlementBill
+	}
+	if m.PaymentOutcome == nil {
+		return ErrMissingPaymentOutcome
+	}
+	return nil
+}
+
+// --- Transition methods ---
+
+// AdvanceToSettlement moves PENDING_METER → PENDING_SETTLEMENT.
+func (m *MoveOutNotice) AdvanceToSettlement() error {
+	if err := m.CanAdvanceToSettlement(); err != nil {
+		return err
+	}
+	m.Status = MoveOutStatusPendingSettlement
+	return nil
+}
+
+// RecordSettlement attaches the settlement bill and moves → PENDING_PAYMENT.
+func (m *MoveOutNotice) RecordSettlement(billID uuid.UUID, netAmount int64) error {
+	if err := m.CanRecordSettlement(); err != nil {
+		return err
+	}
+	m.SettlementBillID = &billID
+	m.NetAmount = &netAmount
+	m.Status = MoveOutStatusPendingPayment
+	return nil
+}
+
+// RecordPayment records payment outcome and moves → READY_TO_CLOSE.
+func (m *MoveOutNotice) RecordPayment(outcome PaymentOutcome, note string) error {
+	if err := m.CanRecordPayment(); err != nil {
+		return err
+	}
+	m.PaymentOutcome = &outcome
+	m.PaymentNote = note
+	m.Status = MoveOutStatusReadyToClose
+	return nil
+}
+
+// Close transitions READY_TO_CLOSE → COMPLETED.
+func (m *MoveOutNotice) Close(now time.Time) error {
+	if err := m.CanClose(); err != nil {
+		return err
+	}
+	m.Status = MoveOutStatusCompleted
+	m.ClosedAt = &now
+	return nil
+}
+
+// Cancel transitions to CANCELLED.
 func (m *MoveOutNotice) Cancel() error {
 	if err := m.CanCancel(); err != nil {
 		return err
 	}
 	m.Status = MoveOutStatusCancelled
-	return nil
-}
-
-// Complete transitions the notice to COMPLETED.
-func (m *MoveOutNotice) Complete() error {
-	if err := m.CanComplete(); err != nil {
-		return err
-	}
-	m.Status = MoveOutStatusCompleted
 	return nil
 }
 
@@ -147,35 +241,5 @@ func ComputeUrgency(scheduled, today time.Time) Urgency {
 		return UrgencySoon
 	default:
 		return UrgencyNormal
-	}
-}
-
-// --- Workflow status (persisted status + meter presence → effective state) ---
-
-type WorkflowStatus string
-
-const (
-	WorkflowAwaitingMeter   WorkflowStatus = "AWAITING_METER"
-	WorkflowReadyToComplete WorkflowStatus = "READY_TO_COMPLETE"
-	WorkflowCompleted       WorkflowStatus = "COMPLETED"
-	WorkflowCancelled       WorkflowStatus = "CANCELLED"
-)
-
-// ComputeWorkflowStatus maps a notice's persisted status + meter presence to a
-// workflow state. Unknown statuses fall back to WorkflowCancelled defensively
-// — surfacing the row as inert rather than crashing the queue list.
-func ComputeWorkflowStatus(noticeStatus MoveOutStatus, hasExitMeter bool) WorkflowStatus {
-	switch noticeStatus {
-	case MoveOutStatusPending:
-		if hasExitMeter {
-			return WorkflowReadyToComplete
-		}
-		return WorkflowAwaitingMeter
-	case MoveOutStatusCompleted:
-		return WorkflowCompleted
-	case MoveOutStatusCancelled:
-		return WorkflowCancelled
-	default:
-		return WorkflowCancelled
 	}
 }

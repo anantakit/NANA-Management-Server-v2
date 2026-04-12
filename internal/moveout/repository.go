@@ -187,7 +187,8 @@ func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, ro
 		Table("move_out_notices").
 		Select("DISTINCT contracts.room_id").
 		Joins("JOIN contracts ON contracts.id = move_out_notices.contract_id AND contracts.deleted_at IS NULL").
-		Where("move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ?", MoveOutStatusPending, roomIDs).
+		Where("move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ?",
+			[]MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled}, roomIDs).
 		Scan(&results).Error
 	if err != nil {
 		return nil, err
@@ -219,7 +220,7 @@ type queueRow struct {
 // reading-type definition grows complex, switch to a meterreading port.
 func (r *moveOutRepository) ListActiveWithMeterFlag(ctx context.Context, params MoveOutQueueParams) ([]NoticeWithMeterFlag, error) {
 	query := r.baseJoinQuery(ctx).
-		Where("move_out_notices.status = ?", MoveOutStatusPending)
+		Where("move_out_notices.status NOT IN ?", []MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled})
 
 	if params.ApartmentID != "" {
 		query = query.Where("rooms.apartment_id = ?", params.ApartmentID)

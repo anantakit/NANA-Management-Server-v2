@@ -558,7 +558,7 @@ func TestCreateSettlementBill_RejectsWhenOnlyPending(t *testing.T) {
 		&mockMoveOutQuerier{notice: &moveout.MoveOutNotice{
 			ID:                uuid.New(),
 			ContractID:        c.ID,
-			Status:            moveout.MoveOutStatusPending,
+			Status:            moveout.MoveOutStatusPendingMeter,
 			ScheduledMoveOutDate: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
 		}})
 

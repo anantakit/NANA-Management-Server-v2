@@ -19,19 +19,21 @@ import (
 // seedDevMoveOuts populates the move-out queue with a wide set of scenarios
 // so every branch of the frontend kanban view is demonstrably exercised.
 //
-// | # | Room | Stage / Bucket           | Scenario                                   |
-// |---|------|--------------------------|--------------------------------------------|
-// | 1 | A110 | Stage 1 — NORMAL         | Scheduled 14 days out                      |
-// | 2 | A111 | Stage 1 — SOON           | Scheduled 5 days out                       |
-// | 3 | A201 | Stage 1 — TODAY          | Scheduled today                            |
-// | 4 | A202 | Stage 1 — OVERDUE        | Scheduled 3 days ago, no exit meter        |
-// | 5 | A203 | Stage 2 — SOON           | Scheduled +4, exit meter captured          |
-// | 6 | A204 | Stage 2 — OVERDUE        | Scheduled -2, exit meter captured          |
-// | 7 | A205 | History — COMPLETED      | Min months met, full refund                |
-// | 8 | A206 | History — COMPLETED      | Broke min months, deposit forfeited         |
-// | 9 | A207 | History — COMPLETED      | Mid-month move-out, pro-rate refund         |
-// |10 | B101 | History — CANCELLED      | Notice cancelled, tenant still occupying    |
-// |11 | B102 | Stage 2 — NORMAL         | Scheduled +13, exit meter captured          |
+// | # | Room | Status               | Scenario                                   |
+// |---|------|----------------------|--------------------------------------------|
+// | 1 | A110 | PENDING_METER        | Scheduled 14 days out, no meter             |
+// | 2 | A111 | PENDING_METER        | Scheduled 5 days out, no meter              |
+// | 3 | A201 | PENDING_METER        | Scheduled today, no meter                   |
+// | 4 | A202 | PENDING_METER        | Scheduled -3 days, overdue no meter         |
+// | 5 | A203 | PENDING_SETTLEMENT   | Meter captured, waiting for settlement bill |
+// | 6 | A204 | PENDING_SETTLEMENT   | Overdue, meter captured, waiting settlement |
+// | 7 | A205 | COMPLETED            | Min months met, full refund                 |
+// | 8 | A206 | COMPLETED            | Broke min months, deposit forfeited         |
+// | 9 | A207 | COMPLETED            | Mid-month move-out, pro-rate refund         |
+// |10 | B101 | CANCELLED            | Notice cancelled, tenant still occupying    |
+// |11 | B102 | PENDING_SETTLEMENT   | Scheduled +13, meter captured early         |
+// |12 | B103 | PENDING_PAYMENT      | Settlement bill created, waiting payment    |
+// |13 | B104 | READY_TO_CLOSE       | Payment recorded, ready to close            |
 //
 // Idempotent — skipped entirely if any move-out notice already exists.
 func seedDevMoveOuts(db *gorm.DB) error {
@@ -65,13 +67,15 @@ func seedDevMoveOuts(db *gorm.DB) error {
 		{"อนุชา กลางเดือน", "1100200300009", "0810000017", "9 ถ.ย้ายออก กรุงเทพฯ", "อนุชิต กลางเดือน 0810000018"},
 		{"จารึก ขอยกเลิก", "1100200300010", "0810000019", "10 ถ.ย้ายออก กรุงเทพฯ", "จารุณี ขอยกเลิก 0810000020"},
 		{"บรรเจิด จดล่วงหน้า", "1100200300011", "0810000021", "11 ถ.ย้ายออก กรุงเทพฯ", "บังอร จดล่วงหน้า 0810000022"},
+		{"ธนาคาร รอชำระ", "1100200300012", "0810000023", "12 ถ.ย้ายออก กรุงเทพฯ", "ธนาภรณ์ รอชำระ 0810000024"},
+		{"ประสิทธิ์ พร้อมปิด", "1100200300013", "0810000025", "13 ถ.ย้ายออก กรุงเทพฯ", "ประสพ พร้อมปิด 0810000026"},
 	}
 
 	// rooms aligned 1:1 with tenants[] — must be vacant in seed base set.
 	roomNumbers := []string{
 		"A110", "A111", "A201", "A202",
 		"A203", "A204", "A205", "A206",
-		"A207", "B101", "B102",
+		"A207", "B101", "B102", "B103", "B104",
 	}
 
 	// Create tenants (idempotent per id_card)
@@ -140,7 +144,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			noticeOffset: -2, scheduledOffset: 14,
 			minMonths: 6, contractStartMonths: 8,
 			note:           "แจ้งล่วงหน้า ย้ายปลายเดือน",
-			status:         moveout.MoveOutStatusPending,
+			status:         moveout.MoveOutStatusPendingMeter,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
@@ -151,7 +155,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			noticeOffset: -5, scheduledOffset: 5,
 			minMonths: 6, contractStartMonths: 7,
 			note:           "ใกล้กำหนดภายใน 5 วัน",
-			status:         moveout.MoveOutStatusPending,
+			status:         moveout.MoveOutStatusPendingMeter,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
@@ -162,7 +166,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			noticeOffset: -7, scheduledOffset: 0,
 			minMonths: 6, contractStartMonths: 9,
 			note:           "วันนี้ต้องจดมิเตอร์",
-			status:         moveout.MoveOutStatusPending,
+			status:         moveout.MoveOutStatusPendingMeter,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
@@ -173,30 +177,30 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			noticeOffset: -10, scheduledOffset: -3,
 			minMonths: 6, contractStartMonths: 10,
 			note:           "เลยกำหนดยังไม่ได้จดมิเตอร์",
-			status:         moveout.MoveOutStatusPending,
+			status:         moveout.MoveOutStatusPendingMeter,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
 		},
-		// 5. SOON + exit meter (Stage 2)
+		// 5. PENDING_SETTLEMENT — meter captured, waiting for settlement bill
 		{
 			roomNumber: "A203", tenantIDCard: "1100200300005",
 			noticeOffset: -6, scheduledOffset: 4,
 			minMonths: 6, contractStartMonths: 12,
-			note:           "จดมิเตอร์แล้ว รอปิดสัญญา",
-			status:         moveout.MoveOutStatusPending,
+			note:           "จดมิเตอร์แล้ว รอสร้างบิลสรุป",
+			status:         moveout.MoveOutStatusPendingSettlement,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
 			withExitMeter:  true,
 		},
-		// 6. OVERDUE + exit meter (Stage 2)
+		// 6. PENDING_SETTLEMENT — overdue, meter captured
 		{
 			roomNumber: "A204", tenantIDCard: "1100200300006",
 			noticeOffset: -9, scheduledOffset: -2,
 			minMonths: 6, contractStartMonths: 11,
-			note:           "จดมิเตอร์แล้วแต่ยังไม่ได้ปิดสัญญา",
-			status:         moveout.MoveOutStatusPending,
+			note:           "จดมิเตอร์แล้วแต่ยังไม่ได้สร้างบิลสรุป",
+			status:         moveout.MoveOutStatusPendingSettlement,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
@@ -252,13 +256,37 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,
 		},
-		// 11. Stage 2 — NORMAL (scheduled > 1 week out, exit meter already captured)
+		// 11. PENDING_SETTLEMENT — meter captured early, scheduled > 1 week out
 		{
 			roomNumber: "B102", tenantIDCard: "1100200300011",
 			noticeOffset: -2, scheduledOffset: 13,
 			minMonths: 6, contractStartMonths: 12,
-			note:           "จดมิเตอร์ล่วงหน้า รอถึงวันย้าย",
-			status:         moveout.MoveOutStatusPending,
+			note:           "จดมิเตอร์ล่วงหน้า รอสร้างบิลสรุป",
+			status:         moveout.MoveOutStatusPendingSettlement,
+			contractStatus: contract.ContractStatusActive,
+			depositStatus:  contract.DepositStatusCollected,
+			roomStatus:     room.RoomStatusOccupied,
+			withExitMeter:  true,
+		},
+		// 12. PENDING_PAYMENT — settlement bill created, waiting for payment
+		{
+			roomNumber: "B103", tenantIDCard: "1100200300012",
+			noticeOffset: -8, scheduledOffset: -1,
+			minMonths: 6, contractStartMonths: 10,
+			note:           "สร้างบิลสรุปแล้ว รอชำระ",
+			status:         moveout.MoveOutStatusPendingPayment,
+			contractStatus: contract.ContractStatusActive,
+			depositStatus:  contract.DepositStatusCollected,
+			roomStatus:     room.RoomStatusOccupied,
+			withExitMeter:  true,
+		},
+		// 13. READY_TO_CLOSE — payment recorded, ready to close
+		{
+			roomNumber: "B104", tenantIDCard: "1100200300013",
+			noticeOffset: -12, scheduledOffset: -4,
+			minMonths: 6, contractStartMonths: 8,
+			note:           "ชำระเรียบร้อย พร้อมปิดสัญญา",
+			status:         moveout.MoveOutStatusReadyToClose,
 			contractStatus: contract.ContractStatusActive,
 			depositStatus:  contract.DepositStatusCollected,
 			roomStatus:     room.RoomStatusOccupied,

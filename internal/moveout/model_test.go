@@ -3,6 +3,8 @@ package moveout
 import (
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestMoveOutNotice_ValidateDates(t *testing.T) {
@@ -35,7 +37,7 @@ func TestMoveOutNotice_ValidateDates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &MoveOutNotice{
-				NoticeDate:        tt.notice,
+				NoticeDate:           tt.notice,
 				ScheduledMoveOutDate: tt.moveOut,
 			}
 			err := m.ValidateDates()
@@ -53,41 +55,296 @@ func TestMoveOutNotice_ValidateDates(t *testing.T) {
 	}
 }
 
+// allStatuses returns every MoveOutStatus for table-driven guard tests.
+func allStatuses() []MoveOutStatus {
+	return []MoveOutStatus{
+		MoveOutStatusPendingMeter,
+		MoveOutStatusPendingSettlement,
+		MoveOutStatusPendingPayment,
+		MoveOutStatusReadyToClose,
+		MoveOutStatusCompleted,
+		MoveOutStatusCancelled,
+	}
+}
+
 func TestMoveOutNotice_StatusChecks(t *testing.T) {
-	t.Run("pending", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusPending}
-		if !m.IsPending() {
-			t.Error("expected IsPending true")
+	checks := []struct {
+		status MoveOutStatus
+		method string
+		fn     func(*MoveOutNotice) bool
+	}{
+		{MoveOutStatusPendingMeter, "IsPendingMeter", (*MoveOutNotice).IsPendingMeter},
+		{MoveOutStatusPendingSettlement, "IsPendingSettlement", (*MoveOutNotice).IsPendingSettlement},
+		{MoveOutStatusPendingPayment, "IsPendingPayment", (*MoveOutNotice).IsPendingPayment},
+		{MoveOutStatusReadyToClose, "IsReadyToClose", (*MoveOutNotice).IsReadyToClose},
+		{MoveOutStatusCompleted, "IsCompleted", (*MoveOutNotice).IsCompleted},
+		{MoveOutStatusCancelled, "IsCancelled", (*MoveOutNotice).IsCancelled},
+	}
+
+	for _, c := range checks {
+		for _, s := range allStatuses() {
+			name := c.method + "_when_" + string(s)
+			t.Run(name, func(t *testing.T) {
+				m := &MoveOutNotice{Status: s}
+				got := c.fn(m)
+				want := s == c.status
+				if got != want {
+					t.Errorf("%s on %s = %v, want %v", c.method, s, got, want)
+				}
+			})
 		}
-		if m.IsCompleted() {
-			t.Error("expected IsCompleted false")
+	}
+}
+
+func TestMoveOutNotice_IsTerminal(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			want := s == MoveOutStatusCompleted || s == MoveOutStatusCancelled
+			if got := m.IsTerminal(); got != want {
+				t.Errorf("IsTerminal(%s) = %v, want %v", s, got, want)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CanCancel(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			err := m.CanCancel()
+			wantOK := s == MoveOutStatusPendingMeter || s == MoveOutStatusPendingSettlement
+			if wantOK && err != nil {
+				t.Errorf("CanCancel(%s) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanCancel(%s) expected error, got nil", s)
+			}
+			if !wantOK && err != nil && err != ErrCannotCancel {
+				t.Errorf("CanCancel(%s) = %v, want ErrCannotCancel", s, err)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CanAdvanceToSettlement(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			err := m.CanAdvanceToSettlement()
+			wantOK := s == MoveOutStatusPendingMeter
+			if wantOK && err != nil {
+				t.Errorf("CanAdvanceToSettlement(%s) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanAdvanceToSettlement(%s) expected error, got nil", s)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CanRecordSettlement(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			err := m.CanRecordSettlement()
+			wantOK := s == MoveOutStatusPendingSettlement
+			if wantOK && err != nil {
+				t.Errorf("CanRecordSettlement(%s) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanRecordSettlement(%s) expected error, got nil", s)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CanRecordPayment(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			err := m.CanRecordPayment()
+			wantOK := s == MoveOutStatusPendingPayment
+			if wantOK && err != nil {
+				t.Errorf("CanRecordPayment(%s) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanRecordPayment(%s) expected error, got nil", s)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CanClose(t *testing.T) {
+	billID := uuid.New()
+	outcome := PaymentOutcomePaidExtra
+
+	cases := []struct {
+		name    string
+		status  MoveOutStatus
+		billID  *uuid.UUID
+		outcome *PaymentOutcome
+		wantErr error
+	}{
+		// Happy path
+		{"ready with bill+outcome", MoveOutStatusReadyToClose, &billID, &outcome, nil},
+		// Missing prerequisites
+		{"ready without bill", MoveOutStatusReadyToClose, nil, &outcome, ErrMissingSettlementBill},
+		{"ready without outcome", MoveOutStatusReadyToClose, &billID, nil, ErrMissingPaymentOutcome},
+		{"ready without both", MoveOutStatusReadyToClose, nil, nil, ErrMissingSettlementBill},
+	}
+
+	// Wrong status × all non-READY_TO_CLOSE statuses
+	for _, s := range allStatuses() {
+		if s == MoveOutStatusReadyToClose {
+			continue
 		}
-		if m.IsCancelled() {
-			t.Error("expected IsCancelled false")
+		cases = append(cases, struct {
+			name    string
+			status  MoveOutStatus
+			billID  *uuid.UUID
+			outcome *PaymentOutcome
+			wantErr error
+		}{
+			name:    "wrong status " + string(s),
+			status:  s,
+			billID:  &billID,
+			outcome: &outcome,
+			wantErr: ErrCannotClose,
+		})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MoveOutNotice{
+				Status:           tc.status,
+				SettlementBillID: tc.billID,
+				PaymentOutcome:   tc.outcome,
+			}
+			err := m.CanClose()
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+			} else {
+				if err != tc.wantErr {
+					t.Fatalf("expected %v, got %v", tc.wantErr, err)
+				}
+			}
+		})
+	}
+}
+
+// --- Transition tests ---
+
+func TestMoveOutNotice_AdvanceToSettlement(t *testing.T) {
+	t.Run("PENDING_METER → PENDING_SETTLEMENT", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingMeter}
+		if err := m.AdvanceToSettlement(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusPendingSettlement {
+			t.Fatalf("expected PENDING_SETTLEMENT, got %s", m.Status)
 		}
 	})
 
-	t.Run("completed", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusCompleted}
-		if m.IsPending() {
-			t.Error("expected IsPending false")
+	t.Run("wrong status rejects", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
+		if err := m.AdvanceToSettlement(); err != ErrNotPendingMeter {
+			t.Fatalf("expected ErrNotPendingMeter, got %v", err)
 		}
-		if !m.IsCompleted() {
-			t.Error("expected IsCompleted true")
+	})
+}
+
+func TestMoveOutNotice_RecordSettlement(t *testing.T) {
+	billID := uuid.New()
+
+	t.Run("PENDING_SETTLEMENT → PENDING_PAYMENT", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
+		if err := m.RecordSettlement(billID, 150000); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusPendingPayment {
+			t.Fatalf("expected PENDING_PAYMENT, got %s", m.Status)
+		}
+		if m.SettlementBillID == nil || *m.SettlementBillID != billID {
+			t.Fatal("settlement_bill_id not set")
+		}
+		if m.NetAmount == nil || *m.NetAmount != 150000 {
+			t.Fatalf("net_amount = %v, want 150000", m.NetAmount)
 		}
 	})
 
-	t.Run("cancelled", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusCancelled}
-		if !m.IsCancelled() {
-			t.Error("expected IsCancelled true")
+	t.Run("wrong status rejects", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingMeter}
+		if err := m.RecordSettlement(billID, 0); err != ErrCannotRecordSettlement {
+			t.Fatalf("expected ErrCannotRecordSettlement, got %v", err)
+		}
+	})
+}
+
+func TestMoveOutNotice_RecordPayment(t *testing.T) {
+	t.Run("PENDING_PAYMENT → READY_TO_CLOSE", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
+		if err := m.RecordPayment(PaymentOutcomeRefunded, "คืนเงิน 500 บาท"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusReadyToClose {
+			t.Fatalf("expected READY_TO_CLOSE, got %s", m.Status)
+		}
+		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
+			t.Fatal("payment_outcome not set")
+		}
+		if m.PaymentNote != "คืนเงิน 500 บาท" {
+			t.Fatalf("payment_note = %q, want 'คืนเงิน 500 บาท'", m.PaymentNote)
+		}
+	})
+
+	t.Run("wrong status rejects", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusReadyToClose}
+		if err := m.RecordPayment(PaymentOutcomePaidExtra, ""); err != ErrCannotRecordPayment {
+			t.Fatalf("expected ErrCannotRecordPayment, got %v", err)
+		}
+	})
+}
+
+func TestMoveOutNotice_Close(t *testing.T) {
+	now := time.Now()
+	billID := uuid.New()
+	outcome := PaymentOutcomeZeroBalance
+
+	t.Run("READY_TO_CLOSE → COMPLETED", func(t *testing.T) {
+		m := &MoveOutNotice{
+			Status:           MoveOutStatusReadyToClose,
+			SettlementBillID: &billID,
+			PaymentOutcome:   &outcome,
+		}
+		if err := m.Close(now); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusCompleted {
+			t.Fatalf("expected COMPLETED, got %s", m.Status)
+		}
+		if m.ClosedAt == nil {
+			t.Fatal("closed_at not set")
+		}
+	})
+
+	t.Run("wrong status rejects", func(t *testing.T) {
+		m := &MoveOutNotice{
+			Status:           MoveOutStatusPendingPayment,
+			SettlementBillID: &billID,
+			PaymentOutcome:   &outcome,
+		}
+		if err := m.Close(now); err != ErrCannotClose {
+			t.Fatalf("expected ErrCannotClose, got %v", err)
 		}
 	})
 }
 
 func TestMoveOutNotice_Cancel(t *testing.T) {
-	t.Run("cancel pending — success", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusPending}
+	t.Run("PENDING_METER — success", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingMeter}
 		if err := m.Cancel(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -96,46 +353,33 @@ func TestMoveOutNotice_Cancel(t *testing.T) {
 		}
 	})
 
-	t.Run("cancel completed — error", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusCompleted}
-		if err := m.Cancel(); err != ErrNotPending {
-			t.Fatalf("expected ErrNotPending, got %v", err)
-		}
-	})
-
-	t.Run("cancel cancelled — error", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusCancelled}
-		if err := m.Cancel(); err != ErrNotPending {
-			t.Fatalf("expected ErrNotPending, got %v", err)
-		}
-	})
-}
-
-func TestMoveOutNotice_Complete(t *testing.T) {
-	t.Run("complete pending — success", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusPending}
-		if err := m.Complete(); err != nil {
+	t.Run("PENDING_SETTLEMENT — success", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
+		if err := m.Cancel(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if m.Status != MoveOutStatusCompleted {
-			t.Fatalf("expected COMPLETED, got %s", m.Status)
+		if m.Status != MoveOutStatusCancelled {
+			t.Fatalf("expected CANCELLED, got %s", m.Status)
 		}
 	})
 
-	t.Run("complete completed — error", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusCompleted}
-		if err := m.Complete(); err != ErrNotPending {
-			t.Fatalf("expected ErrNotPending, got %v", err)
-		}
-	})
-
-	t.Run("complete cancelled — error", func(t *testing.T) {
-		m := &MoveOutNotice{Status: MoveOutStatusCancelled}
-		if err := m.Complete(); err != ErrNotPending {
-			t.Fatalf("expected ErrNotPending, got %v", err)
-		}
-	})
+	// All non-cancellable statuses should reject
+	for _, s := range []MoveOutStatus{
+		MoveOutStatusPendingPayment,
+		MoveOutStatusReadyToClose,
+		MoveOutStatusCompleted,
+		MoveOutStatusCancelled,
+	} {
+		t.Run("cancel "+string(s)+" — error", func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			if err := m.Cancel(); err != ErrCannotCancel {
+				t.Fatalf("expected ErrCannotCancel, got %v", err)
+			}
+		})
+	}
 }
+
+// --- Urgency tests (unchanged) ---
 
 func TestComputeUrgency(t *testing.T) {
 	today := time.Date(2026, 4, 6, 0, 0, 0, 0, time.UTC)
@@ -159,8 +403,6 @@ func TestComputeUrgency(t *testing.T) {
 		},
 	}
 
-	// Cross-day boundary: scheduled one second into next day vs today one
-	// second before midnight must yield +1 (catches naive wall-clock diffs).
 	t.Run("cross-day boundary by 2 seconds", func(t *testing.T) {
 		boundaryToday := time.Date(2026, 4, 6, 23, 59, 59, 0, time.UTC)
 		boundaryNext := time.Date(2026, 4, 7, 0, 0, 1, 0, time.UTC)
@@ -172,14 +414,11 @@ func TestComputeUrgency(t *testing.T) {
 		}
 	})
 
-	// DST-safe: a 25h spring-forward day in America/Los_Angeles must still
-	// count as exactly 1 day, not 0.
 	t.Run("DST spring forward still 1 day", func(t *testing.T) {
 		la, err := time.LoadLocation("America/Los_Angeles")
 		if err != nil {
 			t.Skip("tz data unavailable:", err)
 		}
-		// 2026-03-08 is the US DST start (spring forward).
 		dstToday := time.Date(2026, 3, 7, 12, 0, 0, 0, la)
 		dstNext := time.Date(2026, 3, 8, 12, 0, 0, 0, la)
 		if got := DaysUntil(dstNext, dstToday); got != 1 {
@@ -194,33 +433,6 @@ func TestComputeUrgency(t *testing.T) {
 			}
 			if got := DaysUntil(tc.scheduled, today); got != tc.wantDays {
 				t.Errorf("DaysUntil = %d, want %d", got, tc.wantDays)
-			}
-		})
-	}
-}
-
-func TestComputeWorkflowStatus(t *testing.T) {
-	cases := []struct {
-		name         string
-		noticeStatus MoveOutStatus
-		hasMeter     bool
-		want         WorkflowStatus
-	}{
-		{"pending without meter", MoveOutStatusPending, false, WorkflowAwaitingMeter},
-		{"pending with meter", MoveOutStatusPending, true, WorkflowReadyToComplete},
-		{"completed without meter", MoveOutStatusCompleted, false, WorkflowCompleted},
-		{"completed with meter", MoveOutStatusCompleted, true, WorkflowCompleted},
-		{"cancelled without meter", MoveOutStatusCancelled, false, WorkflowCancelled},
-		{"cancelled with meter", MoveOutStatusCancelled, true, WorkflowCancelled},
-		{"unknown falls back to cancelled", MoveOutStatus("WHATEVER"), false, WorkflowCancelled},
-		{"empty falls back to cancelled", MoveOutStatus(""), true, WorkflowCancelled},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := ComputeWorkflowStatus(tc.noticeStatus, tc.hasMeter); got != tc.want {
-				t.Errorf("ComputeWorkflowStatus(%q, %v) = %q, want %q",
-					tc.noticeStatus, tc.hasMeter, got, tc.want)
 			}
 		})
 	}

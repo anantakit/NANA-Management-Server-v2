@@ -23,7 +23,7 @@ func TestMoveOutService_Queue_PartitionsSortsSummarizes(t *testing.T) {
 					ContractID:           uuid.New(),
 					NoticeDate:           today.AddDate(0, 0, -10),
 					ScheduledMoveOutDate: today.AddDate(0, 0, daysFromToday),
-					Status:               MoveOutStatusPending,
+					Status:               MoveOutStatusPendingMeter,
 				},
 				TenantName:    name,
 				RoomNumber:    "101",
@@ -91,12 +91,6 @@ func TestMoveOutService_Queue_PartitionsSortsSummarizes(t *testing.T) {
 	if awaiting.Items[0].Urgency != string(UrgencyOverdue) {
 		t.Errorf("overdue urgency: got %q, want OVERDUE", awaiting.Items[0].Urgency)
 	}
-	if awaiting.Items[0].WorkflowStatus != string(WorkflowAwaitingMeter) {
-		t.Errorf("overdue workflow_status: got %q, want AWAITING_METER", awaiting.Items[0].WorkflowStatus)
-	}
-	if ready.Items[0].WorkflowStatus != string(WorkflowReadyToComplete) {
-		t.Errorf("today workflow_status: got %q, want READY_TO_COMPLETE", ready.Items[0].WorkflowStatus)
-	}
 	if ready.Items[0].DaysUntil != 0 {
 		t.Errorf("today days_until: got %d, want 0", ready.Items[0].DaysUntil)
 	}
@@ -150,7 +144,7 @@ func TestMoveOutService_Queue_TruncatesSectionAtCap(t *testing.T) {
 					ID:                   uuid.New(),
 					NoticeDate:           today,
 					ScheduledMoveOutDate: today.AddDate(0, 0, 30+i),
-					Status:               MoveOutStatusPending,
+					Status:               MoveOutStatusPendingMeter,
 				},
 			},
 			HasExitMeter: false,
@@ -202,7 +196,7 @@ func TestMoveOutService_Queue_ScopeRouting(t *testing.T) {
 			MoveOutNotice: MoveOutNotice{
 				ID:                   uuid.New(),
 				ScheduledMoveOutDate: today,
-				Status:               MoveOutStatusPending,
+				Status:               MoveOutStatusPendingMeter,
 			},
 		},
 		HasExitMeter: true,

@@ -137,7 +137,7 @@ func (s *moveOutService) Queue(ctx context.Context, params MoveOutQueueParams) (
 		}
 		items := make([]MoveOutResponse, len(history))
 		for i, h := range history {
-			items[i] = ToMoveOutResponseWithQueue(h, false, today)
+			items[i] = ToMoveOutResponseWithQueue(h, today)
 		}
 		resp.History = MoveOutQueueSection{
 			Items:      items,
@@ -165,7 +165,7 @@ func buildQueueSection(notices []NoticeWithMeterFlag, today time.Time) MoveOutQu
 	}
 	items := make([]MoveOutResponse, len(capped))
 	for i, n := range capped {
-		items[i] = ToMoveOutResponseWithQueue(n.MoveOutWithRelations, n.HasExitMeter, today)
+		items[i] = ToMoveOutResponseWithQueue(n.MoveOutWithRelations, today)
 	}
 	return MoveOutQueueSection{
 		Items:      items,
@@ -253,7 +253,7 @@ func (s *moveOutService) Create(ctx context.Context, req CreateMoveOutRequest) (
 		ContractID:        contractID,
 		NoticeDate:        noticeDate,
 		ScheduledMoveOutDate: moveOutDate,
-		Status:            MoveOutStatusPending,
+		Status:            MoveOutStatusPendingMeter,
 		Note:              req.Note,
 	}
 
@@ -277,8 +277,8 @@ func (s *moveOutService) Update(ctx context.Context, id uuid.UUID, req UpdateMov
 	if err != nil {
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 	}
-	if !notice.IsPending() {
-		return nil, respond.ErrBadRequest.WithMessage(ErrNotPending.Error())
+	if !notice.IsPendingMeter() {
+		return nil, respond.ErrBadRequest.WithMessage(ErrNotPendingMeter.Error())
 	}
 
 	if req.ScheduledMoveOutDate != nil {
@@ -356,9 +356,9 @@ func (s *moveOutService) Complete(ctx context.Context, id uuid.UUID) (*MoveOutWi
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
-		if err := notice.Complete(); err != nil {
-			return respond.ErrBadRequest.WithMessage(err.Error())
-		}
+		// TODO(V2): replace with full Close() workflow (settlement + payment).
+		// For now, directly transition to COMPLETED to keep the old endpoint working.
+		notice.Status = MoveOutStatusCompleted
 		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
 		if err != nil {
 			return fmt.Errorf("find contract: %w", err)

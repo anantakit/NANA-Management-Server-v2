@@ -39,10 +39,10 @@ func NewRoomRepository(db *gorm.DB) RoomRepository {
 // Import cycle prevents referencing contract.ContractStatusActive / moveout.MoveOutStatusPending
 // directly (contract + moveout depend on room via ports). These mirror the owner's domain values —
 // if those ever change, update here. See cross-feature-patterns.md §3c "Display Read".
-const (
-	joinContractStatusActive = "ACTIVE"
-	joinMoveOutStatusPending = "PENDING"
-)
+const joinContractStatusActive = "ACTIVE"
+
+// Terminal move-out statuses excluded from display JOINs (level-1 logic leak).
+var joinMoveOutTerminalStatuses = []string{"COMPLETED", "CANCELLED"}
 
 func (r *roomRepository) FindByApartmentID(ctx context.Context, apartmentID uuid.UUID, params pagination.PaginationParams) ([]Room, int64, error) {
 	var total int64
@@ -117,7 +117,7 @@ func (r *roomRepository) FindByApartmentIDWithContracts(ctx context.Context, apa
 			TO_CHAR(move_out_notices.scheduled_move_out_date, 'YYYY-MM-DD') AS scheduled_move_out_date`).
 		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = ? AND contracts.deleted_at IS NULL", joinContractStatusActive).
 		Joins("LEFT JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
-		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL", joinMoveOutStatusPending).
+		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL", joinMoveOutTerminalStatuses).
 		Where("rooms.apartment_id = ? AND rooms.deleted_at IS NULL", apartmentID)
 
 	if params.Search != "" {
@@ -185,7 +185,7 @@ func (r *roomRepository) FindByIDWithContract(ctx context.Context, id uuid.UUID)
 			TO_CHAR(move_out_notices.scheduled_move_out_date, 'YYYY-MM-DD') AS scheduled_move_out_date`).
 		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = ? AND contracts.deleted_at IS NULL", joinContractStatusActive).
 		Joins("LEFT JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
-		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status = ? AND move_out_notices.deleted_at IS NULL", joinMoveOutStatusPending).
+		Joins("LEFT JOIN move_out_notices ON move_out_notices.contract_id = contracts.id AND move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL", joinMoveOutTerminalStatuses).
 		Where("rooms.id = ? AND rooms.deleted_at IS NULL", id).
 		Scan(&row).Error
 	if err != nil {

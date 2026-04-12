@@ -35,7 +35,6 @@ type MoveOutResponse struct {
 	TenantName        string  `json:"tenant_name,omitempty"`
 	RoomNumber        string  `json:"room_number,omitempty"`
 	ApartmentName     string  `json:"apartment_name,omitempty"`
-	WorkflowStatus    string  `json:"workflow_status,omitempty"`
 	Urgency           string  `json:"urgency,omitempty"`
 	// DaysUntil: no omitempty — 0 means "today" and must stay on the wire.
 	// Pointer would be cleaner but adds nil-checks across the frontend; the
@@ -102,12 +101,11 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 	}
 }
 
-// ToMoveOutResponseWithQueue enriches a base response with workflow_status,
-// urgency, and days_until — computed against the supplied "today". Used by
-// the queue endpoint where every item carries effective state.
-func ToMoveOutResponseWithQueue(m MoveOutWithRelations, hasExitMeter bool, today time.Time) MoveOutResponse {
+// ToMoveOutResponseWithQueue enriches a base response with urgency and
+// days_until — computed against the supplied "today". Used by the queue
+// endpoint where every item carries effective state.
+func ToMoveOutResponseWithQueue(m MoveOutWithRelations, today time.Time) MoveOutResponse {
 	resp := ToMoveOutResponse(m)
-	resp.WorkflowStatus = string(ComputeWorkflowStatus(m.Status, hasExitMeter))
 	resp.Urgency = string(ComputeUrgency(m.ScheduledMoveOutDate, today))
 	resp.DaysUntil = DaysUntil(m.ScheduledMoveOutDate, today)
 	return resp

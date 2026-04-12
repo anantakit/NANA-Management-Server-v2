@@ -158,7 +158,7 @@ func TestMoveOutService_Cancel_SoftDeletesExitReading(t *testing.T) {
 			return &MoveOutNotice{
 				ID:         id,
 				ContractID: contractID,
-				Status:     MoveOutStatusPending,
+				Status:     MoveOutStatusPendingMeter,
 			}, nil
 		},
 	}
@@ -261,7 +261,7 @@ func TestMoveOutService_Complete_HappyPath(t *testing.T) {
 				ID:                   id,
 				ContractID:           contractID,
 				ScheduledMoveOutDate: scheduledDate,
-				Status:               MoveOutStatusPending,
+				Status:               MoveOutStatusPendingMeter,
 			}, nil
 		},
 	}
