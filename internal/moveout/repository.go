@@ -48,6 +48,8 @@ func (r *moveOutRepository) baseJoinQuery(ctx context.Context) *gorm.DB {
 
 func (r *moveOutRepository) selectColumns() string {
 	return `move_out_notices.*,
+		contracts.room_id AS room_id,
+		rooms.apartment_id AS apartment_id,
 		tenants.full_name AS tenant_name,
 		rooms.number AS room_number,
 		apartments.name AS apartment_name`
@@ -55,14 +57,18 @@ func (r *moveOutRepository) selectColumns() string {
 
 type joinRow struct {
 	MoveOutNotice
-	TenantName    string `gorm:"column:tenant_name"`
-	RoomNumber    string `gorm:"column:room_number"`
-	ApartmentName string `gorm:"column:apartment_name"`
+	RoomID        uuid.UUID `gorm:"column:room_id"`
+	ApartmentID   uuid.UUID `gorm:"column:apartment_id"`
+	TenantName    string    `gorm:"column:tenant_name"`
+	RoomNumber    string    `gorm:"column:room_number"`
+	ApartmentName string    `gorm:"column:apartment_name"`
 }
 
 func rowToRelation(row joinRow) MoveOutWithRelations {
 	return MoveOutWithRelations{
 		MoveOutNotice: row.MoveOutNotice,
+		RoomID:        row.RoomID,
+		ApartmentID:   row.ApartmentID,
 		TenantName:    row.TenantName,
 		RoomNumber:    row.RoomNumber,
 		ApartmentName: row.ApartmentName,

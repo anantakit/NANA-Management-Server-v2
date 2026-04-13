@@ -3,6 +3,7 @@ package moveout
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"nana/internal/shared/pagination"
 )
 
@@ -36,6 +37,8 @@ type RecordPaymentOutcomeRequest struct {
 type MoveOutResponse struct {
 	ID                   string   `json:"id"`
 	ContractID           string   `json:"contract_id"`
+	RoomID               string   `json:"room_id,omitempty"`
+	ApartmentID          string   `json:"apartment_id,omitempty"`
 	NoticeDate           string   `json:"notice_date"`
 	ScheduledMoveOutDate string   `json:"scheduled_move_out_date"`
 	Status               string   `json:"status"`
@@ -87,6 +90,8 @@ type MoveOutQueueResponse struct {
 // MoveOutWithRelations is a projection for list/detail with joined data.
 type MoveOutWithRelations struct {
 	MoveOutNotice
+	RoomID        uuid.UUID
+	ApartmentID   uuid.UUID
 	TenantName    string
 	RoomNumber    string
 	ApartmentName string
@@ -107,6 +112,12 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 		ApartmentName:        m.ApartmentName,
 		CreatedAt:            m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:            m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	if m.RoomID != uuid.Nil {
+		resp.RoomID = m.RoomID.String()
+	}
+	if m.ApartmentID != uuid.Nil {
+		resp.ApartmentID = m.ApartmentID.String()
 	}
 	// V2 fields
 	if m.SettlementBillID != nil {
