@@ -173,6 +173,20 @@ if room.Status == VACANT { repo.UpdateStatus(id, OCCUPIED) }
 tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&room)
 ```
 
+## DTO Mapping Pitfalls
+
+- **Zero UUID from JOIN**: When SELECT includes UUID fields from JOINed tables (e.g. `contracts.room_id`), a soft-deleted or missing row produces `uuid.Nil`. The DTO `omitempty` tag does NOT help because `uuid.Nil.String()` returns `"00000000-..."` (non-empty string). Always guard before setting:
+
+```go
+// ❌ Sends "00000000-0000-..." when contract is soft-deleted
+resp.RoomID = m.RoomID.String()
+
+// ✅ Guard zero UUID — omitempty works correctly
+if m.RoomID != uuid.Nil {
+    resp.RoomID = m.RoomID.String()
+}
+```
+
 ## Testing Strategy (3-Layer)
 
 | Layer | What to test | Mocks? |
