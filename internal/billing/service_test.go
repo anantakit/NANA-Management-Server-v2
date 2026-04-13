@@ -117,6 +117,12 @@ func (m *mockBillingRepo) SumPaidByContractSince(ctx context.Context, contractID
 	}
 	return 0, nil
 }
+func (m *mockBillingRepo) DeleteLineItemsBySource(_ context.Context, _ uuid.UUID, _ LineItemSource) error {
+	return nil
+}
+func (m *mockBillingRepo) CreateLineItems(_ context.Context, _ []BillLineItem) error {
+	return nil
+}
 func (m *mockBillingRepo) CreateBatch(_ context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error {
 	m.createdBatch = batch
 	m.createdBatchItems = items

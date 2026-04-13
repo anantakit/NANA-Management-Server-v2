@@ -256,16 +256,16 @@ func TestMoveOutNotice_AdvanceToSettlement(t *testing.T) {
 	})
 }
 
-func TestMoveOutNotice_RecordSettlement(t *testing.T) {
+func TestMoveOutNotice_AttachDraft(t *testing.T) {
 	billID := uuid.New()
 
-	t.Run("PENDING_SETTLEMENT → PENDING_PAYMENT", func(t *testing.T) {
+	t.Run("PENDING_SETTLEMENT — attaches draft, stays PENDING_SETTLEMENT", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
-		if err := m.RecordSettlement(billID, 150000); err != nil {
+		if err := m.AttachDraft(billID, 150000); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if m.Status != MoveOutStatusPendingPayment {
-			t.Fatalf("expected PENDING_PAYMENT, got %s", m.Status)
+		if m.Status != MoveOutStatusPendingSettlement {
+			t.Fatalf("expected PENDING_SETTLEMENT (no change), got %s", m.Status)
 		}
 		if m.SettlementBillID == nil || *m.SettlementBillID != billID {
 			t.Fatal("settlement_bill_id not set")
@@ -277,8 +277,42 @@ func TestMoveOutNotice_RecordSettlement(t *testing.T) {
 
 	t.Run("wrong status rejects", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusPendingMeter}
-		if err := m.RecordSettlement(billID, 0); err != ErrCannotRecordSettlement {
+		if err := m.AttachDraft(billID, 0); err != ErrCannotRecordSettlement {
 			t.Fatalf("expected ErrCannotRecordSettlement, got %v", err)
+		}
+	})
+}
+
+func TestMoveOutNotice_AdvanceToPayment(t *testing.T) {
+	billID := uuid.New()
+
+	t.Run("PENDING_SETTLEMENT with bill → PENDING_PAYMENT", func(t *testing.T) {
+		m := &MoveOutNotice{
+			Status:           MoveOutStatusPendingSettlement,
+			SettlementBillID: &billID,
+		}
+		if err := m.AdvanceToPayment(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusPendingPayment {
+			t.Fatalf("expected PENDING_PAYMENT, got %s", m.Status)
+		}
+	})
+
+	t.Run("PENDING_SETTLEMENT without bill — rejects", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
+		if err := m.AdvanceToPayment(); err != ErrMissingSettlementBill {
+			t.Fatalf("expected ErrMissingSettlementBill, got %v", err)
+		}
+	})
+
+	t.Run("wrong status rejects", func(t *testing.T) {
+		m := &MoveOutNotice{
+			Status:           MoveOutStatusPendingMeter,
+			SettlementBillID: &billID,
+		}
+		if err := m.AdvanceToPayment(); err != ErrCannotAdvanceToPayment {
+			t.Fatalf("expected ErrCannotAdvanceToPayment, got %v", err)
 		}
 	})
 }

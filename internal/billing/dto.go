@@ -28,6 +28,18 @@ type VoidBillRequest struct {
 	Reason string `json:"reason" validate:"required,min=1,max=100"`
 }
 
+// UpdateSettlementDraftRequest replaces all MANUAL line items + note on a DRAFT settlement bill.
+type UpdateSettlementDraftRequest struct {
+	ManualItems []ManualLineItemRequest `json:"manual_items" validate:"dive"`
+	Note        *string                 `json:"note"`
+}
+
+type ManualLineItemRequest struct {
+	LineType    string  `json:"line_type" validate:"required"`
+	Description string  `json:"description" validate:"required,min=1,max=200"`
+	Amount      float64 `json:"amount" validate:"required"` // baht (converted to satang)
+}
+
 type BillListParams struct {
 	pagination.PaginationParams
 	ContractID  string `query:"contract_id"`
@@ -58,6 +70,7 @@ type BillSummaryResponse struct {
 type LineItemResponse struct {
 	ID          uuid.UUID `json:"id"`
 	LineType    string    `json:"line_type"`
+	Source      string    `json:"source"`
 	Description string    `json:"description"`
 	Amount      float64   `json:"amount"`
 	Quantity    int       `json:"quantity"`
@@ -273,6 +286,7 @@ func ToLineItemResponse(li BillLineItem) LineItemResponse {
 	return LineItemResponse{
 		ID:          li.ID,
 		LineType:    string(li.LineType),
+		Source:      string(li.Source),
 		Description: li.Description,
 		Amount:      money.ToBaht(li.Amount),
 		Quantity:    li.Quantity,

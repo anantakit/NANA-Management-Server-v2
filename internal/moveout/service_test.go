@@ -136,13 +136,18 @@ func (m *mockMeterCommander) DeleteExitByRoomID(_ context.Context, roomID uuid.U
 }
 
 type mockBillingCommander struct {
-	generateFn func(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
-	voidFn     func(ctx context.Context, billID uuid.UUID, reason string) error
+	generateFn     func(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
+	regenerateFn   func(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
+	finalizeFn     func(ctx context.Context, billID uuid.UUID) error
+	voidFn         func(ctx context.Context, billID uuid.UUID, reason string) error
 
-	generateCalls int
-	voidCalls     int
-	voidBillID    uuid.UUID
-	voidReason    string
+	generateCalls   int
+	regenerateCalls int
+	finalizeCalls   int
+	voidCalls       int
+	voidBillID      uuid.UUID
+	voidReason      string
+	finalizeBillID  uuid.UUID
 }
 
 var _ BillingCommander = (*mockBillingCommander)(nil)
@@ -157,6 +162,27 @@ func (m *mockBillingCommander) GenerateSettlement(ctx context.Context, contractI
 		NetAmount:   150000, // 1500 baht
 		DepositUsed: 500000, // 5000 baht
 	}, nil
+}
+
+func (m *mockBillingCommander) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error) {
+	m.regenerateCalls++
+	if m.regenerateFn != nil {
+		return m.regenerateFn(ctx, existingBillID, contractID, moveOutDate)
+	}
+	return &SettlementBillResult{
+		BillID:      uuid.New(),
+		NetAmount:   150000,
+		DepositUsed: 500000,
+	}, nil
+}
+
+func (m *mockBillingCommander) FinalizeSettlement(_ context.Context, billID uuid.UUID) error {
+	m.finalizeCalls++
+	m.finalizeBillID = billID
+	if m.finalizeFn != nil {
+		return m.finalizeFn(context.Background(), billID)
+	}
+	return nil
 }
 
 func (m *mockBillingCommander) VoidSettlement(_ context.Context, billID uuid.UUID, reason string) error {
@@ -244,8 +270,9 @@ func TestGenerateSettlement_HappyPath(t *testing.T) {
 	if h.billingCmd.generateCalls != 1 {
 		t.Errorf("GenerateSettlement calls: got %d, want 1", h.billingCmd.generateCalls)
 	}
-	if h.repo.updatedStatus != MoveOutStatusPendingPayment {
-		t.Errorf("status: got %q, want PENDING_PAYMENT", h.repo.updatedStatus)
+	// Stays in PENDING_SETTLEMENT (not PENDING_PAYMENT) — user must finalize separately
+	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
+		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
 	}
 	if h.repo.updatedNotice.SettlementBillID == nil {
 		t.Error("settlement_bill_id must be set")
@@ -365,6 +392,39 @@ func TestCancel_HappyPath_PendingMeter(t *testing.T) {
 	}
 }
 
+func TestFinalizeSettlement_HappyPath(t *testing.T) {
+	noticeID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(150000)
+
+	h := newTestHarness(uuid.New(), uuid.New())
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusPendingSettlement,
+			SettlementBillID: &billID,
+			NetAmount:        &netAmount,
+		}, nil
+	}
+
+	_, err := h.svc.FinalizeSettlement(context.Background(), noticeID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Bill must be finalized via port
+	if h.billingCmd.finalizeCalls != 1 {
+		t.Errorf("FinalizeSettlement calls: got %d, want 1", h.billingCmd.finalizeCalls)
+	}
+	if h.billingCmd.finalizeBillID != billID {
+		t.Errorf("FinalizeSettlement billID: got %v, want %v", h.billingCmd.finalizeBillID, billID)
+	}
+	// Status advances to PENDING_PAYMENT
+	if h.repo.updatedStatus != MoveOutStatusPendingPayment {
+		t.Errorf("status: got %q, want PENDING_PAYMENT", h.repo.updatedStatus)
+	}
+}
+
 // --- Correction command tests ---
 
 func TestUpdateExitMeter_PendingPayment_VoidsAndReverts(t *testing.T) {
@@ -407,7 +467,7 @@ func TestUpdateExitMeter_PendingPayment_VoidsAndReverts(t *testing.T) {
 	}
 }
 
-func TestUpdateExitMeter_PendingSettlement_NoOp(t *testing.T) {
+func TestUpdateExitMeter_PendingSettlement_NoDraft_NoOp(t *testing.T) {
 	noticeID := uuid.New()
 	h := newTestHarness(uuid.New(), uuid.New())
 	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
@@ -419,13 +479,53 @@ func TestUpdateExitMeter_PendingSettlement_NoOp(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// No void
+	// No void (no draft)
 	if h.billingCmd.voidCalls != 0 {
 		t.Errorf("VoidSettlement calls: got %d, want 0", h.billingCmd.voidCalls)
 	}
 	// Status stays PENDING_SETTLEMENT
 	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
 		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
+	}
+}
+
+func TestUpdateExitMeter_PendingSettlement_WithDraft_VoidsAndClears(t *testing.T) {
+	noticeID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(100000)
+
+	h := newTestHarness(uuid.New(), uuid.New())
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusPendingSettlement,
+			SettlementBillID: &billID,
+			NetAmount:        &netAmount,
+		}, nil
+	}
+
+	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Must void the draft
+	if h.billingCmd.voidCalls != 1 {
+		t.Errorf("VoidSettlement calls: got %d, want 1", h.billingCmd.voidCalls)
+	}
+	if h.billingCmd.voidBillID != billID {
+		t.Errorf("VoidSettlement billID: got %v, want %v", h.billingCmd.voidBillID, billID)
+	}
+	// Status stays PENDING_SETTLEMENT
+	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
+		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
+	}
+	// Fields cleared
+	if h.repo.updatedNotice.SettlementBillID != nil {
+		t.Error("settlement_bill_id must be nil after void")
+	}
+	if h.repo.updatedNotice.NetAmount != nil {
+		t.Error("net_amount must be nil after void")
 	}
 }
 
@@ -442,7 +542,7 @@ func TestRegenerateSettlement_HappyPath(t *testing.T) {
 			ID:                   id,
 			ContractID:           contractID,
 			ScheduledMoveOutDate: moveOutDate,
-			Status:               MoveOutStatusPendingPayment,
+			Status:               MoveOutStatusPendingSettlement,
 			SettlementBillID:     &oldBillID,
 			NetAmount:            &netAmount,
 		}, nil
@@ -453,20 +553,13 @@ func TestRegenerateSettlement_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Old bill voided
-	if h.billingCmd.voidCalls != 1 {
-		t.Errorf("VoidSettlement calls: got %d, want 1", h.billingCmd.voidCalls)
+	// Uses RegenerateSettlement port (void + generate + preserve MANUAL)
+	if h.billingCmd.regenerateCalls != 1 {
+		t.Errorf("RegenerateSettlement calls: got %d, want 1", h.billingCmd.regenerateCalls)
 	}
-	if h.billingCmd.voidBillID != oldBillID {
-		t.Errorf("VoidSettlement billID: got %v, want %v", h.billingCmd.voidBillID, oldBillID)
-	}
-	// New bill generated
-	if h.billingCmd.generateCalls != 1 {
-		t.Errorf("GenerateSettlement calls: got %d, want 1", h.billingCmd.generateCalls)
-	}
-	// Status stays PENDING_PAYMENT
-	if h.repo.updatedStatus != MoveOutStatusPendingPayment {
-		t.Errorf("status: got %q, want PENDING_PAYMENT (stays)", h.repo.updatedStatus)
+	// Status stays PENDING_SETTLEMENT
+	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
+		t.Errorf("status: got %q, want PENDING_SETTLEMENT (stays)", h.repo.updatedStatus)
 	}
 	// New bill ID is set (different from old)
 	if h.repo.updatedNotice.SettlementBillID == nil {

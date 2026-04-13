@@ -21,6 +21,7 @@ type MoveOutService interface {
 	// Forward commands
 	RecordExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	FinalizeSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error)
 	CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
@@ -206,8 +207,8 @@ func (s *moveOutService) RecordExitMeter(ctx context.Context, id uuid.UUID) (*Mo
 	return s.repo.FindByID(ctx, noticeID)
 }
 
-// GenerateSettlement creates a DRAFT settlement bill and advances
-// PENDING_SETTLEMENT → PENDING_PAYMENT. Snapshots at creation time (D1).
+// GenerateSettlement creates a DRAFT settlement bill and attaches it to the notice.
+// Stays in PENDING_SETTLEMENT — user must review/edit then finalize separately.
 // Invariant D9: 1 active (non-VOIDED) settlement draft per notice.
 func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
@@ -226,7 +227,7 @@ func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (
 			}
 			return fmt.Errorf("generate settlement: %w", err)
 		}
-		if err := notice.RecordSettlement(result.BillID, result.NetAmount); err != nil {
+		if err := notice.AttachDraft(result.BillID, result.NetAmount); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		if err := s.repo.Update(txCtx, notice); err != nil {
@@ -239,6 +240,42 @@ func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (
 			return nil, err
 		}
 		return nil, fmt.Errorf("generate settlement: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// FinalizeSettlement finalizes the DRAFT settlement bill and advances
+// PENDING_SETTLEMENT → PENDING_PAYMENT. Called after the user reviews the draft.
+func (s *moveOutService) FinalizeSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		if err := notice.CanAdvanceToPayment(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		// Finalize the bill via billing port
+		if err := s.billingCmd.FinalizeSettlement(txCtx, *notice.SettlementBillID); err != nil {
+			if _, ok := respond.Is(err); ok {
+				return err
+			}
+			return fmt.Errorf("finalize settlement: %w", err)
+		}
+		if err := notice.AdvanceToPayment(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("finalize settlement: %w", err)
 	}
 	return s.repo.FindByID(ctx, noticeID)
 }
@@ -352,8 +389,8 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 // --- Correction commands ---
 
 // UpdateExitMeter signals that the EXIT reading has been modified.
-// - PENDING_SETTLEMENT: no-op (settlement not yet generated)
-// - PENDING_PAYMENT: voids the settlement draft, reverts → PENDING_SETTLEMENT
+// - PENDING_SETTLEMENT: voids draft if exists, stays PENDING_SETTLEMENT
+// - PENDING_PAYMENT: voids settlement bill, reverts → PENDING_SETTLEMENT
 func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
@@ -363,7 +400,14 @@ func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*Mo
 		}
 		switch {
 		case notice.IsPendingSettlement():
-			// No state change — meter can be changed freely before settlement
+			// Void settlement draft if exists (meter data changed)
+			if notice.SettlementBillID != nil {
+				if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "EXIT_METER_UPDATED"); err != nil {
+					return fmt.Errorf("void settlement: %w", err)
+				}
+				notice.SettlementBillID = nil
+				notice.NetAmount = nil
+			}
 		case notice.IsPendingPayment():
 			// Void the settlement draft (D8)
 			if notice.SettlementBillID != nil {
@@ -392,7 +436,8 @@ func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*Mo
 }
 
 // RegenerateSettlement voids the current settlement draft and creates a new
-// one from fresh data. Stays in PENDING_PAYMENT.
+// one from fresh AUTO data, preserving MANUAL items + note.
+// Works from PENDING_SETTLEMENT when a draft is attached.
 func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
@@ -400,17 +445,11 @@ func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID)
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
-		if !notice.IsPendingPayment() {
-			return respond.ErrBadRequest.WithMessage("สร้างบิลใหม่ได้เฉพาะสถานะรอชำระ")
+		if err := notice.CanRegenerateDraft(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
-		// Void existing settlement (D8)
-		if notice.SettlementBillID != nil {
-			if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "REGENERATED"); err != nil {
-				return fmt.Errorf("void settlement: %w", err)
-			}
-		}
-		// Generate fresh settlement
-		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, notice.ScheduledMoveOutDate)
+		// Void + regenerate with MANUAL preservation
+		result, err := s.billingCmd.RegenerateSettlement(txCtx, *notice.SettlementBillID, notice.ContractID, notice.ScheduledMoveOutDate)
 		if err != nil {
 			if _, ok := respond.Is(err); ok {
 				return err

@@ -27,6 +27,7 @@ func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	// Forward commands
 	router.Post("/:id/record-exit-meter", h.RecordExitMeter)
 	router.Post("/:id/generate-settlement", h.GenerateSettlement)
+	router.Post("/:id/finalize-settlement", h.FinalizeSettlement)
 	router.Post("/:id/record-payment", h.RecordPaymentOutcome)
 	router.Post("/:id/close", h.CloseMoveOut)
 	router.Post("/:id/cancel", h.Cancel)
@@ -142,6 +143,20 @@ func (h *MoveOutHandler) GenerateSettlement(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "สร้างบิลสรุปสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) FinalizeSettlement(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.FinalizeSettlement(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "ยืนยันบิลสรุปยอดสำเร็จ", ToMoveOutResponse(*result))
 }
 
 func (h *MoveOutHandler) RecordPaymentOutcome(c fiber.Ctx) error {

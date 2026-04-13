@@ -35,6 +35,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Patch("/:id/finalize", h.Finalize)
 	r.Patch("/:id/void", h.Void)
 	r.Patch("/:id/paid", h.MarkPaid)
+	r.Patch("/:id/settlement-draft", h.UpdateSettlementDraft)
 }
 
 func (h *BillingHandler) List(c fiber.Ctx) error {
@@ -232,6 +233,25 @@ func (h *BillingHandler) ListBatches(c fiber.Ctx) error {
 	}
 	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
 	return respond.SuccessWithMeta(c, "สำเร็จ", resp, meta)
+}
+
+func (h *BillingHandler) UpdateSettlementDraft(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+
+	var req UpdateSettlementDraftRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	bill, err := h.svc.UpdateSettlementDraft(c.Context(), id, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "อัปเดตบิลสรุปยอดสำเร็จ", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) MarkPaid(c fiber.Ctx) error {

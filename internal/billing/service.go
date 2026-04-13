@@ -11,6 +11,7 @@ import (
 	"nana/internal/contract"
 	"nana/internal/moveout"
 	"nana/internal/shared/database"
+	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -46,8 +47,13 @@ type BillingService interface {
 	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 
+	// Settlement draft editing
+	UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest) (*BillWithRelations, error)
+
 	// Move-out workflow ports (satisfies moveout.BillingCommander)
 	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error)
+	RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error)
+	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
 	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
 }
 
@@ -344,6 +350,184 @@ func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithR
 	return s.repo.FindByIDWithRelations(ctx, b.ID)
 }
 
+// UpdateSettlementDraft replaces all MANUAL line items and updates the note
+// on a DRAFT settlement bill. AUTO items are untouched.
+func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest) (*BillWithRelations, error) {
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		b, err := s.repo.FindByID(txCtx, id)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrBillNotFound
+			}
+			return fmt.Errorf("find bill: %w", err)
+		}
+		if !b.IsDraft() {
+			return respond.ErrBadRequest.WithMessage(ErrNotDraft.Error())
+		}
+		if !b.IsSettlement() {
+			return respond.ErrBadRequest.WithMessage("แก้ไขได้เฉพาะบิลสรุปยอด")
+		}
+
+		// Delete existing MANUAL items
+		if err := s.repo.DeleteLineItemsBySource(txCtx, id, LineItemSourceManual); err != nil {
+			return fmt.Errorf("delete manual items: %w", err)
+		}
+
+		// Validate + build new MANUAL items (sort after AUTO)
+		for _, item := range req.ManualItems {
+			if !IsValidManualLineType(LineItemType(item.LineType)) {
+				return respond.ErrBadRequest.WithMessage(
+					fmt.Sprintf("ประเภทรายการ %q ไม่สามารถเพิ่มเองได้", item.LineType))
+			}
+		}
+		autoCount := 0
+		for _, li := range b.LineItems {
+			if li.IsAuto() {
+				autoCount++
+			}
+		}
+		baseOrder := autoCount + 1
+		var manualItems []BillLineItem
+		for i, item := range req.ManualItems {
+			manualItems = append(manualItems, BillLineItem{
+				BillID:      id,
+				LineType:    LineItemType(item.LineType),
+				Source:      LineItemSourceManual,
+				Description: item.Description,
+				Amount:      money.ToSatang(item.Amount),
+				SortOrder:   baseOrder + i,
+			})
+		}
+		if err := s.repo.CreateLineItems(txCtx, manualItems); err != nil {
+			return fmt.Errorf("create manual items: %w", err)
+		}
+
+		// Reload line items and recompute totals
+		reloaded, err := s.repo.FindByID(txCtx, id)
+		if err != nil {
+			return fmt.Errorf("reload bill: %w", err)
+		}
+		reloaded.CalculateTotal()
+		if req.Note != nil {
+			reloaded.Note = *req.Note
+		}
+		return s.repo.Update(txCtx, reloaded)
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("update settlement draft: %w", err)
+	}
+
+	return s.repo.FindByIDWithRelations(ctx, id)
+}
+
+// FinalizeSettlement recomputes totals from line items and marks the DRAFT
+// settlement bill as FINALIZED. Called by the move-out service via port.
+func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUID) error {
+	b, err := s.repo.FindByID(ctx, billID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrBillNotFound
+		}
+		return fmt.Errorf("find bill: %w", err)
+	}
+	if !b.IsSettlement() {
+		return respond.ErrBadRequest.WithMessage("ยืนยันได้เฉพาะบิลสรุปยอด")
+	}
+
+	// Recompute totals from source of truth
+	b.CalculateTotal()
+
+	if err := b.Finalize(); err != nil {
+		return respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	return s.repo.Update(ctx, b)
+}
+
+// RegenerateSettlement voids the existing draft, creates a new DRAFT with
+// fresh AUTO items, and preserves MANUAL items + note from the old bill.
+func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
+	// Load existing bill to extract MANUAL items + note
+	existing, err := s.repo.FindByID(ctx, existingBillID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrBillNotFound
+		}
+		return nil, fmt.Errorf("find existing bill: %w", err)
+	}
+	manualItems := existing.ManualItems()
+	note := existing.Note
+
+	// Void the existing bill
+	if err := existing.Void("REGENERATED"); err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	if err := s.repo.Update(ctx, existing); err != nil {
+		return nil, fmt.Errorf("void existing bill: %w", err)
+	}
+
+	// Generate fresh AUTO items
+	result, err := s.GenerateSettlement(ctx, contractID, moveOutDate)
+	if err != nil {
+		return nil, err
+	}
+
+	// Carry over MANUAL items + note to the new bill
+	if len(manualItems) > 0 || note != "" {
+		newBill, err := s.repo.FindByID(ctx, result.BillID)
+		if err != nil {
+			return nil, fmt.Errorf("reload new bill: %w", err)
+		}
+
+		// Assign MANUAL items to the new bill with correct sort order
+		autoCount := len(newBill.LineItems)
+		for i := range manualItems {
+			manualItems[i].ID = uuid.Nil // new row
+			manualItems[i].BillID = result.BillID
+			manualItems[i].SortOrder = autoCount + 1 + i
+		}
+		if err := s.repo.CreateLineItems(ctx, manualItems); err != nil {
+			return nil, fmt.Errorf("carry over manual items: %w", err)
+		}
+
+		// Reload + recompute with manual items included
+		newBill, err = s.repo.FindByID(ctx, result.BillID)
+		if err != nil {
+			return nil, fmt.Errorf("reload new bill: %w", err)
+		}
+		newBill.Note = note
+		newBill.CalculateTotal()
+		if err := s.repo.Update(ctx, newBill); err != nil {
+			return nil, fmt.Errorf("update new bill: %w", err)
+		}
+
+		// Recompute net amount with manual items included
+		updated := toSettlementResult(result.BillID, newBill.TotalAmount, newBill.DepositAmount)
+		result.NetAmount = updated.NetAmount
+		result.DepositUsed = updated.DepositUsed
+	}
+
+	return result, nil
+}
+
+// toSettlementResult computes net amount and deposit used from bill totals.
+func toSettlementResult(billID uuid.UUID, totalAmount, depositAmount int64) *moveout.SettlementBillResult {
+	netAmount := totalAmount - depositAmount
+	depositUsed := depositAmount
+	if totalAmount < depositAmount {
+		depositUsed = totalAmount
+	}
+	if depositUsed < 0 {
+		depositUsed = 0
+	}
+	return &moveout.SettlementBillResult{
+		BillID:      billID,
+		NetAmount:   netAmount,
+		DepositUsed: depositUsed,
+	}
+}
+
 // --- Private helpers ---
 
 // addProrateRent adds PRORATE_RENT line if move-out crosses into a month not yet paid.
@@ -541,21 +725,7 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 		return nil, fmt.Errorf("create settlement bill: %w", err)
 	}
 
-	// Compute net amount and deposit used
-	netAmount := bill.TotalAmount - bill.DepositAmount
-	depositUsed := bill.DepositAmount
-	if bill.TotalAmount < bill.DepositAmount {
-		depositUsed = bill.TotalAmount
-	}
-	if depositUsed < 0 {
-		depositUsed = 0
-	}
-
-	return &moveout.SettlementBillResult{
-		BillID:      bill.ID,
-		NetAmount:   netAmount,
-		DepositUsed: depositUsed,
-	}, nil
+	return toSettlementResult(bill.ID, bill.TotalAmount, bill.DepositAmount), nil
 }
 
 // VoidSettlement marks a settlement bill as VOIDED with the given reason.

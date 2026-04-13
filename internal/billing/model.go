@@ -43,6 +43,26 @@ const (
 	LineItemOther         LineItemType = "OTHER"
 )
 
+// validManualLineTypes are the line types allowed for user-added MANUAL items.
+var validManualLineTypes = map[LineItemType]bool{
+	LineItemCleaningFee: true,
+	LineItemKeyService:  true,
+	LineItemPenalty:     true,
+	LineItemOther:       true,
+}
+
+// IsValidManualLineType returns true if the type can be used for MANUAL items.
+func IsValidManualLineType(lt LineItemType) bool {
+	return validManualLineTypes[lt]
+}
+
+type LineItemSource string
+
+const (
+	LineItemSourceAuto   LineItemSource = "AUTO"
+	LineItemSourceManual LineItemSource = "MANUAL"
+)
+
 // --- Domain errors ---
 
 var (
@@ -86,16 +106,21 @@ func (b *Bill) BeforeCreate(tx *gorm.DB) error {
 }
 
 type BillLineItem struct {
-	ID          uuid.UUID    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	BillID      uuid.UUID    `gorm:"type:uuid;not null" json:"bill_id"`
-	LineType    LineItemType `gorm:"type:varchar(30);not null" json:"line_type"`
-	Description string       `gorm:"type:text;not null;default:''" json:"description"`
-	Amount      int64        `gorm:"not null" json:"amount"`
-	Quantity    int          `gorm:"not null;default:0" json:"quantity"`
-	UnitPrice   int64        `gorm:"not null;default:0" json:"unit_price"`
-	SortOrder   int          `gorm:"not null;default:0" json:"sort_order"`
-	CreatedAt   time.Time    `gorm:"not null;default:now()" json:"created_at"`
+	ID          uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	BillID      uuid.UUID      `gorm:"type:uuid;not null" json:"bill_id"`
+	LineType    LineItemType   `gorm:"type:varchar(30);not null" json:"line_type"`
+	Source      LineItemSource `gorm:"type:varchar(10);not null;default:'AUTO'" json:"source"`
+	Description string         `gorm:"type:text;not null;default:''" json:"description"`
+	Amount      int64          `gorm:"not null" json:"amount"`
+	Quantity    int            `gorm:"not null;default:0" json:"quantity"`
+	UnitPrice   int64          `gorm:"not null;default:0" json:"unit_price"`
+	SortOrder   int            `gorm:"not null;default:0" json:"sort_order"`
+	CreatedAt   time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt   time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 }
+
+func (li *BillLineItem) IsAuto() bool   { return li.Source == LineItemSourceAuto }
+func (li *BillLineItem) IsManual() bool { return li.Source == LineItemSourceManual }
 
 func (BillLineItem) TableName() string { return "bill_line_items" }
 
@@ -219,6 +244,7 @@ func (b *Bill) CreditsTotal() int64 {
 func NewRoomRentLine(monthlyRent int64, description string, order int) BillLineItem {
 	return BillLineItem{
 		LineType:    LineItemRoomRent,
+		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      monthlyRent,
 		SortOrder:   order,
@@ -228,6 +254,7 @@ func NewRoomRentLine(monthlyRent int64, description string, order int) BillLineI
 func NewElectricityLine(units int, ratePerUnit int64, description string, order int) BillLineItem {
 	return BillLineItem{
 		LineType:    LineItemElectricity,
+		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      int64(units) * ratePerUnit,
 		Quantity:    units,
@@ -239,6 +266,7 @@ func NewElectricityLine(units int, ratePerUnit int64, description string, order 
 func NewWaterLine(units int, ratePerUnit int64, description string, order int) BillLineItem {
 	return BillLineItem{
 		LineType:    LineItemWater,
+		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      int64(units) * ratePerUnit,
 		Quantity:    units,
@@ -251,6 +279,7 @@ func NewProrateRentLine(daysUsed, daysInMonth int, monthlyRent int64, descriptio
 	amount := monthlyRent * int64(daysUsed) / int64(daysInMonth)
 	return BillLineItem{
 		LineType:    LineItemProrateRent,
+		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      amount,
 		Quantity:    daysUsed,
@@ -262,6 +291,7 @@ func NewProrateRentLine(daysUsed, daysInMonth int, monthlyRent int64, descriptio
 func NewFeeLine(lineType LineItemType, amount int64, description string, order int) BillLineItem {
 	return BillLineItem{
 		LineType:    lineType,
+		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      amount,
 		SortOrder:   order,
@@ -271,10 +301,33 @@ func NewFeeLine(lineType LineItemType, amount int64, description string, order i
 func NewPrepaidCreditLine(amount int64, description string, order int) BillLineItem {
 	return BillLineItem{
 		LineType:    LineItemPrepaidCredit,
+		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      -amount, // negative = credit
 		SortOrder:   order,
 	}
+}
+
+// NewManualLine creates a user-added line item (editable, preserved on regenerate).
+func NewManualLine(lineType LineItemType, amount int64, description string, order int) BillLineItem {
+	return BillLineItem{
+		LineType:    lineType,
+		Source:      LineItemSourceManual,
+		Description: description,
+		Amount:      amount,
+		SortOrder:   order,
+	}
+}
+
+// ManualItems returns only MANUAL line items from the bill.
+func (b *Bill) ManualItems() []BillLineItem {
+	var items []BillLineItem
+	for _, li := range b.LineItems {
+		if li.IsManual() {
+			items = append(items, li)
+		}
+	}
+	return items
 }
 
 // --- Bill generation batch ---
@@ -404,6 +457,7 @@ func (s *ComputedSnapshot) ToLineItems(billID uuid.UUID) []BillLineItem {
 		items = append(items, BillLineItem{
 			BillID:      billID,
 			LineType:    li.Type,
+			Source:      LineItemSourceAuto,
 			Description: li.Description,
 			Amount:      li.Amount,
 			Quantity:    li.Quantity,

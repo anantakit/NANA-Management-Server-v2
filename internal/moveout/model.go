@@ -68,6 +68,7 @@ var (
 	ErrDateOrderInvalid       = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันแจ้ง")
 	ErrCannotCancel            = errors.New("ยกเลิกได้เฉพาะสถานะรอจดมิเตอร์หรือรอสร้างบิล")
 	ErrCannotRecordSettlement  = errors.New("สร้างบิลได้เฉพาะสถานะรอสร้างบิล")
+	ErrCannotAdvanceToPayment  = errors.New("ยืนยันบิลได้เฉพาะสถานะรอสร้างบิลที่มีบิลแนบแล้ว")
 	ErrCannotRecordPayment     = errors.New("บันทึกชำระได้เฉพาะสถานะรอชำระ")
 	ErrCannotClose             = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
 	ErrMissingSettlementBill   = errors.New("ต้องมีบิลสรุปก่อนปิด")
@@ -118,10 +119,34 @@ func (m *MoveOutNotice) CanAdvanceToSettlement() error {
 	return nil
 }
 
-// CanRecordSettlement returns nil if a settlement bill can be attached.
+// CanRecordSettlement returns nil if a settlement draft can be generated/attached.
 func (m *MoveOutNotice) CanRecordSettlement() error {
 	if !m.IsPendingSettlement() {
 		return ErrCannotRecordSettlement
+	}
+	return nil
+}
+
+// CanAdvanceToPayment returns nil if the notice can move to PENDING_PAYMENT.
+// Requires PENDING_SETTLEMENT with a settlement bill attached.
+func (m *MoveOutNotice) CanAdvanceToPayment() error {
+	if !m.IsPendingSettlement() {
+		return ErrCannotAdvanceToPayment
+	}
+	if m.SettlementBillID == nil {
+		return ErrMissingSettlementBill
+	}
+	return nil
+}
+
+// CanRegenerateDraft returns nil if the settlement draft can be regenerated.
+// Requires PENDING_SETTLEMENT with a draft already attached.
+func (m *MoveOutNotice) CanRegenerateDraft() error {
+	if !m.IsPendingSettlement() {
+		return ErrCannotRecordSettlement
+	}
+	if m.SettlementBillID == nil {
+		return ErrMissingSettlementBill
 	}
 	return nil
 }
@@ -159,13 +184,21 @@ func (m *MoveOutNotice) AdvanceToSettlement() error {
 	return nil
 }
 
-// RecordSettlement attaches the settlement bill and moves → PENDING_PAYMENT.
-func (m *MoveOutNotice) RecordSettlement(billID uuid.UUID, netAmount int64) error {
+// AttachDraft attaches a settlement draft bill. Stays in PENDING_SETTLEMENT.
+func (m *MoveOutNotice) AttachDraft(billID uuid.UUID, netAmount int64) error {
 	if err := m.CanRecordSettlement(); err != nil {
 		return err
 	}
 	m.SettlementBillID = &billID
 	m.NetAmount = &netAmount
+	return nil
+}
+
+// AdvanceToPayment moves PENDING_SETTLEMENT → PENDING_PAYMENT after bill finalize.
+func (m *MoveOutNotice) AdvanceToPayment() error {
+	if err := m.CanAdvanceToPayment(); err != nil {
+		return err
+	}
 	m.Status = MoveOutStatusPendingPayment
 	return nil
 }

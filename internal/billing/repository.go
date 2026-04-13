@@ -26,6 +26,8 @@ type BillingRepository interface {
 	FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
 	Create(ctx context.Context, bill *Bill) error
 	Update(ctx context.Context, bill *Bill) error
+	DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source LineItemSource) error
+	CreateLineItems(ctx context.Context, items []BillLineItem) error
 	SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, sinceMonth string) (int64, error)
 
 	CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error
@@ -455,6 +457,21 @@ func (r *billingRepository) UpdateBatchCommitStatus(ctx context.Context, batchID
 			"commit_status": status,
 			"committed_at":  committedAt,
 		}).Error
+}
+
+// DeleteLineItemsBySource removes all line items with the given source from a bill.
+func (r *billingRepository) DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source LineItemSource) error {
+	return database.DB(ctx, r.db).
+		Where("bill_id = ? AND source = ?", billID, source).
+		Delete(&BillLineItem{}).Error
+}
+
+// CreateLineItems batch-inserts line items.
+func (r *billingRepository) CreateLineItems(ctx context.Context, items []BillLineItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	return database.DB(ctx, r.db).Create(&items).Error
 }
 
 // GetSummary returns aggregate bill counts and total amount, filtered by apartment + month.

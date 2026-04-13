@@ -48,13 +48,22 @@ type SettlementBillResult struct {
 	DepositUsed int64 // satang: how much deposit was consumed by charges
 }
 
-// BillingCommander generates and voids settlement bills.
+// BillingCommander generates, regenerates, finalizes, and voids settlement bills.
 // Implemented by billing.BillingService; injected via main.go.
 type BillingCommander interface {
 	// GenerateSettlement creates a DRAFT settlement bill for the given contract
-	// and move-out date. Snapshots line items at creation time (D1).
+	// and move-out date. Snapshots AUTO line items at creation time.
 	// Must be called within the caller's transaction context.
 	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
+
+	// RegenerateSettlement voids the existing draft, creates a new DRAFT with
+	// fresh AUTO items, and preserves any MANUAL items + note from the old bill.
+	// Must be called within the caller's transaction context.
+	RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
+
+	// FinalizeSettlement recomputes totals and marks the DRAFT bill as FINALIZED.
+	// Must be called within the caller's transaction context.
+	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
 
 	// VoidSettlement marks a settlement bill as VOIDED with the given reason.
 	// Must be called within the caller's transaction context.
