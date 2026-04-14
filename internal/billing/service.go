@@ -252,12 +252,12 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 	elecUnits := exitReading.ElectricityUsed()
 	items = append(items,
 		NewWaterLine(waterUnits, c.WaterRatePerUnit,
-			fmt.Sprintf("ค่าน้ำ %d หน่วย (ย้ายออก)", waterUnits), order),
+			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order),
 	)
 	order++
 	items = append(items,
 		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
+			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order),
 	)
 	order++
 
@@ -607,7 +607,7 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 		return items, order, false, nil
 	}
 
-	desc := fmt.Sprintf("ค่าห้อง %d วัน (คิดตามสัดส่วน)", usedDays)
+	desc := fmt.Sprintf("ค่าห้อง %d วัน", usedDays)
 	items = append(items, NewProrateRentLine(usedDays, totalDays, c.MonthlyRent, desc, order))
 	order++
 	return items, order, false, nil
@@ -739,12 +739,12 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	elecUnits := exitReading.ElectricityUsed()
 	items = append(items,
 		NewWaterLine(waterUnits, c.WaterRatePerUnit,
-			fmt.Sprintf("ค่าน้ำ %d หน่วย (ย้ายออก)", waterUnits), order),
+			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order),
 	)
 	order++
 	items = append(items,
 		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
+			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order),
 	)
 	order++
 
