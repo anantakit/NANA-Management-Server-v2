@@ -243,17 +243,17 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 	// Pro-rate rent (cross-month only)
 	items, order = s.addProrateRent(items, order, c, moveOutDate)
 
-	// Electricity + Water from EXIT reading
-	elecUnits := exitReading.ElectricityUsed()
+	// Water + Electricity from EXIT reading
 	waterUnits := exitReading.WaterUsed()
-	items = append(items,
-		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
-	)
-	order++
+	elecUnits := exitReading.ElectricityUsed()
 	items = append(items,
 		NewWaterLine(waterUnits, c.WaterRatePerUnit,
 			fmt.Sprintf("ค่าน้ำ %d หน่วย (ย้ายออก)", waterUnits), order),
+	)
+	order++
+	items = append(items,
+		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
+			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
 	)
 	order++
 
@@ -275,7 +275,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		BillingMonth:  billingMonth,
 		BillType:      BillTypeSettlement,
 		Status:        BillStatusDraft,
-		DepositAmount: c.DepositAmount,
+		DepositAmount: effectiveDeposit(c, moveOutDate),
 		LineItems:     items,
 	}
 	bill.CalculateTotal()
@@ -511,6 +511,53 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	return result, nil
 }
 
+// addMonthsClamped adds N months (positive) to a date, clamping to end-of-month.
+// e.g. Jan 31 + 1 month = Feb 28 (not Mar 3 like Go's AddDate).
+// Only tested/used with months >= 1. Caller must guard months <= 0.
+func addMonthsClamped(start time.Time, months int) time.Time {
+	year, month, day := start.Date()
+	loc := start.Location()
+
+	totalMonths := int(month) - 1 + months
+	targetYear := year + totalMonths/12
+	targetMonth := time.Month(totalMonths%12 + 1)
+	if totalMonths < 0 && totalMonths%12 != 0 {
+		targetYear--
+		targetMonth = time.Month(totalMonths%12 + 13)
+	}
+
+	lastDay := time.Date(targetYear, targetMonth+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	if day > lastDay {
+		day = lastDay
+	}
+
+	return time.Date(targetYear, targetMonth, day,
+		start.Hour(), start.Minute(), start.Second(), start.Nanosecond(), loc)
+}
+
+// isDepositReturnable checks if the tenant stayed at least MinMonths from start date.
+// Uses calendar-month clamp: Jan 31 + 1 month = Feb 28 (not Mar 3).
+// Edge cases (e.g. 1 day short) are handled by admin override at the UI layer.
+func isDepositReturnable(startDate time.Time, moveOutDate time.Time, minMonths int) bool {
+	if moveOutDate.Before(startDate) {
+		return false
+	}
+	if minMonths <= 0 {
+		return true
+	}
+	eligibleAt := addMonthsClamped(startDate, minMonths)
+	return !moveOutDate.Before(eligibleAt)
+}
+
+// effectiveDeposit returns the deposit amount to use in settlement.
+// Returns 0 if tenant left before MinMonths (deposit forfeited).
+func effectiveDeposit(c *contract.Contract, moveOutDate time.Time) int64 {
+	if !isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths) {
+		return 0
+	}
+	return c.DepositAmount
+}
+
 // toSettlementResult computes net amount and deposit used from bill totals.
 func toSettlementResult(billID uuid.UUID, totalAmount, depositAmount int64) *moveout.SettlementBillResult {
 	netAmount := totalAmount - depositAmount
@@ -680,17 +727,17 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	// Pro-rate rent
 	items, order = s.addProrateRent(items, order, c, moveOutDate)
 
-	// Electricity + Water from EXIT reading
-	elecUnits := exitReading.ElectricityUsed()
+	// Water + Electricity from EXIT reading
 	waterUnits := exitReading.WaterUsed()
-	items = append(items,
-		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
-	)
-	order++
+	elecUnits := exitReading.ElectricityUsed()
 	items = append(items,
 		NewWaterLine(waterUnits, c.WaterRatePerUnit,
 			fmt.Sprintf("ค่าน้ำ %d หน่วย (ย้ายออก)", waterUnits), order),
+	)
+	order++
+	items = append(items,
+		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
+			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย (ย้ายออก)", elecUnits), order),
 	)
 	order++
 
@@ -712,7 +759,7 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 		BillingMonth:  billingMonth,
 		BillType:      BillTypeSettlement,
 		Status:        BillStatusDraft,
-		DepositAmount: c.DepositAmount,
+		DepositAmount: effectiveDeposit(c, moveOutDate),
 		LineItems:     items,
 	}
 	bill.CalculateTotal()

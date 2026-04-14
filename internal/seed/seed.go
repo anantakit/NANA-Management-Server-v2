@@ -6,6 +6,7 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/auth"
+	"nana/internal/billingconfig"
 	"nana/internal/room"
 	"nana/internal/shared/role"
 	"nana/internal/tenant"
@@ -37,6 +38,9 @@ func Run(db *gorm.DB, env string) error {
 	}
 	if err := seedRooms(db); err != nil {
 		return fmt.Errorf("seed rooms: %w", err)
+	}
+	if err := seedBillingConfigs(db); err != nil {
+		return fmt.Errorf("seed billing configs: %w", err)
 	}
 	if err := seedAdminUser(db); err != nil {
 		return fmt.Errorf("seed admin user: %w", err)
@@ -216,6 +220,44 @@ func rangeRooms(prefix string, start, end int, roomType room.RoomType, floor int
 		})
 	}
 	return rooms
+}
+
+// seedBillingConfigs ensures every apartment has a CLEANING_FEE config (฿300).
+// This is a production default — ค่าทำความสะอาดเรียกเก็บทุกครั้งที่ย้ายออก.
+func seedBillingConfigs(db *gorm.DB) error {
+	var apartments []apartment.Apartment
+	if err := db.Find(&apartments).Error; err != nil {
+		return fmt.Errorf("find apartments: %w", err)
+	}
+
+	created := 0
+	for _, apt := range apartments {
+		var count int64
+		if err := db.Model(&billingconfig.BillingConfig{}).
+			Where("apartment_id = ? AND fee_type = ?", apt.ID, billingconfig.FeeTypeCleaningFee).
+			Count(&count).Error; err != nil {
+			return fmt.Errorf("check billing config: %w", err)
+		}
+		if count > 0 {
+			continue
+		}
+
+		cfg := billingconfig.BillingConfig{
+			ApartmentID:   apt.ID,
+			FeeType:       billingconfig.FeeTypeCleaningFee,
+			DefaultAmount: 30000, // ฿300
+			IsActive:      true,
+		}
+		if err := db.Create(&cfg).Error; err != nil {
+			return fmt.Errorf("create billing config for %s: %w", apt.Name, err)
+		}
+		created++
+	}
+
+	if created > 0 {
+		slog.Info("seeded billing configs", "count", created)
+	}
+	return nil
 }
 
 func seedAdminUser(db *gorm.DB) error {

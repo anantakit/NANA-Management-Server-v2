@@ -1263,3 +1263,118 @@ func TestBatch_ComputeStatus(t *testing.T) {
 		})
 	}
 }
+
+// --- Deposit eligibility ---
+
+func TestIsDepositReturnable(t *testing.T) {
+	start := time.Date(2026, 1, 20, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		moveOut   time.Time
+		minMonths int
+		want      bool
+	}{
+		// Exact boundary: start=Jan 20, min=6 → must reach Jul 20
+		{"exact day — eligible", time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC), 6, true},
+		{"one day before — not eligible", time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC), 6, false},
+		{"one day after — eligible", time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC), 6, true},
+
+		// Well before / well after
+		{"3 months — not eligible", time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC), 6, false},
+		{"12 months — eligible", time.Date(2027, 1, 20, 0, 0, 0, 0, time.UTC), 6, true},
+
+		// minMonths = 0 → always eligible
+		{"zero min — same day eligible", start, 0, true},
+
+		// Same day = not eligible (0 months stayed, need 6)
+		{"same day — not eligible", start, 6, false},
+
+		// End-of-month tested separately below (different start date)
+
+		// moveOut before start = not eligible (data anomaly guard)
+		{"moveOut before start — not eligible", time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), 6, false},
+
+		// Cross-year
+		{"cross year — eligible", time.Date(2027, 1, 20, 0, 0, 0, 0, time.UTC), 12, true},
+		{"cross year — not eligible", time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC), 12, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isDepositReturnable(start, tt.moveOut, tt.minMonths)
+			if got != tt.want {
+				t.Errorf("isDepositReturnable(%s, %s, %d) = %v, want %v",
+					start.Format("2006-01-02"), tt.moveOut.Format("2006-01-02"), tt.minMonths, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsDepositReturnable_EndOfMonth(t *testing.T) {
+	// Jan 31 + 1 month = Feb 28 (clamped, not Mar 3)
+	t.Run("Jan31+1m: Feb 27 — not eligible", func(t *testing.T) {
+		start := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+		if isDepositReturnable(start, time.Date(2026, 2, 27, 0, 0, 0, 0, time.UTC), 1) {
+			t.Error("expected false")
+		}
+	})
+	t.Run("Jan31+1m: Feb 28 — eligible", func(t *testing.T) {
+		start := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+		if !isDepositReturnable(start, time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC), 1) {
+			t.Error("expected true")
+		}
+	})
+	// Aug 31 + 1 month = Sep 30
+	t.Run("Aug31+1m: Sep 29 — not eligible", func(t *testing.T) {
+		start := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
+		if isDepositReturnable(start, time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC), 1) {
+			t.Error("expected false")
+		}
+	})
+	t.Run("Aug31+1m: Sep 30 — eligible", func(t *testing.T) {
+		start := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
+		if !isDepositReturnable(start, time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), 1) {
+			t.Error("expected true")
+		}
+	})
+	// Leap year: Jan 31 + 1 month = Feb 29 in 2024
+	t.Run("Jan31+1m leap year: Feb 29 — eligible", func(t *testing.T) {
+		start := time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC)
+		if !isDepositReturnable(start, time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC), 1) {
+			t.Error("expected true")
+		}
+	})
+	t.Run("Jan31+1m leap year: Feb 28 — not eligible", func(t *testing.T) {
+		start := time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC)
+		if isDepositReturnable(start, time.Date(2024, 2, 28, 0, 0, 0, 0, time.UTC), 1) {
+			t.Error("expected false")
+		}
+	})
+}
+
+func TestEffectiveDeposit(t *testing.T) {
+	t.Run("eligible — returns full deposit", func(t *testing.T) {
+		c := &contract.Contract{
+			StartDate:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			MinMonths:     6,
+			DepositAmount: 300000, // ฿3,000
+		}
+		moveOut := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		if got := effectiveDeposit(c, moveOut); got != 300000 {
+			t.Errorf("got %d, want 300000", got)
+		}
+	})
+
+	t.Run("not eligible — returns zero", func(t *testing.T) {
+		c := &contract.Contract{
+			StartDate:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			MinMonths:     6,
+			DepositAmount: 300000,
+		}
+		moveOut := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+		if got := effectiveDeposit(c, moveOut); got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+}
