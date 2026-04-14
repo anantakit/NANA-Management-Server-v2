@@ -25,6 +25,7 @@ type mockBillingRepo struct {
 	findActiveContractsByApartmentIDFn  func(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
 	findExistingByContractsAndMonthFn   func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
 	sumPaidFn                           func(ctx context.Context, contractID uuid.UUID, since string) (int64, error)
+	hasPaidAdvanceRentFn                func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
 	createFn                            func(ctx context.Context, bill *Bill) error
 	updateFn                            func(ctx context.Context, bill *Bill) error
 	apartmentID                         uuid.UUID
@@ -116,6 +117,12 @@ func (m *mockBillingRepo) SumPaidByContractSince(ctx context.Context, contractID
 		return m.sumPaidFn(ctx, contractID, since)
 	}
 	return 0, nil
+}
+func (m *mockBillingRepo) HasPaidAdvanceRentForMonth(ctx context.Context, contractID uuid.UUID, month string) (bool, error) {
+	if m.hasPaidAdvanceRentFn != nil {
+		return m.hasPaidAdvanceRentFn(ctx, contractID, month)
+	}
+	return false, nil
 }
 func (m *mockBillingRepo) DeleteLineItemsBySource(_ context.Context, _ uuid.UUID, _ LineItemSource) error {
 	return nil
@@ -445,320 +452,635 @@ func TestCreateMonthlyBill_MeterMonthMismatch(t *testing.T) {
 }
 
 // ============================================================
-// Settlement Bill Tests
+// Settlement Bill Tests — table-driven per production spec (TC01–TC25)
 // ============================================================
 
-func TestCreateSettlementBill_HappyPath_CrossMonth(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-	exitReading := testExitReading(c.RoomID, moveOutDate)
+// --- Settlement test helpers ---
 
-	repo := &mockBillingRepo{apartmentID: uuid.New()}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{configs: []billingconfig.BillingConfig{
-			{FeeType: billingconfig.FeeTypeCleaningFee, DefaultAmount: 50000, IsActive: true},
-			{FeeType: billingconfig.FeeTypeKeyService, DefaultAmount: 20000, IsActive: true},
-		}},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
+// runSettlement creates a settlement bill with the given overrides and returns the created bill.
+func runSettlement(t *testing.T, opts ...func(*settlementOpts)) *Bill {
+	t.Helper()
+	o := newSettlementOpts()
+	for _, fn := range opts {
+		fn(o)
+	}
+	// Sync meter + notice to moveOutDate
+	o.repo.apartmentID = uuid.New()
+	meters := &mockMeterQuerier{reading: testExitReading(o.contract.RoomID, o.moveOut)}
+	notice := completedNotice(o.contract.ID, o.moveOut)
 
-	bill, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
+	svc := newSvc(o.repo, &mockContractQuerier{contract: o.contract},
+		meters, o.configs, &mockMoveOutQuerier{notice: notice})
+
+	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
+		ContractID: o.contract.ID.String(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if bill.BillType != BillTypeSettlement {
-		t.Fatalf("expected SETTLEMENT, got %s", bill.BillType)
+	if o.repo.createdBill == nil {
+		t.Fatal("no bill created")
 	}
-
-	created := repo.createdBill
-	if created.BillingMonth != "2026-04" {
-		t.Fatalf("billing_month = %s, want 2026-04 (ExitMonth)", created.BillingMonth)
-	}
-	if created.DepositAmount != c.DepositAmount {
-		t.Fatalf("deposit = %d, want %d", created.DepositAmount, c.DepositAmount)
-	}
-
-	types := lineItemTypes(created.LineItems)
-	expectTypes(t, types, LineItemProrateRent, LineItemElectricity, LineItemWater, LineItemCleaningFee, LineItemKeyService)
-
-	prorate := findLineByType(created.LineItems, LineItemProrateRent)
-	if prorate.Amount != 250000 {
-		t.Errorf("prorate = %d, want 250000 (15/30 × 500000)", prorate.Amount)
-	}
+	return o.repo.createdBill
 }
 
-func TestCreateSettlementBill_SameMonthExit_NoProrate(t *testing.T) {
+type settlementOpts struct {
+	contract *contract.Contract
+	moveOut  time.Time
+	repo     *mockBillingRepo
+	configs  *mockConfigQuerier
+}
+
+func newSettlementOpts() *settlementOpts {
 	c := testContract()
 	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC)
-	exitReading := testExitReading(c.RoomID, moveOutDate)
-
-	repo := &mockBillingRepo{apartmentID: uuid.New()}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
-
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	created := repo.createdBill
-	types := lineItemTypes(created.LineItems)
-	if types[LineItemProrateRent] {
-		t.Error("should NOT have PRORATE_RENT when move-out on last day of month")
-	}
-	expectTypes(t, types, LineItemElectricity, LineItemWater)
-}
-
-func TestCreateSettlementBill_WithPrepaidCredit(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-	exitReading := testExitReading(c.RoomID, moveOutDate)
-
-	repo := &mockBillingRepo{
-		apartmentID: uuid.New(),
-		sumPaidFn: func(_ context.Context, _ uuid.UUID, _ string) (int64, error) {
-			return 638000, nil
-		},
-	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
-
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	created := repo.createdBill
-	types := lineItemTypes(created.LineItems)
-	if !types[LineItemPrepaidCredit] {
-		t.Fatal("missing PREPAID_CREDIT line item")
-	}
-
-	credit := findLineByType(created.LineItems, LineItemPrepaidCredit)
-	if credit.Amount != -638000 {
-		t.Errorf("prepaid credit = %d, want -638000", credit.Amount)
+	c.StartDate = time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC)
+	c.MinMonths = 6
+	return &settlementOpts{
+		contract: c,
+		moveOut:  time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC),
+		repo:     &mockBillingRepo{},
+		configs:  &mockConfigQuerier{},
 	}
 }
 
-func TestCreateSettlementBill_RejectsWhenOnlyPending(t *testing.T) {
-	c := testContract()
+func withMoveOut(y, m, d int) func(*settlementOpts) {
+	return func(o *settlementOpts) { o.moveOut = time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC) }
+}
 
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{}, &mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: &moveout.MoveOutNotice{
-			ID:                uuid.New(),
-			ContractID:        c.ID,
-			Status:            moveout.MoveOutStatusPendingMeter,
-			ScheduledMoveOutDate: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
-		}})
-
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != ErrMoveOutNotCompleted {
-		t.Fatalf("expected ErrMoveOutNotCompleted, got %v", err)
+func withRentPaid(o *settlementOpts) {
+	o.repo.hasPaidAdvanceRentFn = func(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+		return true, nil
 	}
 }
 
-func TestCreateSettlementBill_NoMoveOutNotice(t *testing.T) {
-	c := testContract()
-
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
-
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != ErrMoveOutNotFound {
-		t.Fatalf("expected ErrMoveOutNotFound, got %v", err)
-	}
+func withDeposit(amount int64) func(*settlementOpts) {
+	return func(o *settlementOpts) { o.contract.DepositAmount = amount }
 }
 
-func TestCreateSettlementBill_NoExitReading(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+// ── Detect Paid Advance Rent Coverage ──
+//
+// ช่องโหว่ที่ใหญ่ที่สุดถ้าไม่มี test นี้:
+// rent adjustment table inject rentPaid=true/false ตรง ๆ
+// แต่ไม่ได้พิสูจน์ว่า service ส่ง moveOutMonth ไปหา repo ถูก
+// และ branch ตาม boolean ถูก
+//
+// Service calls: repo.HasPaidAdvanceRentForMonth(ctx, contractID, moveOutMonth)
+// Repo internally: checks PAID bill where billing_month = moveOutMonth - 1
 
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{}, &mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
-
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != ErrExitReadingMissing {
-		t.Fatalf("expected ErrExitReadingMissing, got %v", err)
+func TestSettlement_DetectRentCoverage(t *testing.T) {
+	tests := []struct {
+		name        string
+		moveOut     [3]int
+		repoReturn  bool
+		wantMonth   string // month service passes to repo
+		wantPaid    bool
+		wantProrate bool
+	}{
+		// A1 — previous month bill is PAID → detect true
+		{"prev_month_paid", [3]int{2026, 4, 14}, true, "2026-04", true, false},
+		// A2 — previous month bill NOT PAID → detect false
+		{"prev_month_not_paid", [3]int{2026, 4, 14}, false, "2026-04", false, true},
+		// A3 — other month paid, previous not → detect false (repo returns false)
+		{"other_month_paid_prev_not", [3]int{2026, 4, 14}, false, "2026-04", false, true},
+		// A4 — no previous month bill at all → detect false
+		{"no_prev_month_bill", [3]int{2026, 4, 14}, false, "2026-04", false, true},
+		// Boundary: January move-out → repo receives "2026-01", checks Dec 2025
+		{"jan_moveout_checks_prev_year", [3]int{2026, 1, 15}, true, "2026-01", true, false},
 	}
-}
 
-func TestCreateSettlementBill_LatestIsMonthlyNotExit(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-	monthlyReading := testMonthlyReading(c.RoomID, "2026-03")
-
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: monthlyReading}, &mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
-
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != ErrExitReadingMissing {
-		t.Fatalf("expected ErrExitReadingMissing, got %v", err)
-	}
-}
-
-func TestCreateSettlementBill_DuplicateGuard(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-
-	svc := newSvc(
-		&mockBillingRepo{findByContractAndMonthFn: func(_ context.Context, _ uuid.UUID, _ string, bt BillType) (*Bill, error) {
-			if bt == BillTypeSettlement {
-				return &Bill{ID: uuid.New()}, nil
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedMonth string
+			o := newSettlementOpts()
+			o.moveOut = time.Date(tt.moveOut[0], time.Month(tt.moveOut[1]), tt.moveOut[2], 0, 0, 0, 0, time.UTC)
+			o.repo.hasPaidAdvanceRentFn = func(_ context.Context, _ uuid.UUID, month string) (bool, error) {
+				capturedMonth = month
+				return tt.repoReturn, nil
 			}
-			return nil, gorm.ErrRecordNotFound
-		}},
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: testExitReading(c.RoomID, moveOutDate)},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
+			o.repo.apartmentID = uuid.New()
+			meters := &mockMeterQuerier{reading: testExitReading(o.contract.RoomID, o.moveOut)}
+			notice := completedNotice(o.contract.ID, o.moveOut)
+			svc := newSvc(o.repo, &mockContractQuerier{contract: o.contract},
+				meters, o.configs, &mockMoveOutQuerier{notice: notice})
 
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != ErrBillAlreadyExists {
-		t.Fatalf("expected ErrBillAlreadyExists, got %v", err)
+			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
+				ContractID: o.contract.ID.String(),
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			bill := o.repo.createdBill
+
+			// Verify: service passes moveOutMonth to repo (repo does M-1 internally)
+			if capturedMonth != tt.wantMonth {
+				t.Errorf("month passed to repo = %q, want %q", capturedMonth, tt.wantMonth)
+			}
+			if bill.RentPaid != tt.wantPaid {
+				t.Errorf("RentPaid = %v, want %v", bill.RentPaid, tt.wantPaid)
+			}
+			hasProrate := findLineByType(bill.LineItems, LineItemProrateRent).Amount > 0
+			if hasProrate != tt.wantProrate {
+				t.Errorf("hasProrate = %v, want %v", hasProrate, tt.wantProrate)
+			}
+		})
 	}
 }
 
-// ============================================================
-// Monthly → Settlement replacement
-// ============================================================
+// ── Rent Adjustment (TC01–04, TC16–17) ──
 
-func TestCreateSettlementBill_VoidsExistingDraftMonthly(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-	draftBill := Bill{ID: uuid.New(), BillType: BillTypeMonthly, Status: BillStatusDraft}
+func TestSettlement_RentAdjustment(t *testing.T) {
+	// monthlyRent = 500000 satang (5,000 baht) from testContract()
+	const rent = int64(500000)
 
-	repo := &mockBillingRepo{
-		apartmentID: uuid.New(),
-		findNonVoidedByContractMonthFn: func(_ context.Context, _ uuid.UUID, _ string) ([]Bill, error) {
-			return []Bill{draftBill}, nil
-		},
+	tests := []struct {
+		name        string
+		moveOut     [3]int // y, m, d
+		rentPaid    bool
+		wantProrate bool
+		wantAmount  int64
+		wantDays    int
+	}{
+		// TC01+11+12+22 — paid advance rent → 0 (no refund, no charge, no double)
+		{"paid_mid_month", [3]int{2026, 4, 14}, true, false, 0, 0},
+		// TC02+20 — not paid, mid-month → prorate 14/30
+		{"not_paid_mid_month", [3]int{2026, 4, 14}, false, true, rent * 14 / 30, 14},
+		// TC03 — not paid, last day of 30-day month → rent = full month (day >= daysInMonth)
+		{"not_paid_last_day_30", [3]int{2026, 4, 30}, false, false, 0, 0},
+		// TC04 — not paid, first day (inclusive) → 1/30
+		{"not_paid_first_day", [3]int{2026, 4, 1}, false, true, rent * 1 / 30, 1},
+		// TC16 — leap year Feb 29 = last day → rent = full month
+		{"leap_feb_29_full_month", [3]int{2024, 2, 29}, false, false, 0, 0},
+		// TC17 — 31-day month prorate → 15/31
+		{"31day_month_mid", [3]int{2026, 5, 15}, false, true, rent * 15 / 31, 15},
 	}
-	svc := newSvc(repo, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: testExitReading(c.RoomID, moveOutDate)},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
 
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := []func(*settlementOpts){
+				withMoveOut(tt.moveOut[0], tt.moveOut[1], tt.moveOut[2]),
+			}
+			if tt.rentPaid {
+				opts = append(opts, withRentPaid)
+			}
+			bill := runSettlement(t, opts...)
 
-	if len(repo.updatedBills) == 0 {
-		t.Fatal("expected DRAFT bill to be voided via Update")
-	}
-	voided := repo.updatedBills[0]
-	if voided.Status != BillStatusVoid {
-		t.Fatalf("expected voided DRAFT, got status %s", voided.Status)
-	}
-	if voided.VoidReason == nil || *voided.VoidReason != "REPLACED_BY_SETTLEMENT" {
-		t.Fatal("void reason should be REPLACED_BY_SETTLEMENT")
+			// RentPaid flag
+			if bill.RentPaid != tt.rentPaid {
+				t.Errorf("RentPaid = %v, want %v", bill.RentPaid, tt.rentPaid)
+			}
+
+			prorate := findLineByType(bill.LineItems, LineItemProrateRent)
+			hasProrate := prorate.LineType == LineItemProrateRent && prorate.Amount > 0
+
+			if hasProrate != tt.wantProrate {
+				t.Errorf("hasProrate = %v, want %v", hasProrate, tt.wantProrate)
+			}
+			if tt.wantProrate {
+				if prorate.Amount != tt.wantAmount {
+					t.Errorf("prorate amount = %d, want %d", prorate.Amount, tt.wantAmount)
+				}
+				if prorate.Quantity != tt.wantDays {
+					t.Errorf("prorate days = %d, want %d", prorate.Quantity, tt.wantDays)
+				}
+			}
+
+			// Invariant: PREPAID_CREDIT must never appear (regression TC23)
+			if lineItemTypes(bill.LineItems)[LineItemPrepaidCredit] {
+				t.Error("PREPAID_CREDIT must never appear — old logic removed")
+			}
+			// Invariant: no negative rent line (regression TC11)
+			for _, li := range bill.LineItems {
+				if (li.LineType == LineItemProrateRent || li.LineType == LineItemRoomRent) && li.Amount < 0 {
+					t.Errorf("negative rent line: %s = %d", li.LineType, li.Amount)
+				}
+			}
+		})
 	}
 }
 
-func TestCreateSettlementBill_VoidsFinalizedMonthly(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-	finalizedBill := Bill{ID: uuid.New(), BillType: BillTypeMonthly, Status: BillStatusFinalized}
+// ── Void Monthly Bills (TC05–07, TC15, TC25) ──
 
-	repo := &mockBillingRepo{
-		apartmentID: uuid.New(),
-		findNonVoidedByContractMonthFn: func(_ context.Context, _ uuid.UUID, _ string) ([]Bill, error) {
-			return []Bill{finalizedBill}, nil
+func TestSettlement_VoidMonthlyBills(t *testing.T) {
+	tests := []struct {
+		name           string
+		existingBills  []Bill
+		wantVoidIDs    []int // indices into existingBills that should be voided
+		wantKeepIDs    []int // indices that must NOT be voided
+	}{
+		{
+			"TC05_void_draft",
+			[]Bill{{ID: uuid.New(), BillType: BillTypeMonthly, Status: BillStatusDraft}},
+			[]int{0}, nil,
+		},
+		{
+			"TC06_void_finalized",
+			[]Bill{{ID: uuid.New(), BillType: BillTypeMonthly, Status: BillStatusFinalized}},
+			[]int{0}, nil,
+		},
+		{
+			"TC07_no_existing_bill",
+			nil, nil, nil,
+		},
+		{
+			"TC15_never_void_paid",
+			[]Bill{{ID: uuid.New(), BillType: BillTypeMonthly, Status: BillStatusPaid, TotalAmount: 638000}},
+			nil, []int{0},
 		},
 	}
-	svc := newSvc(repo, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: testExitReading(c.RoomID, moveOutDate)},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
 
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bills := tt.existingBills // capture
 
-	if len(repo.updatedBills) == 0 {
-		t.Fatal("expected FINALIZED bill to be voided")
-	}
-	if repo.updatedBills[0].Status != BillStatusVoid {
-		t.Fatalf("expected VOID, got %s", repo.updatedBills[0].Status)
+			o := newSettlementOpts()
+			if len(bills) > 0 {
+				o.repo.findNonVoidedByContractMonthFn = func(_ context.Context, _ uuid.UUID, _ string) ([]Bill, error) {
+					return bills, nil
+				}
+			}
+			o.repo.apartmentID = uuid.New()
+			meters := &mockMeterQuerier{reading: testExitReading(o.contract.RoomID, o.moveOut)}
+			notice := completedNotice(o.contract.ID, o.moveOut)
+			svc := newSvc(o.repo, &mockContractQuerier{contract: o.contract},
+				meters, o.configs, &mockMoveOutQuerier{notice: notice})
+
+			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
+				ContractID: o.contract.ID.String(),
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			voidedIDs := map[uuid.UUID]bool{}
+			for _, ub := range o.repo.updatedBills {
+				if ub.Status == BillStatusVoid {
+					voidedIDs[ub.ID] = true
+					if ub.VoidReason == nil || *ub.VoidReason != "REPLACED_BY_SETTLEMENT" {
+						t.Errorf("bill %s: void_reason should be REPLACED_BY_SETTLEMENT", ub.ID)
+					}
+				}
+			}
+
+			for _, idx := range tt.wantVoidIDs {
+				if !voidedIDs[bills[idx].ID] {
+					t.Errorf("bill[%d] (status=%s) should be voided", idx, bills[idx].Status)
+				}
+			}
+			for _, idx := range tt.wantKeepIDs {
+				if voidedIDs[bills[idx].ID] {
+					t.Errorf("bill[%d] (status=%s) must NOT be voided", idx, bills[idx].Status)
+				}
+			}
+
+			if len(bills) == 0 && len(o.repo.updatedBills) != 0 {
+				t.Errorf("no existing bills → expected no void calls, got %d", len(o.repo.updatedBills))
+			}
+		})
 	}
 }
 
-func TestCreateSettlementBill_KeepsPaidMonthlyAsPrepaidCredit(t *testing.T) {
-	c := testContract()
-	c.Status = contract.ContractStatusEnded
-	moveOutDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
-	paidBill := Bill{ID: uuid.New(), BillType: BillTypeMonthly, Status: BillStatusPaid, TotalAmount: 638000}
+// ── Net Amount / Deposit (TC09–TC10) ──
 
-	repo := &mockBillingRepo{
-		apartmentID: uuid.New(),
-		findNonVoidedByContractMonthFn: func(_ context.Context, _ uuid.UUID, _ string) ([]Bill, error) {
-			return []Bill{paidBill}, nil
-		},
-		sumPaidFn: func(_ context.Context, _ uuid.UUID, _ string) (int64, error) {
-			return 638000, nil
-		},
-	}
-	svc := newSvc(repo, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: testExitReading(c.RoomID, moveOutDate)},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOutDate)})
+func TestSettlement_NetAmount(t *testing.T) {
+	// Compute exact charges for "rent paid + default exit meter" to craft zero case.
+	// EXIT: electricity 50×800=40000, water 5×1800=9000 → total utility = 49000
+	const utilityTotal = int64(50*800 + 5*1800) // 49000
 
-	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
-		ContractID: c.ID.String(),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tests := []struct {
+		name              string
+		deposit           int64
+		rentPaid          bool
+		wantPositiveTotal bool  // total > 0
+		wantRefund        bool  // depositBalance > 0
+		wantZero          bool  // depositBalance == 0
+	}{
+		{"deposit_covers_all", 10000000, true, true, true, false},     // 100k >> utility → refund
+		{"tenant_pays_extra", 0, false, true, false, false},            // no deposit → tenant owes
+		{"exact_zero_balance", utilityTotal, true, true, false, true},  // deposit = charges → net 0
 	}
 
-	for _, ub := range repo.updatedBills {
-		if ub.ID == paidBill.ID && ub.Status == BillStatusVoid {
-			t.Fatal("PAID bill should NOT be voided")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := []func(*settlementOpts){withDeposit(tt.deposit)}
+			if tt.rentPaid {
+				opts = append(opts, withRentPaid)
+			}
+			bill := runSettlement(t, opts...)
+
+			if tt.wantPositiveTotal && bill.TotalAmount <= 0 {
+				t.Errorf("total = %d, want > 0", bill.TotalAmount)
+			}
+			if tt.wantZero {
+				if bill.DepositBalance != 0 {
+					t.Errorf("deposit_balance = %d, want exactly 0", bill.DepositBalance)
+				}
+			} else if tt.wantRefund {
+				if bill.DepositBalance <= 0 {
+					t.Errorf("deposit_balance = %d, want > 0 (refund)", bill.DepositBalance)
+				}
+			} else {
+				if bill.DepositBalance > 0 {
+					t.Errorf("deposit_balance = %d, want <= 0 (tenant owes)", bill.DepositBalance)
+				}
+			}
+		})
+	}
+}
+
+// ── Utility from EXIT Meter (TC08, TC14, TC24) ──
+
+func TestSettlement_UtilityFromExitMeter(t *testing.T) {
+	bill := runSettlement(t)
+
+	// EXIT reading: electricity 1150→1200 = 50 units, water 110→115 = 5 units
+	// Rate: 800 satang/elec unit, 1800 satang/water unit
+	tests := []struct {
+		name       string
+		lineType   LineItemType
+		wantQty    int
+		wantAmount int64
+	}{
+		{"TC08_electricity", LineItemElectricity, 50, 50 * 800},
+		{"TC08_water", LineItemWater, 5, 5 * 1800},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			li := findLineByType(bill.LineItems, tt.lineType)
+			if li.Quantity != tt.wantQty {
+				t.Errorf("quantity = %d, want %d", li.Quantity, tt.wantQty)
+			}
+			if li.Amount != tt.wantAmount {
+				t.Errorf("amount = %d, want %d", li.Amount, tt.wantAmount)
+			}
+		})
+	}
+
+	// TC14+TC24 — exactly 1 of each, no monthly values leaked
+	elecCount, waterCount := 0, 0
+	for _, li := range bill.LineItems {
+		switch li.LineType {
+		case LineItemElectricity:
+			elecCount++
+		case LineItemWater:
+			waterCount++
 		}
 	}
+	if elecCount != 1 {
+		t.Errorf("TC24: expected 1 electricity line, got %d", elecCount)
+	}
+	if waterCount != 1 {
+		t.Errorf("TC24: expected 1 water line, got %d", waterCount)
+	}
+}
 
-	created := repo.createdBill
-	credit := findLineByType(created.LineItems, LineItemPrepaidCredit)
-	if credit.Amount != -638000 {
-		t.Errorf("prepaid credit = %d, want -638000", credit.Amount)
+// ── Config Fees ──
+
+func TestSettlement_ConfigFees(t *testing.T) {
+	tests := []struct {
+		name       string
+		lineType   LineItemType
+		wantAmount int64
+	}{
+		{"adds_cleaning_fee", LineItemCleaningFee, 50000},
+		{"adds_key_service_fee", LineItemKeyService, 20000},
+	}
+
+	bill := runSettlement(t, func(o *settlementOpts) {
+		o.configs = &mockConfigQuerier{configs: []billingconfig.BillingConfig{
+			{FeeType: billingconfig.FeeTypeCleaningFee, DefaultAmount: 50000, IsActive: true},
+			{FeeType: billingconfig.FeeTypeKeyService, DefaultAmount: 20000, IsActive: true},
+		}}
+	})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			li := findLineByType(bill.LineItems, tt.lineType)
+			if li.Amount != tt.wantAmount {
+				t.Errorf("%s = %d, want %d", tt.lineType, li.Amount, tt.wantAmount)
+			}
+		})
+	}
+}
+
+// ── Notice Date Must Be Ignored (TC13) ──
+// ล็อกว่า notice date ไม่ affect calculation เลย ไม่ว่าจะก่อนหรือหลัง move-out
+
+func TestSettlement_UsesActualMoveOutDate(t *testing.T) {
+	tests := []struct {
+		name       string
+		noticeDate time.Time
+	}{
+		// notice BEFORE move-out
+		{"notice_before_moveout", time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC)},
+		// notice AFTER move-out (e.g. backdated entry)
+		{"notice_after_moveout", time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newSettlementOpts() // moveOut = April 14
+			o.repo.apartmentID = uuid.New()
+			meters := &mockMeterQuerier{reading: testExitReading(o.contract.RoomID, o.moveOut)}
+			notice := completedNotice(o.contract.ID, o.moveOut)
+			notice.NoticeDate = tt.noticeDate
+
+			svc := newSvc(o.repo, &mockContractQuerier{contract: o.contract},
+				meters, o.configs, &mockMoveOutQuerier{notice: notice})
+
+			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
+				ContractID: o.contract.ID.String(),
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			bill := o.repo.createdBill
+
+			if bill.BillingMonth != "2026-04" {
+				t.Errorf("billing_month = %s, want 2026-04 (from move-out, NOT notice)", bill.BillingMonth)
+			}
+			prorate := findLineByType(bill.LineItems, LineItemProrateRent)
+			if prorate.Quantity != 14 {
+				t.Errorf("prorate days = %d, want 14 (from move-out date)", prorate.Quantity)
+			}
+		})
+	}
+}
+
+// ── Regression: No PREPAID_CREDIT Even With Old Mock (TC23) ──
+
+func TestSettlement_Regression_NoPrepaidCredit(t *testing.T) {
+	bill := runSettlement(t, func(o *settlementOpts) {
+		// Old pipeline used SumPaidByContractSince — ensure no PREPAID_CREDIT
+		o.repo.sumPaidFn = func(_ context.Context, _ uuid.UUID, _ string) (int64, error) {
+			return 999999, nil
+		}
+	})
+
+	if lineItemTypes(bill.LineItems)[LineItemPrepaidCredit] {
+		t.Fatal("REGRESSION: PREPAID_CREDIT must not exist — old logic removed")
+	}
+}
+
+// ── Invariants — "ผลลัพธ์สุดท้ายต้องไม่มีสิ่งที่ไม่ควรเกิด" ──
+// Run settlement ทั้ง 2 path (paid / not-paid) แล้วเช็ค structural invariants
+// กัน: future refactor พลาด, dev ใหม่ใส่ logic แปลก, silent data corruption
+
+func TestSettlement_Invariants(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []func(*settlementOpts)
+	}{
+		{"rent_paid", []func(*settlementOpts){withRentPaid}},
+		{"rent_not_paid", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bill := runSettlement(t, tt.opts...)
+
+			// 1. ห้ามมี PREPAID_CREDIT (old logic ลบแล้ว)
+			for _, li := range bill.LineItems {
+				if li.LineType == LineItemPrepaidCredit {
+					t.Error("PREPAID_CREDIT must never appear")
+				}
+			}
+
+			// 2. ห้ามมี rent line ที่ amount < 0 (ไม่มี rent refund)
+			for _, li := range bill.LineItems {
+				if (li.LineType == LineItemProrateRent || li.LineType == LineItemRoomRent) && li.Amount < 0 {
+					t.Errorf("negative rent line: %s = %d", li.LineType, li.Amount)
+				}
+			}
+
+			// 3. ELECTRICITY / WATER ต้องมีอย่างละ 1 บรรทัดเท่านั้น
+			typeCounts := map[LineItemType]int{}
+			for _, li := range bill.LineItems {
+				if li.Source == LineItemSourceAuto {
+					typeCounts[li.LineType]++
+				}
+			}
+			if typeCounts[LineItemElectricity] != 1 {
+				t.Errorf("electricity lines = %d, want exactly 1", typeCounts[LineItemElectricity])
+			}
+			if typeCounts[LineItemWater] != 1 {
+				t.Errorf("water lines = %d, want exactly 1", typeCounts[LineItemWater])
+			}
+
+			// 4. AUTO line type ห้ามซ้ำ (1 type = 1 line)
+			for lt, count := range typeCounts {
+				if count > 1 {
+					t.Errorf("duplicate AUTO line type %s: count = %d", lt, count)
+				}
+			}
+
+			// 5. TotalAmount == sum(line items)
+			var sum int64
+			for _, li := range bill.LineItems {
+				sum += li.Amount
+			}
+			if bill.TotalAmount != sum {
+				t.Errorf("TotalAmount = %d, sum(lines) = %d — mismatch", bill.TotalAmount, sum)
+			}
+
+			// 6. DepositBalance consistency: deposit - total
+			wantBalance := bill.DepositAmount - bill.TotalAmount
+			if bill.DepositBalance != wantBalance {
+				t.Errorf("DepositBalance = %d, want %d (deposit %d - total %d)",
+					bill.DepositBalance, wantBalance, bill.DepositAmount, bill.TotalAmount)
+			}
+		})
+	}
+}
+
+// ── Error Cases (TC19 + guards) ──
+
+func TestSettlement_Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func() BillingService
+		wantErr error
+	}{
+		{
+			"TC19_missing_exit_meter",
+			func() BillingService {
+				c := testContract()
+				c.Status = contract.ContractStatusEnded
+				moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+				return newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
+					&mockMeterQuerier{}, &mockConfigQuerier{},
+					&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOut)})
+			},
+			ErrExitReadingMissing,
+		},
+		{
+			"rejects_pending_meter_status",
+			func() BillingService {
+				c := testContract()
+				return newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
+					&mockMeterQuerier{}, &mockConfigQuerier{},
+					&mockMoveOutQuerier{notice: &moveout.MoveOutNotice{
+						ID: uuid.New(), ContractID: c.ID,
+						Status:               moveout.MoveOutStatusPendingMeter,
+						ScheduledMoveOutDate: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
+					}})
+			},
+			ErrMoveOutNotCompleted,
+		},
+		{
+			"no_move_out_notice",
+			func() BillingService {
+				c := testContract()
+				return newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
+					&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+			},
+			ErrMoveOutNotFound,
+		},
+		{
+			"latest_reading_is_monthly_not_exit",
+			func() BillingService {
+				c := testContract()
+				c.Status = contract.ContractStatusEnded
+				moveOut := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+				return newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
+					&mockMeterQuerier{reading: testMonthlyReading(c.RoomID, "2026-03")},
+					&mockConfigQuerier{},
+					&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOut)})
+			},
+			ErrExitReadingMissing,
+		},
+		{
+			"duplicate_settlement_guard",
+			func() BillingService {
+				c := testContract()
+				c.Status = contract.ContractStatusEnded
+				moveOut := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+				return newSvc(
+					&mockBillingRepo{findByContractAndMonthFn: func(_ context.Context, _ uuid.UUID, _ string, bt BillType) (*Bill, error) {
+						if bt == BillTypeSettlement {
+							return &Bill{ID: uuid.New()}, nil
+						}
+						return nil, gorm.ErrRecordNotFound
+					}},
+					&mockContractQuerier{contract: c},
+					&mockMeterQuerier{reading: testExitReading(c.RoomID, moveOut)},
+					&mockConfigQuerier{},
+					&mockMoveOutQuerier{notice: completedNotice(c.ID, moveOut)})
+			},
+			ErrBillAlreadyExists,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := tt.setup()
+			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
+				ContractID: uuid.New().String(),
+			})
+			if err != tt.wantErr {
+				t.Fatalf("got %v, want %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 

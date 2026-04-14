@@ -88,6 +88,7 @@ type Bill struct {
 	DepositBalance int64          `gorm:"not null;default:0" json:"deposit_balance"`
 	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
 	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
+	RentPaid       bool           `gorm:"not null;default:false" json:"rent_paid"`
 	Note           string         `gorm:"type:text;not null;default:''" json:"note"`
 	CreatedAt      time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"not null;default:now()" json:"updated_at"`

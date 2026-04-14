@@ -88,6 +88,7 @@ type BillResponse struct {
 	DepositAmount  float64            `json:"deposit_amount"`
 	DepositBalance float64            `json:"deposit_balance"`
 	TotalAmount    float64            `json:"total_amount"`
+	RentPaid       bool               `json:"rent_paid"`
 	Note           string             `json:"note"`
 	TenantName     string             `json:"tenant_name"`
 	RoomNumber     string             `json:"room_number"`
@@ -311,6 +312,7 @@ func ToBillResponse(b Bill) BillResponse {
 		DepositAmount:  money.ToBaht(b.DepositAmount),
 		DepositBalance: money.ToBaht(b.DepositBalance),
 		TotalAmount:    money.ToBaht(b.TotalAmount),
+		RentPaid:       b.RentPaid,
 		Note:           b.Note,
 		LineItems:      items,
 		CreatedAt:      b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),

@@ -29,6 +29,7 @@ type BillingRepository interface {
 	DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source LineItemSource) error
 	CreateLineItems(ctx context.Context, items []BillLineItem) error
 	SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, sinceMonth string) (int64, error)
+	HasPaidAdvanceRentForMonth(ctx context.Context, contractID uuid.UUID, moveOutMonth string) (bool, error)
 
 	CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error
 	FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
@@ -398,6 +399,27 @@ func (r *billingRepository) SumPaidByContractSince(ctx context.Context, contract
 			contractID, BillTypeMonthly, BillStatusPaid, sinceMonth).
 		Scan(&total).Error
 	return total, err
+}
+
+// HasPaidAdvanceRentForMonth checks if advance rent for moveOutMonth was already
+// collected. In the advance-billing model, bill M-1 contains rent for M.
+// So we check for a PAID monthly bill with billing_month = moveOutMonth - 1.
+//
+// This is a shortcut that works because the system bills rent one month in advance.
+func (r *billingRepository) HasPaidAdvanceRentForMonth(ctx context.Context, contractID uuid.UUID, moveOutMonth string) (bool, error) {
+	t, err := time.Parse("2006-01", moveOutMonth)
+	if err != nil {
+		return false, fmt.Errorf("parse move-out month %q: %w", moveOutMonth, err)
+	}
+	prevMonth := t.AddDate(0, -1, 0).Format("2006-01")
+
+	var count int64
+	err = database.DB(ctx, r.db).
+		Model(&Bill{}).
+		Where("contract_id = ? AND bill_type = ? AND status = ? AND billing_month = ?",
+			contractID, BillTypeMonthly, BillStatusPaid, prevMonth).
+		Count(&count).Error
+	return count > 0, err
 }
 
 // --- Commit flow ---

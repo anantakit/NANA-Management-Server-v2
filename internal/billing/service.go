@@ -240,8 +240,12 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 	var items []BillLineItem
 	order := 1
 
-	// Pro-rate rent (cross-month only)
-	items, order = s.addProrateRent(items, order, c, moveOutDate)
+	// Rent adjustment: check if advance rent was already paid
+	var rentPaid bool
+	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate)
+	if err != nil {
+		return nil, err
+	}
 
 	// Water + Electricity from EXIT reading
 	waterUnits := exitReading.WaterUsed()
@@ -262,12 +266,6 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 	if err != nil {
 		return nil, err
 	}
-
-	// PREPAID_CREDIT from previously paid monthly bills
-	items, order, err = s.addPrepaidCredit(ctx, items, order, contractID, billingMonth)
-	if err != nil {
-		return nil, err
-	}
 	_ = order
 
 	bill := Bill{
@@ -275,6 +273,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		BillingMonth:  billingMonth,
 		BillType:      BillTypeSettlement,
 		Status:        BillStatusDraft,
+		RentPaid:      rentPaid,
 		DepositAmount: effectiveDeposit(c, moveOutDate),
 		LineItems:     items,
 	}
@@ -577,21 +576,41 @@ func toSettlementResult(billID uuid.UUID, totalAmount, depositAmount int64) *mov
 
 // --- Private helpers ---
 
-// addProrateRent adds PRORATE_RENT line if move-out crosses into a month not yet paid.
-// Pro-rate = days used in move-out month × (monthly_rent / days_in_month)
-func (s *billingService) addProrateRent(items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time) ([]BillLineItem, int) {
-	day := moveOutDate.Day()
-	daysInMonth := daysInMonth(moveOutDate)
+// addRentAdjustment implements the settlement rent rule:
+//   - If advance rent for move-out month is PAID → rent = 0 (no refund, no charge)
+//   - If NOT paid → prorate rent by used days (inclusive of move-out date)
+//
+// Day counting: move-out April 14 → used_days = 14 (days 1–14 inclusive)
+//
+// Rent coverage detection shortcut: bill M-1 contains advance rent for M.
+// This works because the system bills rent one month in advance.
+func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time) ([]BillLineItem, int, bool, error) {
+	billingMonth := toMonth(moveOutDate)
 
-	// Only pro-rate if partial month (not full month)
-	if day >= daysInMonth {
-		return items, order
+	hasPaid, err := s.repo.HasPaidAdvanceRentForMonth(ctx, c.ID, billingMonth)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("check advance rent: %w", err)
 	}
 
-	desc := fmt.Sprintf("ค่าห้อง %d วัน (คิดตามสัดส่วน)", day)
-	items = append(items, NewProrateRentLine(day, daysInMonth, c.MonthlyRent, desc, order))
+	if hasPaid {
+		// Advance rent already paid — no charge, no refund
+		// ธุรกิจขายห้องเป็นรายเดือน จึงไม่คืนส่วนที่ไม่ได้อยู่
+		return items, order, true, nil
+	}
+
+	// Not paid — prorate by used days (inclusive of move-out date)
+	usedDays := moveOutDate.Day()
+	totalDays := daysInMonth(moveOutDate)
+
+	// Full month = no need to prorate (charge full rent)
+	if usedDays >= totalDays {
+		return items, order, false, nil
+	}
+
+	desc := fmt.Sprintf("ค่าห้อง %d วัน (คิดตามสัดส่วน)", usedDays)
+	items = append(items, NewProrateRentLine(usedDays, totalDays, c.MonthlyRent, desc, order))
 	order++
-	return items, order
+	return items, order, false, nil
 }
 
 // addConfigFees adds configurable fees (CLEANING_FEE, KEY_SERVICE) from billing_configs.
@@ -618,25 +637,6 @@ func (s *billingService) addConfigFees(ctx context.Context, items []BillLineItem
 		}
 		desc := feeDescriptions[cfg.FeeType]
 		items = append(items, NewFeeLine(lt, cfg.DefaultAmount, desc, order))
-		order++
-	}
-	return items, order, nil
-}
-
-// addPrepaidCredit checks for PAID monthly bills and adds PREPAID_CREDIT line.
-//
-// IMPORTANT: ตอนนี้ใช้ SumPaidByContractSince (sum bills.total_amount WHERE status=PAID)
-// เป็น interim solution เนื่องจาก payments feature ยังไม่มี
-// เมื่อสร้าง payments แล้ว ต้องเปลี่ยนเป็น sum(payments.amount) เพื่อรองรับ partial payment
-func (s *billingService) addPrepaidCredit(ctx context.Context, items []BillLineItem, order int, contractID uuid.UUID, billingMonth string) ([]BillLineItem, int, error) {
-	paidTotal, err := s.repo.SumPaidByContractSince(ctx, contractID, billingMonth)
-	if err != nil {
-		return nil, 0, fmt.Errorf("sum paid bills: %w", err)
-	}
-
-	if paidTotal > 0 {
-		desc := "หักค่าที่จ่ายล่วงหน้า"
-		items = append(items, NewPrepaidCreditLine(paidTotal, desc, order))
 		order++
 	}
 	return items, order, nil
@@ -694,9 +694,12 @@ func daysInMonth(t time.Time) int {
 // and move-out date. Called by the move-out service within its transaction
 // context — must NOT start its own transaction.
 //
-// Snapshots line items at creation time: pro-rate rent, EXIT meter charges,
-// configurable fees, prepaid credit. Voids any existing monthly bills for
-// the same month before creating the settlement.
+// Settlement is a reconciliation, not a new bill:
+//   - If advance rent for move-out month was PAID → no rent charge (no refund either)
+//   - If NOT paid → prorate rent by used days (inclusive of move-out date)
+//   - Utility charges from EXIT meter reading
+//   - Configurable fees (cleaning, key service)
+//   - Voids any existing monthly bills for the same month
 func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
 	c, err := s.contracts.FindByIDSimple(ctx, contractID)
 	if err != nil {
@@ -724,8 +727,12 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	var items []BillLineItem
 	order := 1
 
-	// Pro-rate rent
-	items, order = s.addProrateRent(items, order, c, moveOutDate)
+	// Rent adjustment: check if advance rent was already paid
+	var rentPaid bool
+	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate)
+	if err != nil {
+		return nil, err
+	}
 
 	// Water + Electricity from EXIT reading
 	waterUnits := exitReading.WaterUsed()
@@ -746,12 +753,6 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	if err != nil {
 		return nil, err
 	}
-
-	// Prepaid credit
-	items, order, err = s.addPrepaidCredit(ctx, items, order, contractID, billingMonth)
-	if err != nil {
-		return nil, err
-	}
 	_ = order
 
 	bill := Bill{
@@ -759,6 +760,7 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 		BillingMonth:  billingMonth,
 		BillType:      BillTypeSettlement,
 		Status:        BillStatusDraft,
+		RentPaid:      rentPaid,
 		DepositAmount: effectiveDeposit(c, moveOutDate),
 		LineItems:     items,
 	}
