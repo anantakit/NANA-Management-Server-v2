@@ -39,8 +39,9 @@ const (
 	LineItemKeyService    LineItemType = "KEY_SERVICE"
 	LineItemProrateRent   LineItemType = "PRORATE_RENT"
 	LineItemPenalty       LineItemType = "PENALTY"
-	LineItemPrepaidCredit LineItemType = "PREPAID_CREDIT"
-	LineItemOther         LineItemType = "OTHER"
+	LineItemPrepaidCredit   LineItemType = "PREPAID_CREDIT"
+	LineItemOutstandingBill LineItemType = "OUTSTANDING_BILL"
+	LineItemOther           LineItemType = "OTHER"
 )
 
 // validManualLineTypes are the line types allowed for user-added MANUAL items.
@@ -72,6 +73,7 @@ var (
 	ErrAlreadyVoided  = errors.New("บิลถูกยกเลิกแล้ว")
 	ErrAlreadyPaid    = errors.New("บิลถูกชำระแล้ว")
 	ErrVoidReasonEmpty = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
+	ErrNotAbsorbed     = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลสรุปยอด")
 	ErrBatchAlreadyCommitted = errors.New("batch ถูก commit ไปแล้ว")
 )
 
@@ -202,6 +204,34 @@ func (b *Bill) MarkPaid() error {
 	return nil
 }
 
+// --- Absorbed-by-settlement lifecycle ---
+
+const voidReasonAbsorbed = "ABSORBED_BY_SETTLEMENT"
+
+// MarkAbsorbedBySettlement voids this bill as absorbed into a settlement.
+// Technically callable on DRAFT or FINALIZED (CanVoid allows both),
+// but service layer restricts to FINALIZED only — DRAFT bills are unconfirmed.
+func (b *Bill) MarkAbsorbedBySettlement() error {
+	return b.Void(voidReasonAbsorbed)
+}
+
+// RestoreFromAbsorbed reverses absorption, setting the bill back to FINALIZED.
+// Only callable on VOID bills with the matching void reason.
+func (b *Bill) RestoreFromAbsorbed() error {
+	if !b.IsAbsorbedBySettlement() {
+		return ErrNotAbsorbed
+	}
+	b.Status = BillStatusFinalized
+	b.VoidReason = nil
+	return nil
+}
+
+// IsAbsorbedBySettlement returns true if this bill was voided specifically
+// because it was absorbed into a settlement (not cancelled or regenerated).
+func (b *Bill) IsAbsorbedBySettlement() bool {
+	return b.IsVoid() && b.VoidReason != nil && *b.VoidReason == voidReasonAbsorbed
+}
+
 // --- Calculation ---
 
 // CalculateTotal computes TotalAmount from line items.
@@ -305,6 +335,17 @@ func NewPrepaidCreditLine(amount int64, description string, order int) BillLineI
 		Source:      LineItemSourceAuto,
 		Description: description,
 		Amount:      -amount, // negative = credit
+		SortOrder:   order,
+	}
+}
+
+// NewOutstandingBillLine creates a line item representing an absorbed unpaid bill.
+func NewOutstandingBillLine(amount int64, description string, order int) BillLineItem {
+	return BillLineItem{
+		LineType:    LineItemOutstandingBill,
+		Source:      LineItemSourceAuto,
+		Description: description,
+		Amount:      amount,
 		SortOrder:   order,
 	}
 }

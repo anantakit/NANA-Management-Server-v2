@@ -184,6 +184,15 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 // CreateSettlementBill generates a DRAFT settlement bill for a move-out.
 // Requires move-out notice to be COMPLETED (contract already ENDED, room VACANT).
 // Settlement = pro-rate + EXIT meter + configurable fees + deposit netting
+//
+// LEGACY PATH — this is the REST endpoint entry point (POST /bills/settlement).
+// The move-out workflow uses GenerateSettlement() instead, which additionally:
+//   - Absorbs outstanding unpaid bills from prior months
+//   - Computes DepositSettlementState (pool-based, forfeit-aware)
+//   - Uses ActualMoveOutDate (not ScheduledMoveOutDate)
+//
+// TODO: Unify with GenerateSettlement or deprecate before Phase 2.
+// See memory: project_settlement_phase1_decisions.md
 func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
 	if err != nil {
@@ -274,7 +283,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		BillType:      BillTypeSettlement,
 		Status:        BillStatusDraft,
 		RentPaid:      rentPaid,
-		DepositAmount: effectiveDeposit(c, moveOutDate),
+		DepositAmount: c.DepositAmount,
 		LineItems:     items,
 	}
 	bill.CalculateTotal()
@@ -466,6 +475,11 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 		return nil, fmt.Errorf("void existing bill: %w", err)
 	}
 
+	// Restore absorbed bills so GenerateSettlement can re-absorb them
+	if err := s.restoreAbsorbedBills(ctx, contractID); err != nil {
+		return nil, fmt.Errorf("restore absorbed bills: %w", err)
+	}
+
 	// Generate fresh AUTO items
 	result, err := s.GenerateSettlement(ctx, contractID, moveOutDate)
 	if err != nil {
@@ -502,7 +516,13 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 		}
 
 		// Recompute net amount with manual items included
-		updated := toSettlementResult(result.BillID, newBill.TotalAmount, newBill.DepositAmount)
+		c, err := s.contracts.FindByIDSimple(ctx, contractID)
+		if err != nil {
+			return nil, fmt.Errorf("find contract for deposit check: %w", err)
+		}
+		returnable := isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths)
+		ds := computeDepositSettlement(newBill.DepositAmount, newBill.TotalAmount, returnable)
+		updated := toSettlementResult(result.BillID, ds)
 		result.NetAmount = updated.NetAmount
 		result.DepositUsed = updated.DepositUsed
 	}
@@ -548,29 +568,68 @@ func isDepositReturnable(startDate time.Time, moveOutDate time.Time, minMonths i
 	return !moveOutDate.Before(eligibleAt)
 }
 
-// effectiveDeposit returns the deposit amount to use in settlement.
-// Returns 0 if tenant left before MinMonths (deposit forfeited).
-func effectiveDeposit(c *contract.Contract, moveOutDate time.Time) int64 {
-	if !isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths) {
-		return 0
-	}
-	return c.DepositAmount
+// DepositSettlementState holds the fully computed deposit breakdown for a settlement.
+// Each field has a single, unambiguous meaning — no mixing of forfeiture and application.
+type DepositSettlementState struct {
+	OriginalAmount   int64 // deposit held by landlord (contract.DepositAmount)
+	ForfeitedAmount  int64 // deposit lost due to early exit (0 if eligible)
+	AvailableToApply int64 // OriginalAmount - ForfeitedAmount
+	AppliedAmount    int64 // min(AvailableToApply, grossCharges) — offsets charges
+	RefundAmount     int64 // AvailableToApply - AppliedAmount (>0 only if deposit returnable)
+	AmountDue        int64 // grossCharges - AppliedAmount (>0 only if charges exceed available)
 }
 
-// toSettlementResult computes net amount and deposit used from bill totals.
-func toSettlementResult(billID uuid.UUID, totalAmount, depositAmount int64) *moveout.SettlementBillResult {
-	netAmount := totalAmount - depositAmount
-	depositUsed := depositAmount
-	if totalAmount < depositAmount {
-		depositUsed = totalAmount
+// computeDepositSettlement computes the full deposit state for a settlement.
+//
+// Rules:
+//   - Returnable (min months met): full deposit available, excess refunded
+//   - Not returnable (early exit): deposit still offsets charges (no double penalty),
+//     but any remainder is forfeited, not refunded
+func computeDepositSettlement(depositAmount int64, grossCharges int64, returnable bool) DepositSettlementState {
+	s := DepositSettlementState{
+		OriginalAmount:   depositAmount,
+		AvailableToApply: depositAmount, // full deposit available regardless of returnability
 	}
-	if depositUsed < 0 {
-		depositUsed = 0
+
+	// Apply deposit to charges
+	s.AppliedAmount = s.AvailableToApply
+	if grossCharges < s.AppliedAmount {
+		s.AppliedAmount = grossCharges
+	}
+	if s.AppliedAmount < 0 {
+		s.AppliedAmount = 0
+	}
+
+	// Remaining deposit after application
+	remaining := s.AvailableToApply - s.AppliedAmount
+	if returnable {
+		s.RefundAmount = remaining
+	} else {
+		// Early exit: deposit still offsets charges (no double penalty),
+		// but remainder stays with landlord instead of being refunded.
+		s.ForfeitedAmount = remaining
+	}
+
+	// Amount tenant still owes
+	if grossCharges > s.AppliedAmount {
+		s.AmountDue = grossCharges - s.AppliedAmount
+	}
+
+	return s
+}
+
+// toSettlementResult converts deposit state into the moveout result DTO.
+func toSettlementResult(billID uuid.UUID, ds DepositSettlementState) *moveout.SettlementBillResult {
+	netAmount := int64(0)
+	if ds.AmountDue > 0 {
+		netAmount = ds.AmountDue // positive = tenant pays
+	} else if ds.RefundAmount > 0 {
+		netAmount = -ds.RefundAmount // negative = refund to tenant
 	}
 	return &moveout.SettlementBillResult{
 		BillID:      billID,
 		NetAmount:   netAmount,
-		DepositUsed: depositUsed,
+		DepositUsed: ds.AppliedAmount,
 	}
 }
 
@@ -669,10 +728,129 @@ func (s *billingService) voidExistingMonthlyBills(ctx context.Context, contractI
 	return nil
 }
 
+// absorbOutstandingBills finds all unpaid monthly bills for the contract from
+// prior months and adds them as OUTSTANDING_BILL line items in the settlement.
+// Bills are voided with reason "ABSORBED_BY_SETTLEMENT" to prevent double collection.
+//
+// Special case: bill M-1 (the one containing advance rent for move-out month M)
+// only absorbs its utility portion because rent for M is already handled by prorate.
+func (s *billingService) absorbOutstandingBills(ctx context.Context, items []BillLineItem, order int, contractID uuid.UUID, settlementMonth string) ([]BillLineItem, int, error) {
+	unpaid, err := s.repo.FindUnpaidMonthlyByContractID(ctx, contractID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("find unpaid bills: %w", err)
+	}
+
+	advanceRentBillMonth := previousMonth(settlementMonth)
+
+	for i := range unpaid {
+		b := &unpaid[i]
+		// Same-month bills are replaced by voidExistingMonthlyBills, not absorbed
+		if b.BillingMonth >= settlementMonth {
+			continue
+		}
+		// Only absorb FINALIZED bills — DRAFT bills haven't been confirmed yet
+		if !b.IsFinalized() {
+			continue
+		}
+
+		var amount int64
+		var desc string
+
+		if b.BillingMonth == advanceRentBillMonth {
+			// Bill M-1 contains advance rent for M (handled by prorate) — absorb utility only
+			amount = absorbableUtilityTotal(b)
+			if amount <= 0 {
+				if err := b.MarkAbsorbedBySettlement(); err != nil {
+					return nil, 0, fmt.Errorf("mark zero-amount bill %s absorbed: %w", b.ID, err)
+				}
+				if err := s.repo.Update(ctx, b); err != nil {
+					return nil, 0, fmt.Errorf("update zero-amount bill %s: %w", b.ID, err)
+				}
+				continue
+			}
+			desc = fmt.Sprintf("ค่าน้ำ/ไฟค้าง %s", b.BillingMonth)
+		} else {
+			amount = b.TotalAmount
+			if amount <= 0 {
+				if err := b.MarkAbsorbedBySettlement(); err != nil {
+					return nil, 0, fmt.Errorf("mark zero-amount bill %s absorbed: %w", b.ID, err)
+				}
+				if err := s.repo.Update(ctx, b); err != nil {
+					return nil, 0, fmt.Errorf("update zero-amount bill %s: %w", b.ID, err)
+				}
+				continue
+			}
+			desc = fmt.Sprintf("ยอดค้างเดือน %s", b.BillingMonth)
+		}
+
+		items = append(items, NewOutstandingBillLine(amount, desc, order))
+		order++
+
+		if err := b.MarkAbsorbedBySettlement(); err == nil {
+			if err := s.repo.Update(ctx, b); err != nil {
+				return nil, 0, fmt.Errorf("void absorbed bill %s: %w", b.ID, err)
+			}
+		}
+	}
+
+	return items, order, nil
+}
+
+// restoreAbsorbedBills restores monthly bills that were voided by settlement absorption.
+// Called when a settlement is voided (cancel or regeneration) so bills can be re-absorbed
+// by a new settlement or collected normally if move-out is cancelled.
+// Only touches bills where IsAbsorbedBySettlement() == true.
+func (s *billingService) restoreAbsorbedBills(ctx context.Context, contractID uuid.UUID) error {
+	bills, err := s.repo.FindAbsorbedByContractID(ctx, contractID)
+	if err != nil {
+		return fmt.Errorf("find absorbed bills: %w", err)
+	}
+	for i := range bills {
+		b := &bills[i]
+		if err := b.RestoreFromAbsorbed(); err != nil {
+			continue // not absorbed — skip (defensive)
+		}
+		if err := s.repo.Update(ctx, b); err != nil {
+			return fmt.Errorf("restore absorbed bill %s: %w", b.ID, err)
+		}
+	}
+	return nil
+}
+
+// absorbableUtilityTotal sums line items from a bill that should be absorbed
+// when the bill is the M-1 advance-rent bill (rent is handled separately by prorate).
+//
+// Type-safe: only known utility types are included. Unknown types are skipped
+// to prevent silent incorrect billing.
+func absorbableUtilityTotal(b *Bill) int64 {
+	var total int64
+	for _, li := range b.LineItems {
+		switch li.LineType {
+		case LineItemElectricity, LineItemWater:
+			total += li.Amount
+		case LineItemRoomRent, LineItemProrateRent:
+			// Rent is recalculated as prorate in settlement — skip
+		default:
+			// CLEANING_FEE, KEY_SERVICE, PENALTY, OTHER, etc.
+			// Do NOT absorb silently — these are not utility charges.
+			// They will be lost from the voided bill. Admin can re-add as MANUAL items.
+		}
+	}
+	return total
+}
+
 // --- Month helpers ---
 
 func toMonth(t time.Time) string {
 	return t.Format("2006-01")
+}
+
+func previousMonth(month string) string {
+	t, err := time.Parse("2006-01", month)
+	if err != nil {
+		return month
+	}
+	return t.AddDate(0, -1, 0).Format("2006-01")
 }
 
 func advanceMonth(month string) string {
@@ -755,13 +933,20 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	}
 	_ = order
 
+	// Absorb outstanding unpaid bills from prior months
+	items, order, err = s.absorbOutstandingBills(ctx, items, order, contractID, billingMonth)
+	if err != nil {
+		return nil, err
+	}
+	_ = order
+
 	bill := Bill{
 		ContractID:    contractID,
 		BillingMonth:  billingMonth,
 		BillType:      BillTypeSettlement,
 		Status:        BillStatusDraft,
 		RentPaid:      rentPaid,
-		DepositAmount: effectiveDeposit(c, moveOutDate),
+		DepositAmount: c.DepositAmount,
 		LineItems:     items,
 	}
 	bill.CalculateTotal()
@@ -774,10 +959,14 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 		return nil, fmt.Errorf("create settlement bill: %w", err)
 	}
 
-	return toSettlementResult(bill.ID, bill.TotalAmount, bill.DepositAmount), nil
+	returnable := isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths)
+	ds := computeDepositSettlement(bill.DepositAmount, bill.TotalAmount, returnable)
+	return toSettlementResult(bill.ID, ds), nil
 }
 
 // VoidSettlement marks a settlement bill as VOIDED with the given reason.
+// Also restores any monthly bills that were absorbed by this settlement,
+// so they can be re-absorbed by a new settlement or collected normally.
 // Called by the move-out service within its transaction context.
 func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error {
 	b, err := s.repo.FindByID(ctx, billID)
@@ -790,5 +979,9 @@ func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, r
 	if err := b.Void(reason); err != nil {
 		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
-	return s.repo.Update(ctx, b)
+	if err := s.repo.Update(ctx, b); err != nil {
+		return fmt.Errorf("void settlement: %w", err)
+	}
+	// Restore absorbed bills so they can be re-collected or re-absorbed
+	return s.restoreAbsorbedBills(ctx, b.ContractID)
 }

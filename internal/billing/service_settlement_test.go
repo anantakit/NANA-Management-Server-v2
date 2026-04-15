@@ -1,0 +1,669 @@
+package billing
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"nana/internal/contract"
+
+	"github.com/google/uuid"
+)
+
+// --- Settlement test helpers ---
+
+func earlyExitContract() *contract.Contract {
+	return &contract.Contract{
+		ID:                     uuid.New(),
+		RoomID:                 uuid.New(),
+		Status:                 contract.ContractStatusActive,
+		StartDate:              time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		MinMonths:              6, // eligible at July 1
+		MonthlyRent:            500000,
+		DepositAmount:          1000000, // 10,000 baht
+		ElectricityRatePerUnit: 800,
+		WaterRatePerUnit:       1800,
+	}
+}
+
+func normalExitContract() *contract.Contract {
+	return &contract.Contract{
+		ID:                     uuid.New(),
+		RoomID:                 uuid.New(),
+		Status:                 contract.ContractStatusActive,
+		StartDate:              time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
+		MinMonths:              6, // eligible at Dec 1
+		MonthlyRent:            500000,
+		DepositAmount:          1000000,
+		ElectricityRatePerUnit: 800,
+		WaterRatePerUnit:       1800,
+	}
+}
+
+func unpaidBill(contractID uuid.UUID, billingMonth string, total int64) Bill {
+	return Bill{
+		ID:           uuid.New(),
+		ContractID:   contractID,
+		BillingMonth: billingMonth,
+		BillType:     BillTypeMonthly,
+		Status:       BillStatusFinalized,
+		TotalAmount:  total,
+		LineItems: []BillLineItem{
+			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 500000, SortOrder: 1},
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: total - 500000 - 18000, SortOrder: 2},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 18000, SortOrder: 3},
+		},
+	}
+}
+
+func unpaidBillWithUtility(contractID uuid.UUID, billingMonth string, rent, elec, water int64) Bill {
+	return Bill{
+		ID:           uuid.New(),
+		ContractID:   contractID,
+		BillingMonth: billingMonth,
+		BillType:     BillTypeMonthly,
+		Status:       BillStatusFinalized,
+		TotalAmount:  rent + elec + water,
+		LineItems: []BillLineItem{
+			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: rent, SortOrder: 1},
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: elec, SortOrder: 2},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: water, SortOrder: 3},
+		},
+	}
+}
+
+func settlementSetup(c *contract.Contract, moveOutDate time.Time, unpaidBills []Bill) (*mockBillingRepo, BillingService) {
+	exitReading := testExitReading(c.RoomID, moveOutDate)
+
+	repo := &mockBillingRepo{
+		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+			return unpaidBills, nil
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{},
+		&mockMoveOutQuerier{},
+	)
+	return repo, svc
+}
+
+// ============================================================
+// Settlement Absorption Tests
+// ============================================================
+
+func TestGenerateSettlement_AbsorbsSingleUnpaidBill(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	// Unpaid bill from 2026-02 (older than M-1) — absorb entirely
+	bill := unpaidBill(c.ID, "2026-02", 620000) // 6,200 baht
+	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	created := repo.createdBill
+	// Find OUTSTANDING_BILL line item
+	var found bool
+	for _, li := range created.LineItems {
+		if li.LineType == LineItemOutstandingBill {
+			found = true
+			if li.Amount != 620000 {
+				t.Errorf("outstanding amount = %d, want 620000", li.Amount)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected OUTSTANDING_BILL line item")
+	}
+}
+
+func TestGenerateSettlement_AbsorbsMultipleUnpaidBills(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	bills := []Bill{
+		unpaidBill(c.ID, "2026-01", 600000),
+		unpaidBill(c.ID, "2026-02", 620000),
+	}
+	repo, svc := settlementSetup(c, moveOut, bills)
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var outstandingCount int
+	var outstandingTotal int64
+	for _, li := range repo.createdBill.LineItems {
+		if li.LineType == LineItemOutstandingBill {
+			outstandingCount++
+			outstandingTotal += li.Amount
+		}
+	}
+	if outstandingCount != 2 {
+		t.Errorf("outstanding line items = %d, want 2", outstandingCount)
+	}
+	if outstandingTotal != 1220000 {
+		t.Errorf("outstanding total = %d, want 1220000", outstandingTotal)
+	}
+}
+
+func TestGenerateSettlement_DoesNotAbsorbPaidBills(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	// Only unpaid bills are returned by FindUnpaidMonthlyByContractID
+	// A paid bill won't appear in the query results
+	repo, svc := settlementSetup(c, moveOut, nil) // no unpaid bills
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, li := range repo.createdBill.LineItems {
+		if li.LineType == LineItemOutstandingBill {
+			t.Error("should not have OUTSTANDING_BILL when no unpaid bills exist")
+		}
+	}
+}
+
+func TestGenerateSettlement_MarksAbsorbedBillsVoid(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	bill := unpaidBill(c.ID, "2026-02", 620000)
+	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check the absorbed bill was voided via MarkAbsorbedBySettlement
+	var voidedAbsorbed bool
+	for _, b := range repo.updatedBills {
+		if b.ID == bill.ID && b.IsAbsorbedBySettlement() {
+			voidedAbsorbed = true
+		}
+	}
+	if !voidedAbsorbed {
+		t.Error("absorbed bill should satisfy IsAbsorbedBySettlement()")
+	}
+}
+
+// ============================================================
+// Deposit Pool Tests
+// ============================================================
+
+func TestGenerateSettlement_DepositAppliedWhenSufficient(t *testing.T) {
+	c := normalExitContract() // deposit = 10,000, normal exit (returnable)
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	_, svc := settlementSetup(c, moveOut, nil)
+
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Deposit (10,000) should exceed small utility charges → refund
+	if result.NetAmount >= 0 {
+		t.Errorf("NetAmount = %d, expected negative (refund) for normal exit with large deposit", result.NetAmount)
+	}
+	if result.DepositUsed <= 0 {
+		t.Error("expected deposit to be applied")
+	}
+}
+
+func TestGenerateSettlement_DepositInsufficientRequiresPayment(t *testing.T) {
+	c := normalExitContract()
+	c.DepositAmount = 10000 // only 100 baht — way less than charges
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+
+	bills := []Bill{unpaidBill(c.ID, "2026-02", 620000)} // large outstanding
+	_, svc := settlementSetup(c, moveOut, bills)
+
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.NetAmount <= 0 {
+		t.Errorf("NetAmount = %d, expected positive (tenant pays) when deposit < charges", result.NetAmount)
+	}
+}
+
+func TestGenerateSettlement_DepositExceedsReturnsRefund(t *testing.T) {
+	c := normalExitContract()
+	c.DepositAmount = 5000000 // 50,000 baht — way more than charges
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	_, svc := settlementSetup(c, moveOut, nil)
+
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.NetAmount >= 0 {
+		t.Errorf("NetAmount = %d, expected negative (refund) for returnable deposit exceeding charges", result.NetAmount)
+	}
+}
+
+func TestGenerateSettlement_EarlyExitDoesNotDoublePenalty(t *testing.T) {
+	c := earlyExitContract() // start=Jan 1, minMonths=6, deposit=10,000
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC) // 3.5 months = early exit
+	repo, svc := settlementSetup(c, moveOut, nil)
+
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	created := repo.createdBill
+
+	// Deposit should be full amount (pool-based, NOT zero)
+	if created.DepositAmount != c.DepositAmount {
+		t.Errorf("DepositAmount = %d, want %d (full deposit as pool)", created.DepositAmount, c.DepositAmount)
+	}
+
+	// For early exit: if deposit > charges, net = 0 (forfeited, not refunded)
+	// NOT the old behavior where deposit=0 and tenant pays everything
+	if created.TotalAmount < c.DepositAmount {
+		// Deposit covers everything — no additional payment
+		if result.NetAmount != 0 {
+			t.Errorf("NetAmount = %d, want 0 (deposit covers charges, remainder forfeited)", result.NetAmount)
+		}
+	} else {
+		// Charges exceed deposit — tenant pays overage only
+		expected := created.TotalAmount - c.DepositAmount
+		if result.NetAmount != expected {
+			t.Errorf("NetAmount = %d, want %d (tenant pays overage)", result.NetAmount, expected)
+		}
+	}
+}
+
+// ============================================================
+// Single Document Test
+// ============================================================
+
+func TestGenerateSettlement_IsSingleDocument(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	bills := []Bill{
+		unpaidBill(c.ID, "2026-01", 600000),
+		unpaidBill(c.ID, "2026-02", 620000),
+	}
+	repo, svc := settlementSetup(c, moveOut, bills)
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	created := repo.createdBill
+	if !created.IsSettlement() {
+		t.Error("expected SETTLEMENT bill type")
+	}
+	if !created.IsDraft() {
+		t.Error("expected DRAFT status")
+	}
+
+	// Should have: rent (prorate or none) + water + electricity + 2 outstanding
+	hasWater := false
+	hasElec := false
+	outstandingCount := 0
+	for _, li := range created.LineItems {
+		switch li.LineType {
+		case LineItemWater:
+			hasWater = true
+		case LineItemElectricity:
+			hasElec = true
+		case LineItemOutstandingBill:
+			outstandingCount++
+		}
+	}
+	if !hasWater || !hasElec {
+		t.Error("settlement must include utility charges")
+	}
+	if outstandingCount != 2 {
+		t.Errorf("settlement should absorb 2 outstanding bills, got %d", outstandingCount)
+	}
+
+	// Total should include everything
+	if created.TotalAmount <= 0 {
+		t.Error("total should be positive (has charges)")
+	}
+}
+
+// ============================================================
+// M-1 Bill Special Case (advance rent bill)
+// ============================================================
+
+func TestGenerateSettlement_AbsorbsOnlyUtilityFromAdvanceRentBill(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	// Bill "2026-03" is M-1 (advance rent for April) — only utility should be absorbed
+	bill := unpaidBillWithUtility(c.ID, "2026-03", 500000, 120000, 18000) // rent=5000, elec=1200, water=180
+
+	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var outstandingAmount int64
+	for _, li := range repo.createdBill.LineItems {
+		if li.LineType == LineItemOutstandingBill {
+			outstandingAmount += li.Amount
+		}
+	}
+
+	// Should absorb only utility (120000 + 18000 = 138000), NOT rent (500000)
+	expectedUtility := int64(120000 + 18000)
+	if outstandingAmount != expectedUtility {
+		t.Errorf("outstanding amount = %d, want %d (utility only from M-1 bill)", outstandingAmount, expectedUtility)
+	}
+}
+
+// ============================================================
+// VoidSettlement restores absorbed bills
+// ============================================================
+
+func TestVoidSettlement_RestoresAbsorbedBills(t *testing.T) {
+	settlementID := uuid.New()
+	contractID := uuid.New()
+
+	// Build an absorbed bill using the model method
+	absorbedBill := Bill{
+		ID:         uuid.New(),
+		ContractID: contractID,
+		BillingMonth: "2026-02",
+		BillType:   BillTypeMonthly,
+		Status:     BillStatusFinalized,
+		LineItems:  []BillLineItem{{LineType: LineItemWater, Amount: 1000, SortOrder: 1}},
+	}
+	_ = absorbedBill.MarkAbsorbedBySettlement()
+
+	if !absorbedBill.IsAbsorbedBySettlement() {
+		t.Fatal("precondition: bill should be absorbed")
+	}
+
+	repo := &mockBillingRepo{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*Bill, error) {
+			return &Bill{
+				ID:         settlementID,
+				ContractID: contractID,
+				BillType:   BillTypeSettlement,
+				Status:     BillStatusDraft,
+				LineItems:  []BillLineItem{{LineType: LineItemWater, Amount: 1000, SortOrder: 1}},
+			}, nil
+		},
+		findAbsorbedFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+			return []Bill{absorbedBill}, nil
+		},
+	}
+	svc := newSvc(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+
+	err := svc.VoidSettlement(context.Background(), settlementID, "MOVE_OUT_CANCELLED")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check: absorbed bill restored via RestoreFromAbsorbed
+	var restoredCount int
+	for _, b := range repo.updatedBills {
+		if b.ID == absorbedBill.ID && b.Status == BillStatusFinalized && b.VoidReason == nil {
+			restoredCount++
+		}
+	}
+	if restoredCount != 1 {
+		t.Errorf("restored absorbed bills = %d, want 1", restoredCount)
+	}
+}
+
+// ============================================================
+// Absorbed bill model helpers
+// ============================================================
+
+func TestBill_AbsorptionLifecycle(t *testing.T) {
+	t.Run("mark + check + restore", func(t *testing.T) {
+		b := Bill{Status: BillStatusFinalized, LineItems: []BillLineItem{{Amount: 100, SortOrder: 1}}}
+
+		if b.IsAbsorbedBySettlement() {
+			t.Error("should not be absorbed initially")
+		}
+
+		if err := b.MarkAbsorbedBySettlement(); err != nil {
+			t.Fatalf("MarkAbsorbedBySettlement: %v", err)
+		}
+		if !b.IsAbsorbedBySettlement() {
+			t.Error("should be absorbed after mark")
+		}
+		if !b.IsVoid() {
+			t.Error("should be VOID after mark")
+		}
+
+		if err := b.RestoreFromAbsorbed(); err != nil {
+			t.Fatalf("RestoreFromAbsorbed: %v", err)
+		}
+		if b.IsAbsorbedBySettlement() {
+			t.Error("should not be absorbed after restore")
+		}
+		if b.Status != BillStatusFinalized {
+			t.Errorf("status = %s, want FINALIZED", b.Status)
+		}
+		if b.VoidReason != nil {
+			t.Error("VoidReason should be nil after restore")
+		}
+	})
+
+	t.Run("restore rejects non-absorbed void bill", func(t *testing.T) {
+		b := Bill{Status: BillStatusFinalized, LineItems: []BillLineItem{{Amount: 100, SortOrder: 1}}}
+		_ = b.Void("REGENERATED")
+
+		if err := b.RestoreFromAbsorbed(); err == nil {
+			t.Error("RestoreFromAbsorbed should reject bill voided for other reason")
+		}
+	})
+
+	t.Run("restore rejects non-void bill", func(t *testing.T) {
+		b := Bill{Status: BillStatusFinalized}
+		if err := b.RestoreFromAbsorbed(); err == nil {
+			t.Error("RestoreFromAbsorbed should reject non-void bill")
+		}
+	})
+}
+
+// ============================================================
+// Idempotency: generate → void → generate again
+// ============================================================
+
+func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	exitReading := testExitReading(c.RoomID, moveOut)
+
+	// Two outstanding bills that will be absorbed
+	jan := unpaidBill(c.ID, "2026-01", 600000)
+	feb := unpaidBill(c.ID, "2026-02", 620000)
+
+	// Track bill states across cycles
+	billStates := map[uuid.UUID]*Bill{
+		jan.ID: &jan,
+		feb.ID: &feb,
+	}
+
+	repo := &mockBillingRepo{
+		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+			// Return only FINALIZED bills (simulating real DB filter)
+			var result []Bill
+			for _, b := range billStates {
+				if b.IsFinalized() {
+					result = append(result, *b)
+				}
+			}
+			return result, nil
+		},
+		findAbsorbedFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+			var result []Bill
+			for _, b := range billStates {
+				if b.IsAbsorbedBySettlement() {
+					result = append(result, *b)
+				}
+			}
+			return result, nil
+		},
+		updateFn: func(_ context.Context, bill *Bill) error {
+			// Track state changes in our map
+			if st, ok := billStates[bill.ID]; ok {
+				st.Status = bill.Status
+				st.VoidReason = bill.VoidReason
+			}
+			return nil
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{},
+		&mockMoveOutQuerier{},
+	)
+
+	// --- Cycle 1: Generate ---
+	result1, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("generate 1: %v", err)
+	}
+
+	// Both bills should be absorbed
+	for _, b := range billStates {
+		if !b.IsAbsorbedBySettlement() {
+			t.Errorf("after generate 1: bill %s should be absorbed", b.BillingMonth)
+		}
+	}
+
+	created1 := repo.createdBill
+	outstanding1 := countLineItemsByType(created1, LineItemOutstandingBill)
+	if outstanding1 != 2 {
+		t.Errorf("generate 1: outstanding items = %d, want 2", outstanding1)
+	}
+
+	// --- Cycle 2: Void settlement ---
+	// We need findByIDFn to return the settlement for voiding
+	repo.findByIDFn = func(_ context.Context, id uuid.UUID) (*Bill, error) {
+		if id == result1.BillID {
+			return created1, nil
+		}
+		return nil, errors.New("not found")
+	}
+
+	err = svc.VoidSettlement(context.Background(), result1.BillID, "MOVE_OUT_CANCELLED")
+	if err != nil {
+		t.Fatalf("void: %v", err)
+	}
+
+	// Both bills should be restored to FINALIZED
+	for _, b := range billStates {
+		if !b.IsFinalized() {
+			t.Errorf("after void: bill %s should be FINALIZED, got %s", b.BillingMonth, b.Status)
+		}
+	}
+
+	// --- Cycle 3: Generate again ---
+	repo.createdBill = nil
+	repo.findByIDFn = nil
+
+	_, err = svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("generate 2: %v", err)
+	}
+
+	// Both bills absorbed again
+	for _, b := range billStates {
+		if !b.IsAbsorbedBySettlement() {
+			t.Errorf("after generate 2: bill %s should be absorbed", b.BillingMonth)
+		}
+	}
+
+	created2 := repo.createdBill
+	outstanding2 := countLineItemsByType(created2, LineItemOutstandingBill)
+	if outstanding2 != 2 {
+		t.Errorf("generate 2: outstanding items = %d, want 2 (no duplicates)", outstanding2)
+	}
+}
+
+func countLineItemsByType(b *Bill, lt LineItemType) int {
+	n := 0
+	for _, li := range b.LineItems {
+		if li.LineType == lt {
+			n++
+		}
+	}
+	return n
+}
+
+// ============================================================
+// Absorption guard: DRAFT bills are not absorbed
+// ============================================================
+
+func TestGenerateSettlement_SkipsDraftBills(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+
+	draftBill := Bill{
+		ID:           uuid.New(),
+		ContractID:   c.ID,
+		BillingMonth: "2026-02",
+		BillType:     BillTypeMonthly,
+		Status:       BillStatusDraft, // not finalized
+		TotalAmount:  620000,
+		LineItems: []BillLineItem{
+			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 500000, SortOrder: 1},
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 102000, SortOrder: 2},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 18000, SortOrder: 3},
+		},
+	}
+
+	repo, svc := settlementSetup(c, moveOut, []Bill{draftBill})
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, li := range repo.createdBill.LineItems {
+		if li.LineType == LineItemOutstandingBill {
+			t.Error("DRAFT bill should NOT be absorbed into settlement")
+		}
+	}
+}
+
+// ============================================================
+// Transaction rollback test
+// ============================================================
+
+func TestGenerateSettlement_ReturnsErrorOnCreateFailure(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	exitReading := testExitReading(c.RoomID, moveOut)
+
+	repo := &mockBillingRepo{
+		createFn: func(_ context.Context, _ *Bill) error {
+			return errors.New("db connection lost")
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{},
+		&mockMoveOutQuerier{},
+	)
+
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	if err == nil {
+		t.Fatal("expected error when create fails")
+	}
+}

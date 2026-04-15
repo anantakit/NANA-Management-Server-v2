@@ -30,6 +30,8 @@ type BillingRepository interface {
 	CreateLineItems(ctx context.Context, items []BillLineItem) error
 	SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, sinceMonth string) (int64, error)
 	HasPaidAdvanceRentForMonth(ctx context.Context, contractID uuid.UUID, moveOutMonth string) (bool, error)
+	FindUnpaidMonthlyByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
+	FindAbsorbedByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
 
 	CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error
 	FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
@@ -420,6 +422,34 @@ func (r *billingRepository) HasPaidAdvanceRentForMonth(ctx context.Context, cont
 			contractID, BillTypeMonthly, BillStatusPaid, prevMonth).
 		Count(&count).Error
 	return count > 0, err
+}
+
+// FindUnpaidMonthlyByContractID returns all non-paid, non-voided monthly bills
+// for a contract, ordered by billing_month ASC. Used by settlement generation
+// to absorb outstanding charges into a single settlement document.
+func (r *billingRepository) FindUnpaidMonthlyByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error) {
+	var bills []Bill
+	err := database.DB(ctx, r.db).
+		Preload("LineItems", func(db *gorm.DB) *gorm.DB {
+			return db.Order("sort_order ASC")
+		}).
+		Where("contract_id = ? AND bill_type = ? AND status IN ?",
+			contractID, BillTypeMonthly, []BillStatus{BillStatusDraft, BillStatusFinalized}).
+		Order("billing_month ASC").
+		Find(&bills).Error
+	return bills, err
+}
+
+// FindAbsorbedByContractID returns monthly bills that were voided because they
+// were absorbed into a settlement. Used to restore them when settlement is voided.
+func (r *billingRepository) FindAbsorbedByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error) {
+	var bills []Bill
+	err := database.DB(ctx, r.db).
+		Where("contract_id = ? AND bill_type = ? AND status = ? AND void_reason = ?",
+			contractID, BillTypeMonthly, BillStatusVoid, "ABSORBED_BY_SETTLEMENT").
+		Order("billing_month ASC").
+		Find(&bills).Error
+	return bills, err
 }
 
 // --- Commit flow ---

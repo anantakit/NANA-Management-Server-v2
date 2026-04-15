@@ -26,6 +26,8 @@ type mockBillingRepo struct {
 	findExistingByContractsAndMonthFn   func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
 	sumPaidFn                           func(ctx context.Context, contractID uuid.UUID, since string) (int64, error)
 	hasPaidAdvanceRentFn                func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
+	findUnpaidMonthlyFn                 func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
+	findAbsorbedFn                      func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
 	createFn                            func(ctx context.Context, bill *Bill) error
 	updateFn                            func(ctx context.Context, bill *Bill) error
 	apartmentID                         uuid.UUID
@@ -123,6 +125,18 @@ func (m *mockBillingRepo) HasPaidAdvanceRentForMonth(ctx context.Context, contra
 		return m.hasPaidAdvanceRentFn(ctx, contractID, month)
 	}
 	return false, nil
+}
+func (m *mockBillingRepo) FindUnpaidMonthlyByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error) {
+	if m.findUnpaidMonthlyFn != nil {
+		return m.findUnpaidMonthlyFn(ctx, contractID)
+	}
+	return nil, nil
+}
+func (m *mockBillingRepo) FindAbsorbedByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error) {
+	if m.findAbsorbedFn != nil {
+		return m.findAbsorbedFn(ctx, contractID)
+	}
+	return nil, nil
 }
 func (m *mockBillingRepo) DeleteLineItemsBySource(_ context.Context, _ uuid.UUID, _ LineItemSource) error {
 	return nil
@@ -1675,28 +1689,65 @@ func TestIsDepositReturnable_EndOfMonth(t *testing.T) {
 	})
 }
 
-func TestEffectiveDeposit(t *testing.T) {
-	t.Run("eligible — returns full deposit", func(t *testing.T) {
-		c := &contract.Contract{
-			StartDate:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			MinMonths:     6,
-			DepositAmount: 300000, // ฿3,000
+func TestComputeDepositSettlement(t *testing.T) {
+	t.Run("returnable — deposit exceeds charges → refund", func(t *testing.T) {
+		ds := computeDepositSettlement(1000000, 600000, true) // 10k deposit, 6k charges
+		if ds.OriginalAmount != 1000000 {
+			t.Errorf("OriginalAmount = %d, want 1000000", ds.OriginalAmount)
 		}
-		moveOut := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-		if got := effectiveDeposit(c, moveOut); got != 300000 {
-			t.Errorf("got %d, want 300000", got)
+		if ds.ForfeitedAmount != 0 {
+			t.Errorf("ForfeitedAmount = %d, want 0", ds.ForfeitedAmount)
+		}
+		if ds.AppliedAmount != 600000 {
+			t.Errorf("AppliedAmount = %d, want 600000", ds.AppliedAmount)
+		}
+		if ds.RefundAmount != 400000 {
+			t.Errorf("RefundAmount = %d, want 400000", ds.RefundAmount)
+		}
+		if ds.AmountDue != 0 {
+			t.Errorf("AmountDue = %d, want 0", ds.AmountDue)
 		}
 	})
 
-	t.Run("not eligible — returns zero", func(t *testing.T) {
-		c := &contract.Contract{
-			StartDate:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			MinMonths:     6,
-			DepositAmount: 300000,
+	t.Run("returnable — charges exceed deposit → tenant pays", func(t *testing.T) {
+		ds := computeDepositSettlement(300000, 800000, true) // 3k deposit, 8k charges
+		if ds.AppliedAmount != 300000 {
+			t.Errorf("AppliedAmount = %d, want 300000", ds.AppliedAmount)
 		}
-		moveOut := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-		if got := effectiveDeposit(c, moveOut); got != 0 {
-			t.Errorf("got %d, want 0", got)
+		if ds.RefundAmount != 0 {
+			t.Errorf("RefundAmount = %d, want 0", ds.RefundAmount)
+		}
+		if ds.AmountDue != 500000 {
+			t.Errorf("AmountDue = %d, want 500000", ds.AmountDue)
+		}
+	})
+
+	t.Run("early exit — deposit covers charges, remainder forfeited", func(t *testing.T) {
+		ds := computeDepositSettlement(1000000, 400000, false) // 10k deposit, 4k charges
+		if ds.AppliedAmount != 400000 {
+			t.Errorf("AppliedAmount = %d, want 400000", ds.AppliedAmount)
+		}
+		if ds.ForfeitedAmount != 600000 {
+			t.Errorf("ForfeitedAmount = %d, want 600000 (remainder forfeited)", ds.ForfeitedAmount)
+		}
+		if ds.RefundAmount != 0 {
+			t.Errorf("RefundAmount = %d, want 0 (no refund on early exit)", ds.RefundAmount)
+		}
+		if ds.AmountDue != 0 {
+			t.Errorf("AmountDue = %d, want 0 (deposit covers charges)", ds.AmountDue)
+		}
+	})
+
+	t.Run("early exit — charges exceed deposit → tenant pays overage", func(t *testing.T) {
+		ds := computeDepositSettlement(300000, 800000, false) // 3k deposit, 8k charges
+		if ds.AppliedAmount != 300000 {
+			t.Errorf("AppliedAmount = %d, want 300000", ds.AppliedAmount)
+		}
+		if ds.ForfeitedAmount != 0 {
+			t.Errorf("ForfeitedAmount = %d, want 0 (all deposit applied)", ds.ForfeitedAmount)
+		}
+		if ds.AmountDue != 500000 {
+			t.Errorf("AmountDue = %d, want 500000", ds.AmountDue)
 		}
 	})
 }
