@@ -30,6 +30,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/", h.List)
 	r.Get("/:id", h.GetByID)
 	r.Post("/monthly", h.CreateMonthly)
+	r.Post("/settlement/preview", h.PreviewSettlement)
 	r.Post("/settlement", h.CreateSettlement)
 	r.Post("/batch-monthly", h.BatchCreateMonthly)
 	r.Patch("/:id/finalize", h.Finalize)
@@ -104,6 +105,32 @@ func (h *BillingHandler) CreateMonthly(c fiber.Ctx) error {
 	}
 
 	return respond.Created(c, "สร้างบิลรายเดือนสำเร็จ", ToBillResponseWithRelations(*bill))
+}
+
+func (h *BillingHandler) PreviewSettlement(c fiber.Ctx) error {
+	var req PreviewSettlementRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	contractID, err := uuid.Parse(req.ContractID)
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง"))
+	}
+
+	input := PreviewSettlementInput{
+		ContractID: contractID,
+	}
+	if req.RentMode != "" {
+		input.RentMode = SettlementRentMode(req.RentMode)
+	}
+
+	preview, err := h.svc.PreviewSettlement(c.Context(), input)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สำเร็จ", ToSettlementPreviewResponse(preview))
 }
 
 func (h *BillingHandler) CreateSettlement(c fiber.Ctx) error {

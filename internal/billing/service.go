@@ -47,6 +47,9 @@ type BillingService interface {
 	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 
+	// Settlement preview (non-persisting)
+	PreviewSettlement(ctx context.Context, input PreviewSettlementInput) (*SettlementPreview, error)
+
 	// Settlement draft editing
 	UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest) (*BillWithRelations, error)
 
@@ -179,6 +182,42 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, fmt.Errorf("create monthly bill: %w", err)
 	}
 	return s.repo.FindByIDWithRelations(ctx, bill.ID)
+}
+
+// PreviewSettlement computes settlement data without persisting anything.
+// Calls prepareSettlementPlan (same path as create) but skips commitSettlementPlan.
+func (s *billingService) PreviewSettlement(ctx context.Context, input PreviewSettlementInput) (*SettlementPreview, error) {
+	// Resolve move-out date from notice (same as CreateSettlementBill)
+	notice, err := s.moveOuts.FindActiveByContractID(ctx, input.ContractID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrMoveOutNotFound
+		}
+		return nil, fmt.Errorf("find move-out: %w", err)
+	}
+	moveOutDate, err := notice.RequireActualDate()
+	if err != nil {
+		return nil, ErrActualDateRequired
+	}
+
+	opts := DefaultSettlementOptions()
+	if input.RentMode != "" {
+		opts.RentMode = input.RentMode
+	}
+
+	plan, err := s.prepareSettlementPlan(ctx, input.ContractID, moveOutDate, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SettlementPreview{
+		Plan:                 plan,
+		MinMonths:            plan.MinMonths,
+		Returnable:           plan.DepositReturnable,
+		MoveOutDate:          moveOutDate,
+		EffectiveMoveOutDate: effectiveMoveOutDate(moveOutDate, opts.RentMode),
+		RentMode:             opts.RentMode,
+	}, nil
 }
 
 // CreateSettlementBill is the REST endpoint adapter (POST /bills/settlement).
@@ -574,12 +613,14 @@ func toSettlementResult(billID uuid.UUID, ds DepositSettlementState) *moveout.Se
 // --- Settlement core (prepare/commit) ---
 
 // settlementPlan holds computed settlement data before persistence.
-// Phase 2 will reuse prepareSettlementPlan for preview without committing.
+// Used by both preview (read-only) and create (commit) paths.
 type settlementPlan struct {
-	Bill          Bill                   // DRAFT bill to create (line items + total computed)
-	Deposit       DepositSettlementState // deposit breakdown
-	BillsToVoid   []*Bill                // monthly bills to void (REPLACED_BY_SETTLEMENT)
-	BillsToAbsorb []*Bill                // unpaid bills to mark ABSORBED_BY_SETTLEMENT
+	Bill              Bill                   // DRAFT bill to create (line items + total computed)
+	Deposit           DepositSettlementState // deposit breakdown
+	BillsToVoid       []*Bill                // monthly bills to void (REPLACED_BY_SETTLEMENT)
+	BillsToAbsorb     []*Bill                // unpaid bills to mark ABSORBED_BY_SETTLEMENT
+	MinMonths         int                    // contract minimum stay (for preview display)
+	DepositReturnable bool                   // whether deposit qualifies for return
 }
 
 // prepareSettlementPlan computes the full settlement without writing anything.
@@ -674,10 +715,12 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 	deposit := computeDepositSettlement(c.DepositAmount, bill.TotalAmount, returnable)
 
 	return &settlementPlan{
-		Bill:          bill,
-		Deposit:       deposit,
-		BillsToVoid:   billsToVoid,
-		BillsToAbsorb: billsToAbsorb,
+		Bill:              bill,
+		Deposit:           deposit,
+		BillsToVoid:       billsToVoid,
+		BillsToAbsorb:     billsToAbsorb,
+		MinMonths:         c.MinMonths,
+		DepositReturnable: returnable,
 	}, nil
 }
 
