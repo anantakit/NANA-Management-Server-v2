@@ -332,11 +332,12 @@ func testExitReading(roomID uuid.UUID, moveOutDate time.Time) *meterreading.Mete
 
 func completedNotice(contractID uuid.UUID, moveOutDate time.Time) *moveout.MoveOutNotice {
 	return &moveout.MoveOutNotice{
-		ID:                uuid.New(),
-		ContractID:        contractID,
-		Status:            moveout.MoveOutStatusCompleted,
-		NoticeDate:        moveOutDate.AddDate(0, -1, 0),
+		ID:                   uuid.New(),
+		ContractID:           contractID,
+		Status:               moveout.MoveOutStatusCompleted,
+		NoticeDate:           moveOutDate.AddDate(0, -1, 0),
 		ScheduledMoveOutDate: moveOutDate,
+		ActualMoveOutDate:    &moveOutDate,
 	}
 }
 
@@ -1028,7 +1029,7 @@ func TestSettlement_Errors(t *testing.T) {
 			ErrExitReadingMissing,
 		},
 		{
-			"rejects_pending_meter_status",
+			"rejects_no_actual_date",
 			func() BillingService {
 				c := testContract()
 				return newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
@@ -1039,7 +1040,7 @@ func TestSettlement_Errors(t *testing.T) {
 						ScheduledMoveOutDate: time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
 					}})
 			},
-			ErrMoveOutNotCompleted,
+			ErrActualDateRequired,
 		},
 		{
 			"no_move_out_notice",

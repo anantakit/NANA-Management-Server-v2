@@ -181,35 +181,18 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	return s.repo.FindByIDWithRelations(ctx, bill.ID)
 }
 
-// CreateSettlementBill generates a DRAFT settlement bill for a move-out.
-// Requires move-out notice to be COMPLETED (contract already ENDED, room VACANT).
-// Settlement = pro-rate + EXIT meter + configurable fees + deposit netting
+// CreateSettlementBill is the REST endpoint adapter (POST /bills/settlement).
+// Thin adapter: resolves actual move-out date from notice, then delegates to
+// the shared prepareSettlementPlan → commitSettlementPlan path.
 //
-// LEGACY PATH — this is the REST endpoint entry point (POST /bills/settlement).
-// The move-out workflow uses GenerateSettlement() instead, which additionally:
-//   - Absorbs outstanding unpaid bills from prior months
-//   - Computes DepositSettlementState (pool-based, forfeit-aware)
-//   - Uses ActualMoveOutDate (not ScheduledMoveOutDate)
-//
-// TODO: Unify with GenerateSettlement or deprecate before Phase 2.
-// See memory: project_settlement_phase1_decisions.md
+// Same settlement semantics as GenerateSettlement (absorption, deposit, duplicate guard).
 func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง")
 	}
 
-	// Get contract data (rates, deposit) — no status check here because
-	// settlement runs after move-out complete (contract is already ENDED)
-	c, err := s.contracts.FindByIDSimple(ctx, contractID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrContractNotFound
-		}
-		return nil, fmt.Errorf("find contract: %w", err)
-	}
-
-	// Validate move-out notice — must be COMPLETED
+	// Resolve actual move-out date from notice
 	notice, err := s.moveOuts.FindActiveByContractID(ctx, contractID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -217,88 +200,31 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		}
 		return nil, fmt.Errorf("find move-out: %w", err)
 	}
-	if !notice.IsCompleted() {
-		return nil, ErrMoveOutNotCompleted
-	}
-
-	moveOutDate := notice.ScheduledMoveOutDate
-	billingMonth := toMonth(moveOutDate)
-
-	// Check duplicate settlement
-	_, err = s.repo.FindByContractAndMonth(ctx, contractID, billingMonth, BillTypeSettlement)
-	if err == nil {
-		return nil, ErrBillAlreadyExists
-	}
-	if err != gorm.ErrRecordNotFound {
-		return nil, fmt.Errorf("check duplicate: %w", err)
-	}
-
-	// Get EXIT meter reading
-	exitReading, err := s.meters.FindLatestByRoomID(ctx, c.RoomID)
+	moveOutDate, err := notice.RequireActualDate()
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrExitReadingMissing
-		}
-		return nil, fmt.Errorf("find exit reading: %w", err)
-	}
-	if !exitReading.IsExit() {
-		return nil, ErrExitReadingMissing
+		return nil, ErrActualDateRequired
 	}
 
-	// Build line items
-	var items []BillLineItem
-	order := 1
-
-	// Rent adjustment: check if advance rent was already paid
-	var rentPaid bool
-	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate)
-	if err != nil {
-		return nil, err
-	}
-
-	// Water + Electricity from EXIT reading
-	waterUnits := exitReading.WaterUsed()
-	elecUnits := exitReading.ElectricityUsed()
-	items = append(items,
-		NewWaterLine(waterUnits, c.WaterRatePerUnit,
-			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order),
-	)
-	order++
-	items = append(items,
-		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order),
-	)
-	order++
-
-	// Configurable fees from billing_configs
-	items, order, err = s.addConfigFees(ctx, items, order, c.RoomID)
-	if err != nil {
-		return nil, err
-	}
-	_ = order
-
-	bill := Bill{
-		ContractID:    contractID,
-		BillingMonth:  billingMonth,
-		BillType:      BillTypeSettlement,
-		Status:        BillStatusDraft,
-		RentPaid:      rentPaid,
-		DepositAmount: c.DepositAmount,
-		LineItems:     items,
-	}
-	bill.CalculateTotal()
-
-	// Void existing monthly bills for this month (within tx)
+	var billID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		if err := s.voidExistingMonthlyBills(txCtx, contractID, billingMonth); err != nil {
-			return err
+		plan, pErr := s.prepareSettlementPlan(txCtx, contractID, moveOutDate)
+		if pErr != nil {
+			return pErr
 		}
-		return s.repo.Create(txCtx, &bill)
+		result, cErr := s.commitSettlementPlan(txCtx, plan)
+		if cErr != nil {
+			return cErr
+		}
+		billID = result.BillID
+		return nil
 	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("create settlement bill: %w", err)
 	}
 
-	return s.repo.FindByIDWithRelations(ctx, bill.ID)
+	return s.repo.FindByIDWithRelations(ctx, billID)
 }
 
 func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
@@ -633,6 +559,146 @@ func toSettlementResult(billID uuid.UUID, ds DepositSettlementState) *moveout.Se
 	}
 }
 
+// --- Settlement core (prepare/commit) ---
+
+// settlementPlan holds computed settlement data before persistence.
+// Phase 2 will reuse prepareSettlementPlan for preview without committing.
+type settlementPlan struct {
+	Bill          Bill                   // DRAFT bill to create (line items + total computed)
+	Deposit       DepositSettlementState // deposit breakdown
+	BillsToVoid   []*Bill                // monthly bills to void (REPLACED_BY_SETTLEMENT)
+	BillsToAbsorb []*Bill                // unpaid bills to mark ABSORBED_BY_SETTLEMENT
+}
+
+// prepareSettlementPlan computes the full settlement without writing anything.
+// All reads happen here; all writes happen in commitSettlementPlan.
+func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*settlementPlan, error) {
+	c, err := s.contracts.FindByIDSimple(ctx, contractID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrContractNotFound
+		}
+		return nil, fmt.Errorf("find contract: %w", err)
+	}
+
+	exitReading, err := s.meters.FindLatestByRoomID(ctx, c.RoomID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrExitReadingMissing
+		}
+		return nil, fmt.Errorf("find exit reading: %w", err)
+	}
+	if !exitReading.IsExit() {
+		return nil, ErrExitReadingMissing
+	}
+
+	billingMonth := toMonth(moveOutDate)
+
+	// Duplicate guard: reject if a non-VOID settlement already exists
+	existing, err := s.repo.FindByContractAndMonth(ctx, contractID, billingMonth, BillTypeSettlement)
+	if err == nil && !existing.IsVoid() {
+		return nil, ErrBillAlreadyExists
+	}
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, fmt.Errorf("check existing settlement: %w", err)
+	}
+
+	// Build line items
+	var items []BillLineItem
+	order := 1
+
+	var rentPaid bool
+	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate)
+	if err != nil {
+		return nil, err
+	}
+
+	waterUnits := exitReading.WaterUsed()
+	elecUnits := exitReading.ElectricityUsed()
+	items = append(items,
+		NewWaterLine(waterUnits, c.WaterRatePerUnit,
+			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order),
+	)
+	order++
+	items = append(items,
+		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
+			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order),
+	)
+	order++
+
+	items, order, err = s.addConfigFees(ctx, items, order, c.RoomID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Identify outstanding bills to absorb (read-only, no writes)
+	var billsToAbsorb []*Bill
+	items, order, billsToAbsorb, err = s.prepareAbsorption(ctx, items, order, contractID, billingMonth)
+	if err != nil {
+		return nil, err
+	}
+	_ = order
+
+	// Identify monthly bills to void (read-only, no writes)
+	billsToVoid, err := s.findBillsToVoid(ctx, contractID, billingMonth)
+	if err != nil {
+		return nil, err
+	}
+
+	bill := Bill{
+		ContractID:    contractID,
+		BillingMonth:  billingMonth,
+		BillType:      BillTypeSettlement,
+		Status:        BillStatusDraft,
+		RentPaid:      rentPaid,
+		DepositAmount: c.DepositAmount,
+		LineItems:     items,
+	}
+	bill.CalculateTotal()
+
+	returnable := isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths)
+	deposit := computeDepositSettlement(c.DepositAmount, bill.TotalAmount, returnable)
+
+	return &settlementPlan{
+		Bill:          bill,
+		Deposit:       deposit,
+		BillsToVoid:   billsToVoid,
+		BillsToAbsorb: billsToAbsorb,
+	}, nil
+}
+
+// commitSettlementPlan persists a prepared settlement plan.
+// Voids monthly bills, marks absorbed bills, creates the settlement bill.
+// Must be called within a transaction context (caller manages tx).
+func (s *billingService) commitSettlementPlan(ctx context.Context, plan *settlementPlan) (*moveout.SettlementBillResult, error) {
+	// Void same-month monthly bills
+	for _, b := range plan.BillsToVoid {
+		if err := b.Void("REPLACED_BY_SETTLEMENT"); err != nil {
+			continue
+		}
+		if err := s.repo.Update(ctx, b); err != nil {
+			return nil, fmt.Errorf("void monthly bill %s: %w", b.ID, err)
+		}
+	}
+
+	// Mark absorbed bills
+	for _, b := range plan.BillsToAbsorb {
+		if err := b.MarkAbsorbedBySettlement(); err != nil {
+			continue
+		}
+		if err := s.repo.Update(ctx, b); err != nil {
+			return nil, fmt.Errorf("mark absorbed bill %s: %w", b.ID, err)
+		}
+	}
+
+	// Create the settlement bill
+	if err := s.repo.Create(ctx, &plan.Bill); err != nil {
+		return nil, fmt.Errorf("create settlement bill: %w", err)
+	}
+
+	return toSettlementResult(plan.Bill.ID, plan.Deposit), nil
+}
+
 // --- Private helpers ---
 
 // addRentAdjustment implements the settlement rent rule:
@@ -701,13 +767,15 @@ func (s *billingService) addConfigFees(ctx context.Context, items []BillLineItem
 	return items, order, nil
 }
 
-// voidExistingMonthlyBills voids non-paid monthly bills for settlement replacement.
-func (s *billingService) voidExistingMonthlyBills(ctx context.Context, contractID uuid.UUID, billingMonth string) error {
+// findBillsToVoid identifies non-paid monthly bills that should be voided when
+// a settlement replaces them. Read-only — actual voiding happens in commitSettlementPlan.
+func (s *billingService) findBillsToVoid(ctx context.Context, contractID uuid.UUID, billingMonth string) ([]*Bill, error) {
 	bills, err := s.repo.FindNonVoidedByContractAndMonth(ctx, contractID, billingMonth)
 	if err != nil {
-		return fmt.Errorf("find existing bills: %w", err)
+		return nil, fmt.Errorf("find existing bills: %w", err)
 	}
 
+	var toVoid []*Bill
 	for i := range bills {
 		b := &bills[i]
 		if b.BillType != BillTypeMonthly {
@@ -717,34 +785,28 @@ func (s *billingService) voidExistingMonthlyBills(ctx context.Context, contractI
 		if b.IsPaid() {
 			continue
 		}
-		// DRAFT or FINALIZED → VOID
-		if err := b.Void("REPLACED_BY_SETTLEMENT"); err != nil {
-			continue // skip if can't void (already void etc.)
-		}
-		if err := s.repo.Update(ctx, b); err != nil {
-			return fmt.Errorf("void monthly bill %s: %w", b.ID, err)
-		}
+		toVoid = append(toVoid, b)
 	}
-	return nil
+	return toVoid, nil
 }
 
-// absorbOutstandingBills finds all unpaid monthly bills for the contract from
-// prior months and adds them as OUTSTANDING_BILL line items in the settlement.
-// Bills are voided with reason "ABSORBED_BY_SETTLEMENT" to prevent double collection.
+// prepareAbsorption identifies unpaid monthly bills to absorb and builds
+// OUTSTANDING_BILL line items. Read-only — actual marking happens in commitSettlementPlan.
 //
 // Special case: bill M-1 (the one containing advance rent for move-out month M)
 // only absorbs its utility portion because rent for M is already handled by prorate.
-func (s *billingService) absorbOutstandingBills(ctx context.Context, items []BillLineItem, order int, contractID uuid.UUID, settlementMonth string) ([]BillLineItem, int, error) {
+func (s *billingService) prepareAbsorption(ctx context.Context, items []BillLineItem, order int, contractID uuid.UUID, settlementMonth string) ([]BillLineItem, int, []*Bill, error) {
 	unpaid, err := s.repo.FindUnpaidMonthlyByContractID(ctx, contractID)
 	if err != nil {
-		return nil, 0, fmt.Errorf("find unpaid bills: %w", err)
+		return nil, 0, nil, fmt.Errorf("find unpaid bills: %w", err)
 	}
 
 	advanceRentBillMonth := previousMonth(settlementMonth)
+	var toAbsorb []*Bill
 
 	for i := range unpaid {
 		b := &unpaid[i]
-		// Same-month bills are replaced by voidExistingMonthlyBills, not absorbed
+		// Same-month bills are replaced by findBillsToVoid, not absorbed
 		if b.BillingMonth >= settlementMonth {
 			continue
 		}
@@ -760,24 +822,14 @@ func (s *billingService) absorbOutstandingBills(ctx context.Context, items []Bil
 			// Bill M-1 contains advance rent for M (handled by prorate) — absorb utility only
 			amount = absorbableUtilityTotal(b)
 			if amount <= 0 {
-				if err := b.MarkAbsorbedBySettlement(); err != nil {
-					return nil, 0, fmt.Errorf("mark zero-amount bill %s absorbed: %w", b.ID, err)
-				}
-				if err := s.repo.Update(ctx, b); err != nil {
-					return nil, 0, fmt.Errorf("update zero-amount bill %s: %w", b.ID, err)
-				}
+				toAbsorb = append(toAbsorb, b) // still absorb, no line item
 				continue
 			}
 			desc = fmt.Sprintf("ค่าน้ำ/ไฟค้าง %s", b.BillingMonth)
 		} else {
 			amount = b.TotalAmount
 			if amount <= 0 {
-				if err := b.MarkAbsorbedBySettlement(); err != nil {
-					return nil, 0, fmt.Errorf("mark zero-amount bill %s absorbed: %w", b.ID, err)
-				}
-				if err := s.repo.Update(ctx, b); err != nil {
-					return nil, 0, fmt.Errorf("update zero-amount bill %s: %w", b.ID, err)
-				}
+				toAbsorb = append(toAbsorb, b)
 				continue
 			}
 			desc = fmt.Sprintf("ยอดค้างเดือน %s", b.BillingMonth)
@@ -785,15 +837,10 @@ func (s *billingService) absorbOutstandingBills(ctx context.Context, items []Bil
 
 		items = append(items, NewOutstandingBillLine(amount, desc, order))
 		order++
-
-		if err := b.MarkAbsorbedBySettlement(); err == nil {
-			if err := s.repo.Update(ctx, b); err != nil {
-				return nil, 0, fmt.Errorf("void absorbed bill %s: %w", b.ID, err)
-			}
-		}
+		toAbsorb = append(toAbsorb, b)
 	}
 
-	return items, order, nil
+	return items, order, toAbsorb, nil
 }
 
 // restoreAbsorbedBills restores monthly bills that were voided by settlement absorption.
@@ -872,96 +919,14 @@ func daysInMonth(t time.Time) int {
 // and move-out date. Called by the move-out service within its transaction
 // context — must NOT start its own transaction.
 //
-// Settlement is a reconciliation, not a new bill:
-//   - If advance rent for move-out month was PAID → no rent charge (no refund either)
-//   - If NOT paid → prorate rent by used days (inclusive of move-out date)
-//   - Utility charges from EXIT meter reading
-//   - Configurable fees (cleaning, key service)
-//   - Voids any existing monthly bills for the same month
+// Delegates to prepareSettlementPlan (read-only computation) then
+// commitSettlementPlan (persistence). Same path as CreateSettlementBill.
 func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
-	c, err := s.contracts.FindByIDSimple(ctx, contractID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrContractNotFound
-		}
-		return nil, fmt.Errorf("find contract: %w", err)
-	}
-
-	// Get EXIT reading for the room
-	exitReading, err := s.meters.FindLatestByRoomID(ctx, c.RoomID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrExitReadingMissing
-		}
-		return nil, fmt.Errorf("find exit reading: %w", err)
-	}
-	if !exitReading.IsExit() {
-		return nil, ErrExitReadingMissing
-	}
-
-	billingMonth := toMonth(moveOutDate)
-
-	// Build line items
-	var items []BillLineItem
-	order := 1
-
-	// Rent adjustment: check if advance rent was already paid
-	var rentPaid bool
-	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate)
+	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate)
 	if err != nil {
 		return nil, err
 	}
-
-	// Water + Electricity from EXIT reading
-	waterUnits := exitReading.WaterUsed()
-	elecUnits := exitReading.ElectricityUsed()
-	items = append(items,
-		NewWaterLine(waterUnits, c.WaterRatePerUnit,
-			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order),
-	)
-	order++
-	items = append(items,
-		NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order),
-	)
-	order++
-
-	// Configurable fees
-	items, order, err = s.addConfigFees(ctx, items, order, c.RoomID)
-	if err != nil {
-		return nil, err
-	}
-	_ = order
-
-	// Absorb outstanding unpaid bills from prior months
-	items, order, err = s.absorbOutstandingBills(ctx, items, order, contractID, billingMonth)
-	if err != nil {
-		return nil, err
-	}
-	_ = order
-
-	bill := Bill{
-		ContractID:    contractID,
-		BillingMonth:  billingMonth,
-		BillType:      BillTypeSettlement,
-		Status:        BillStatusDraft,
-		RentPaid:      rentPaid,
-		DepositAmount: c.DepositAmount,
-		LineItems:     items,
-	}
-	bill.CalculateTotal()
-
-	// Void existing monthly bills + create settlement (within caller's tx)
-	if err := s.voidExistingMonthlyBills(ctx, contractID, billingMonth); err != nil {
-		return nil, err
-	}
-	if err := s.repo.Create(ctx, &bill); err != nil {
-		return nil, fmt.Errorf("create settlement bill: %w", err)
-	}
-
-	returnable := isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths)
-	ds := computeDepositSettlement(bill.DepositAmount, bill.TotalAmount, returnable)
-	return toSettlementResult(bill.ID, ds), nil
+	return s.commitSettlementPlan(ctx, plan)
 }
 
 // VoidSettlement marks a settlement bill as VOIDED with the given reason.
