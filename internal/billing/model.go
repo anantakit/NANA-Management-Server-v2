@@ -64,6 +64,32 @@ const (
 	LineItemSourceManual LineItemSource = "MANUAL"
 )
 
+// --- Settlement options ---
+
+type SettlementRentMode string
+
+const (
+	// RentModeProrated prorates rent by actual days used.
+	// Deposit qualification uses actual move-out date.
+	RentModeProrated SettlementRentMode = "PRORATED"
+
+	// RentModeFullMonthKeepDeposit charges full-month rent for the move-out month.
+	// Deposit qualification uses end-of-month, which may push effective stay
+	// past MinMonths and make the deposit returnable.
+	RentModeFullMonthKeepDeposit SettlementRentMode = "FULL_MONTH_KEEP_DEPOSIT"
+)
+
+// SettlementOptions controls settlement computation behavior.
+// Phase 2: RentMode. Future: additional options.
+type SettlementOptions struct {
+	RentMode SettlementRentMode
+}
+
+// DefaultSettlementOptions returns PRORATED (backward-compatible default).
+func DefaultSettlementOptions() SettlementOptions {
+	return SettlementOptions{RentMode: RentModeProrated}
+}
+
 // --- Domain errors ---
 
 var (
@@ -90,8 +116,9 @@ type Bill struct {
 	DepositBalance int64          `gorm:"not null;default:0" json:"deposit_balance"`
 	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
 	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
-	RentPaid       bool           `gorm:"not null;default:false" json:"rent_paid"`
-	Note           string         `gorm:"type:text;not null;default:''" json:"note"`
+	RentPaid           bool               `gorm:"not null;default:false" json:"rent_paid"`
+	SettlementRentMode SettlementRentMode `gorm:"column:settlement_rent_mode;type:varchar(30);not null;default:'PRORATED'" json:"settlement_rent_mode"`
+	Note               string             `gorm:"type:text;not null;default:''" json:"note"`
 	CreatedAt      time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`

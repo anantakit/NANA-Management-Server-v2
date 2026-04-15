@@ -667,3 +667,218 @@ func TestGenerateSettlement_ReturnsErrorOnCreateFailure(t *testing.T) {
 		t.Fatal("expected error when create fails")
 	}
 }
+
+// ============================================================
+// Settlement Rent Mode Tests
+// ============================================================
+
+// prepareWithMode is a test helper that runs prepareSettlementPlan with options.
+func prepareWithMode(t *testing.T, c *contract.Contract, moveOut time.Time, unpaidBills []Bill, mode SettlementRentMode) *settlementPlan {
+	t.Helper()
+	exitReading := testExitReading(c.RoomID, moveOut)
+
+	repo := &mockBillingRepo{
+		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+			return unpaidBills, nil
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{},
+		&mockMoveOutQuerier{},
+	)
+
+	plan, err := svc.(*billingService).prepareSettlementPlan(
+		context.Background(), c.ID, moveOut,
+		SettlementOptions{RentMode: mode},
+	)
+	if err != nil {
+		t.Fatalf("prepareSettlementPlan: %v", err)
+	}
+	return plan
+}
+
+func TestRentMode_ProratedChargesProrate(t *testing.T) {
+	c := normalExitContract() // start June 1 2025, minMonths=6 → eligible Dec 1
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+
+	plan := prepareWithMode(t, c, moveOut, nil, RentModeProrated)
+
+	prorate := findLineByType(plan.Bill.LineItems, LineItemProrateRent)
+	if prorate.Amount <= 0 {
+		t.Fatal("PRORATED should produce a PRORATE_RENT line")
+	}
+	if prorate.Quantity != 14 {
+		t.Errorf("prorate days = %d, want 14", prorate.Quantity)
+	}
+
+	roomRent := findLineByType(plan.Bill.LineItems, LineItemRoomRent)
+	if roomRent.Amount != 0 {
+		t.Error("PRORATED should not produce a ROOM_RENT line")
+	}
+}
+
+func TestRentMode_FullMonthChargesFullRent(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+
+	plan := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+
+	roomRent := findLineByType(plan.Bill.LineItems, LineItemRoomRent)
+	if roomRent.Amount != c.MonthlyRent {
+		t.Errorf("ROOM_RENT = %d, want %d (full month)", roomRent.Amount, c.MonthlyRent)
+	}
+
+	prorate := findLineByType(plan.Bill.LineItems, LineItemProrateRent)
+	if prorate.Amount != 0 {
+		t.Error("FULL_MONTH should not produce a PRORATE_RENT line")
+	}
+}
+
+func TestRentMode_FullMonthRentPaidNoCharge(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	exitReading := testExitReading(c.RoomID, moveOut)
+
+	repo := &mockBillingRepo{
+		hasPaidAdvanceRentFn: func(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+			return true, nil
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{},
+		&mockMoveOutQuerier{},
+	)
+
+	plan, err := svc.(*billingService).prepareSettlementPlan(
+		context.Background(), c.ID, moveOut,
+		SettlementOptions{RentMode: RentModeFullMonthKeepDeposit},
+	)
+	if err != nil {
+		t.Fatalf("prepareSettlementPlan: %v", err)
+	}
+
+	// Rent already paid — no rent line regardless of mode
+	roomRent := findLineByType(plan.Bill.LineItems, LineItemRoomRent)
+	prorate := findLineByType(plan.Bill.LineItems, LineItemProrateRent)
+	if roomRent.Amount != 0 || prorate.Amount != 0 {
+		t.Error("rent paid → no rent charge expected in any mode")
+	}
+	if !plan.Bill.RentPaid {
+		t.Error("RentPaid flag should be true")
+	}
+}
+
+func TestRentMode_FullMonthReachesMinMonths(t *testing.T) {
+	// Contract: start Jan 15, minMonths=6 → eligible at July 15
+	// Mid-month start so FULL_MONTH can cross the threshold.
+	c := earlyExitContract()
+	c.StartDate = time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	// Move-out July 10 — PRORATED: July 10 < July 15 → forfeited
+	//                     FULL_MONTH: effective July 31 >= July 15 → returnable
+	moveOut := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+
+	prorated := prepareWithMode(t, c, moveOut, nil, RentModeProrated)
+	fullMonth := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+
+	// PRORATED: deposit forfeited (ForfeitedAmount > 0)
+	if prorated.Deposit.ForfeitedAmount == 0 {
+		t.Error("PRORATED July 10: deposit should be forfeited (< 6 months)")
+	}
+	if prorated.Deposit.RefundAmount > 0 {
+		t.Error("PRORATED July 10: should have no refund")
+	}
+
+	// FULL_MONTH: deposit returnable (not forfeited)
+	if fullMonth.Deposit.ForfeitedAmount > 0 {
+		t.Error("FULL_MONTH July 10: deposit should NOT be forfeited (effective = July 31 >= July 15)")
+	}
+}
+
+func TestRentMode_FullMonthStillBelowMinMonths(t *testing.T) {
+	// Contract: start Jan 1, minMonths=6
+	c := earlyExitContract()
+	// Move-out March 10 — even with end-of-month (March 31), only 3 months < 6
+	moveOut := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
+
+	plan := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+
+	if plan.Deposit.ForfeitedAmount == 0 {
+		t.Error("FULL_MONTH March 10: deposit should still be forfeited (3 months < 6)")
+	}
+}
+
+func TestRentMode_PersistedOnBill(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+
+	prorated := prepareWithMode(t, c, moveOut, nil, RentModeProrated)
+	if prorated.Bill.SettlementRentMode != RentModeProrated {
+		t.Errorf("bill.SettlementRentMode = %q, want PRORATED", prorated.Bill.SettlementRentMode)
+	}
+
+	fullMonth := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+	if fullMonth.Bill.SettlementRentMode != RentModeFullMonthKeepDeposit {
+		t.Errorf("bill.SettlementRentMode = %q, want FULL_MONTH_KEEP_DEPOSIT", fullMonth.Bill.SettlementRentMode)
+	}
+}
+
+func TestRegenerateSettlement_PreservesRentMode(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	exitReading := testExitReading(c.RoomID, moveOut)
+
+	// First generate with FULL_MONTH_KEEP_DEPOSIT
+	existingBill := &Bill{
+		ID:                 uuid.New(),
+		ContractID:         c.ID,
+		BillingMonth:       "2026-04",
+		BillType:           BillTypeSettlement,
+		Status:             BillStatusDraft,
+		SettlementRentMode: RentModeFullMonthKeepDeposit,
+		DepositAmount:      c.DepositAmount,
+		LineItems:          []BillLineItem{{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: c.MonthlyRent, SortOrder: 1}},
+	}
+	existingBill.CalculateTotal()
+
+	var createdBill *Bill
+	repo := &mockBillingRepo{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*Bill, error) {
+			if createdBill != nil && id == createdBill.ID {
+				return createdBill, nil
+			}
+			return existingBill, nil
+		},
+		createFn: func(_ context.Context, bill *Bill) error {
+			createdBill = bill
+			return nil
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{},
+		&mockMoveOutQuerier{},
+	)
+
+	_, err := svc.RegenerateSettlement(context.Background(), existingBill.ID, c.ID, moveOut)
+	if err != nil {
+		t.Fatalf("RegenerateSettlement: %v", err)
+	}
+
+	if createdBill == nil {
+		t.Fatal("no bill created")
+	}
+	if createdBill.SettlementRentMode != RentModeFullMonthKeepDeposit {
+		t.Errorf("regenerated bill.SettlementRentMode = %q, want FULL_MONTH_KEEP_DEPOSIT", createdBill.SettlementRentMode)
+	}
+
+	// Verify it charged full rent (not prorated)
+	roomRent := findLineByType(createdBill.LineItems, LineItemRoomRent)
+	if roomRent.Amount != c.MonthlyRent {
+		t.Errorf("regenerated ROOM_RENT = %d, want %d (full month preserved)", roomRent.Amount, c.MonthlyRent)
+	}
+}

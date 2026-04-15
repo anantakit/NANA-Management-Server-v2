@@ -17,6 +17,7 @@ type CreateMonthlyBillRequest struct {
 
 type CreateSettlementBillRequest struct {
 	ContractID string `json:"contract_id" validate:"required,uuid"`
+	RentMode   string `json:"rent_mode" validate:"omitempty,oneof=PRORATED FULL_MONTH_KEEP_DEPOSIT"`
 }
 
 type BatchCreateMonthlyBillsRequest struct {
@@ -88,9 +89,10 @@ type BillResponse struct {
 	DepositAmount  float64            `json:"deposit_amount"`
 	DepositBalance float64            `json:"deposit_balance"`
 	TotalAmount    float64            `json:"total_amount"`
-	RentPaid       bool               `json:"rent_paid"`
-	Note           string             `json:"note"`
-	TenantName     string             `json:"tenant_name"`
+	RentPaid           bool               `json:"rent_paid"`
+	SettlementRentMode string             `json:"settlement_rent_mode,omitempty"`
+	Note               string             `json:"note"`
+	TenantName         string             `json:"tenant_name"`
 	RoomNumber     string             `json:"room_number"`
 	ApartmentName  string             `json:"apartment_name"`
 	ApartmentID    uuid.UUID          `json:"apartment_id"`
@@ -302,7 +304,7 @@ func ToBillResponse(b Bill) BillResponse {
 		items[i] = ToLineItemResponse(li)
 	}
 
-	return BillResponse{
+	resp := BillResponse{
 		ID:             b.ID,
 		ContractID:     b.ContractID,
 		BillingMonth:   b.BillingMonth,
@@ -318,6 +320,10 @@ func ToBillResponse(b Bill) BillResponse {
 		CreatedAt:      b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:      b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
+	if b.IsSettlement() {
+		resp.SettlementRentMode = string(b.SettlementRentMode)
+	}
+	return resp
 }
 
 func ToBillResponseWithRelations(b BillWithRelations) BillResponse {

@@ -205,9 +205,14 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		return nil, ErrActualDateRequired
 	}
 
+	opts := DefaultSettlementOptions()
+	if req.RentMode != "" {
+		opts.RentMode = SettlementRentMode(req.RentMode)
+	}
+
 	var billID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		plan, pErr := s.prepareSettlementPlan(txCtx, contractID, moveOutDate)
+		plan, pErr := s.prepareSettlementPlan(txCtx, contractID, moveOutDate, opts)
 		if pErr != nil {
 			return pErr
 		}
@@ -381,8 +386,9 @@ func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUI
 
 // RegenerateSettlement voids the existing draft, creates a new DRAFT with
 // fresh AUTO items, and preserves MANUAL items + note from the old bill.
+// The persisted SettlementRentMode is carried over to the new bill.
 func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
-	// Load existing bill to extract MANUAL items + note
+	// Load existing bill to extract MANUAL items + note + rent mode
 	existing, err := s.repo.FindByID(ctx, existingBillID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -392,6 +398,7 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	}
 	manualItems := existing.ManualItems()
 	note := existing.Note
+	opts := SettlementOptions{RentMode: existing.SettlementRentMode}
 
 	// Void the existing bill
 	if err := existing.Void("REGENERATED"); err != nil {
@@ -401,13 +408,17 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 		return nil, fmt.Errorf("void existing bill: %w", err)
 	}
 
-	// Restore absorbed bills so GenerateSettlement can re-absorb them
+	// Restore absorbed bills so they can be re-absorbed
 	if err := s.restoreAbsorbedBills(ctx, contractID); err != nil {
 		return nil, fmt.Errorf("restore absorbed bills: %w", err)
 	}
 
-	// Generate fresh AUTO items
-	result, err := s.GenerateSettlement(ctx, contractID, moveOutDate)
+	// Generate fresh AUTO items with the same rent mode
+	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate, opts)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -441,12 +452,13 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 			return nil, fmt.Errorf("update new bill: %w", err)
 		}
 
-		// Recompute net amount with manual items included
+		// Recompute net amount with manual items included (using same rent mode)
 		c, err := s.contracts.FindByIDSimple(ctx, contractID)
 		if err != nil {
 			return nil, fmt.Errorf("find contract for deposit check: %w", err)
 		}
-		returnable := isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths)
+		qualifyDate := effectiveMoveOutDate(moveOutDate, opts.RentMode)
+		returnable := isDepositReturnable(c.StartDate, qualifyDate, c.MinMonths)
 		ds := computeDepositSettlement(newBill.DepositAmount, newBill.TotalAmount, returnable)
 		updated := toSettlementResult(result.BillID, ds)
 		result.NetAmount = updated.NetAmount
@@ -572,7 +584,7 @@ type settlementPlan struct {
 
 // prepareSettlementPlan computes the full settlement without writing anything.
 // All reads happen here; all writes happen in commitSettlementPlan.
-func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*settlementPlan, error) {
+func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, opts SettlementOptions) (*settlementPlan, error) {
 	c, err := s.contracts.FindByIDSimple(ctx, contractID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -608,7 +620,7 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 	order := 1
 
 	var rentPaid bool
-	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate)
+	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate, opts.RentMode)
 	if err != nil {
 		return nil, err
 	}
@@ -646,17 +658,19 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 	}
 
 	bill := Bill{
-		ContractID:    contractID,
-		BillingMonth:  billingMonth,
-		BillType:      BillTypeSettlement,
-		Status:        BillStatusDraft,
-		RentPaid:      rentPaid,
-		DepositAmount: c.DepositAmount,
-		LineItems:     items,
+		ContractID:         contractID,
+		BillingMonth:       billingMonth,
+		BillType:           BillTypeSettlement,
+		Status:             BillStatusDraft,
+		RentPaid:           rentPaid,
+		DepositAmount:      c.DepositAmount,
+		SettlementRentMode: opts.RentMode,
+		LineItems:          items,
 	}
 	bill.CalculateTotal()
 
-	returnable := isDepositReturnable(c.StartDate, moveOutDate, c.MinMonths)
+	qualifyDate := effectiveMoveOutDate(moveOutDate, opts.RentMode)
+	returnable := isDepositReturnable(c.StartDate, qualifyDate, c.MinMonths)
 	deposit := computeDepositSettlement(c.DepositAmount, bill.TotalAmount, returnable)
 
 	return &settlementPlan{
@@ -703,13 +717,15 @@ func (s *billingService) commitSettlementPlan(ctx context.Context, plan *settlem
 
 // addRentAdjustment implements the settlement rent rule:
 //   - If advance rent for move-out month is PAID → rent = 0 (no refund, no charge)
-//   - If NOT paid → prorate rent by used days (inclusive of move-out date)
+//   - If NOT paid:
+//   - PRORATED → prorate rent by actual days used
+//   - FULL_MONTH_KEEP_DEPOSIT → charge full-month rent
 //
 // Day counting: move-out April 14 → used_days = 14 (days 1–14 inclusive)
 //
 // Rent coverage detection shortcut: bill M-1 contains advance rent for M.
 // This works because the system bills rent one month in advance.
-func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time) ([]BillLineItem, int, bool, error) {
+func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time, rentMode SettlementRentMode) ([]BillLineItem, int, bool, error) {
 	billingMonth := toMonth(moveOutDate)
 
 	hasPaid, err := s.repo.HasPaidAdvanceRentForMonth(ctx, c.ID, billingMonth)
@@ -723,7 +739,15 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 		return items, order, true, nil
 	}
 
-	// Not paid — prorate by used days (inclusive of move-out date)
+	// Full-month mode: charge full rent regardless of move-out day
+	if rentMode == RentModeFullMonthKeepDeposit {
+		desc := fmt.Sprintf("ค่าห้องเดือน %s", billingMonth)
+		items = append(items, NewRoomRentLine(c.MonthlyRent, desc, order))
+		order++
+		return items, order, false, nil
+	}
+
+	// PRORATED — prorate by used days (inclusive of move-out date)
 	usedDays := moveOutDate.Day()
 	totalDays := daysInMonth(moveOutDate)
 
@@ -913,6 +937,23 @@ func daysInMonth(t time.Time) int {
 	return time.Date(y, m+1, 0, 0, 0, 0, 0, t.Location()).Day()
 }
 
+// endOfMonth returns the last day of the month for the given date.
+func endOfMonth(t time.Time) time.Time {
+	y, m, _ := t.Date()
+	lastDay := time.Date(y, m+1, 0, 0, 0, 0, 0, t.Location()).Day()
+	return time.Date(y, m, lastDay, 0, 0, 0, 0, t.Location())
+}
+
+// effectiveMoveOutDate returns the date used for deposit qualification.
+// PRORATED uses the actual move-out date; FULL_MONTH_KEEP_DEPOSIT uses
+// end-of-month so the tenant may reach MinMonths.
+func effectiveMoveOutDate(moveOutDate time.Time, mode SettlementRentMode) time.Time {
+	if mode == RentModeFullMonthKeepDeposit {
+		return endOfMonth(moveOutDate)
+	}
+	return moveOutDate
+}
+
 // --- Move-out workflow ports ---
 
 // GenerateSettlement creates a DRAFT settlement bill for the given contract
@@ -922,7 +963,7 @@ func daysInMonth(t time.Time) int {
 // Delegates to prepareSettlementPlan (read-only computation) then
 // commitSettlementPlan (persistence). Same path as CreateSettlementBill.
 func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
-	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate)
+	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate, DefaultSettlementOptions())
 	if err != nil {
 		return nil, err
 	}

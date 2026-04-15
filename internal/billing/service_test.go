@@ -1225,6 +1225,81 @@ func TestDaysInMonth(t *testing.T) {
 	}
 }
 
+// ============================================================
+// Settlement rent mode helpers
+// ============================================================
+
+func TestEndOfMonth(t *testing.T) {
+	tests := []struct {
+		date time.Time
+		want time.Time
+	}{
+		{time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC), time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC)},
+		{time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC), time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, tt := range tests {
+		got := endOfMonth(tt.date)
+		if !got.Equal(tt.want) {
+			t.Errorf("endOfMonth(%s) = %s, want %s", tt.date.Format("2006-01-02"), got.Format("2006-01-02"), tt.want.Format("2006-01-02"))
+		}
+	}
+}
+
+func TestEffectiveMoveOutDate(t *testing.T) {
+	mid := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
+	eom := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+
+	if got := effectiveMoveOutDate(mid, RentModeProrated); !got.Equal(mid) {
+		t.Errorf("PRORATED: got %s, want %s", got.Format("2006-01-02"), mid.Format("2006-01-02"))
+	}
+	if got := effectiveMoveOutDate(mid, RentModeFullMonthKeepDeposit); !got.Equal(eom) {
+		t.Errorf("FULL_MONTH: got %s, want %s", got.Format("2006-01-02"), eom.Format("2006-01-02"))
+	}
+}
+
+// ============================================================
+// Deposit qualification with rent mode
+// ============================================================
+
+func TestDepositQualification_RentMode(t *testing.T) {
+	// Contract: start Jan 15, minMonths = 6 → eligible at July 15
+	// Using mid-month start so FULL_MONTH can cross the eligibility threshold.
+	start := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	minMonths := 6
+
+	tests := []struct {
+		name    string
+		moveOut time.Time
+		mode    SettlementRentMode
+		wantRet bool
+	}{
+		// July 10 — PRORATED: July 10 < July 15 → forfeited
+		{"jul10_prorated", time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC), RentModeProrated, false},
+		// July 10 — FULL_MONTH: effective = July 31 >= July 15 → returnable
+		{"jul10_full_month", time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC), RentModeFullMonthKeepDeposit, true},
+		// March 10 — FULL_MONTH: effective = March 31, ~2.5 months < 6 → still forfeited
+		{"march_full_month_still_short", time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC), RentModeFullMonthKeepDeposit, false},
+		// July 15 — PRORATED: exactly 6 months → returnable
+		{"jul15_prorated", time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC), RentModeProrated, true},
+		// July 14 — PRORATED: 1 day short → forfeited
+		{"jul14_prorated", time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC), RentModeProrated, false},
+		// July 14 — FULL_MONTH: effective = July 31 >= July 15 → returnable
+		{"jul14_full_month", time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC), RentModeFullMonthKeepDeposit, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			qualifyDate := effectiveMoveOutDate(tt.moveOut, tt.mode)
+			got := isDepositReturnable(start, qualifyDate, minMonths)
+			if got != tt.wantRet {
+				t.Errorf("returnable = %v, want %v (qualifyDate = %s)", got, tt.wantRet, qualifyDate.Format("2006-01-02"))
+			}
+		})
+	}
+}
+
 // --- Test utilities ---
 
 func lineItemTypes(items []BillLineItem) map[LineItemType]bool {
