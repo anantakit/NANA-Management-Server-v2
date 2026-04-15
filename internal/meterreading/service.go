@@ -37,6 +37,15 @@ type MeterReadingService interface {
 	GetLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
+
+	// --- Move-out workflow ports ---
+
+	// CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.
+	// Must be called within the caller's transaction context.
+	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error
+
+	// DeleteExitByRoomID soft-deletes the room's active EXIT reading.
+	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
 }
 
 type meterReadingService struct {
@@ -346,6 +355,41 @@ func matchTenantForReading(billingMonth string, contracts []contract.ContractTen
 		return c.TenantName, c.StartDate, false
 	}
 	return "", time.Time{}, false
+}
+
+// DeleteExitByRoomID delegates to repo — satisfies moveout.MeterReadingCommander.
+func (s *meterReadingService) DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error {
+	return s.repo.DeleteExitByRoomID(ctx, roomID)
+}
+
+// CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.
+// Skips apartment-room ownership validation (caller already verified).
+// Rejects duplicate EXIT and same-month MONTHLY, same as the public endpoint.
+func (s *meterReadingService) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error {
+	// Reject if EXIT reading already exists
+	latest := s.findLatestOrNil(ctx, roomID)
+	if latest != nil && latest.IsExit() {
+		return respond.ErrConflict.WithMessage("ห้องนี้มีข้อมูลมิเตอร์ย้ายออกแล้ว")
+	}
+
+	// Reject if MONTHLY exists for the same month
+	exitMonth := toMonth(readingDate)
+	hasMonthly, err := s.repo.HasMonthlyByRoomAndMonth(ctx, roomID, exitMonth)
+	if err != nil {
+		return fmt.Errorf("check monthly reading: %w", err)
+	}
+	if hasMonthly {
+		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์รายเดือนของห้องนี้ในเดือนเดียวกันแล้ว")
+	}
+
+	reading, err := NewExitReading(roomID, readingDate, elecCurrent, waterCurrent, latest, MeterReplacedFlags{}, MeterRolloverFlags{})
+	if err != nil {
+		return respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	if err := s.repo.Create(ctx, reading); err != nil {
+		return s.mapCreateError(err)
+	}
+	return nil
 }
 
 // --- private helpers (orchestration support, no business logic) ---

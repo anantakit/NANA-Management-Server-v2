@@ -26,6 +26,19 @@ type UpdateMoveOutRequest struct {
 	Note                 *string `json:"note"`
 }
 
+// SetActualMoveOutDateRequest holds the body for PATCH /:id/actual-date.
+type SetActualMoveOutDateRequest struct {
+	ActualMoveOutDate string `json:"actual_move_out_date" validate:"required,datetime=2006-01-02"`
+}
+
+// RecordExitMeterRequest holds the body for POST /:id/record-exit-meter.
+// Single business command: set actual date + create EXIT reading + advance status.
+type RecordExitMeterRequest struct {
+	ActualMoveOutDate  string `json:"actual_move_out_date" validate:"required,datetime=2006-01-02"`
+	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent       int    `json:"water_current" validate:"min=0"`
+}
+
 // RecordPaymentOutcomeRequest holds the body for POST /:id/record-payment.
 type RecordPaymentOutcomeRequest struct {
 	PaymentOutcome string `json:"payment_outcome" validate:"required,oneof=PAID_EXTRA REFUNDED ZERO_BALANCE"`
@@ -41,6 +54,7 @@ type MoveOutResponse struct {
 	ApartmentID          string   `json:"apartment_id,omitempty"`
 	NoticeDate           string   `json:"notice_date"`
 	ScheduledMoveOutDate string   `json:"scheduled_move_out_date"`
+	ActualMoveOutDate    string   `json:"actual_move_out_date,omitempty"`
 	Status               string   `json:"status"`
 	Note                 string   `json:"note"`
 	TenantName           string   `json:"tenant_name,omitempty"`
@@ -112,6 +126,9 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 		ApartmentName:        m.ApartmentName,
 		CreatedAt:            m.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:            m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
+	if m.ActualMoveOutDate != nil {
+		resp.ActualMoveOutDate = m.ActualMoveOutDate.Format("2006-01-02")
 	}
 	if m.RoomID != uuid.Nil {
 		resp.RoomID = m.RoomID.String()

@@ -18,8 +18,11 @@ type MoveOutService interface {
 	Update(ctx context.Context, id uuid.UUID, req UpdateMoveOutRequest) (*MoveOutWithRelations, error)
 	Queue(ctx context.Context, params MoveOutQueueParams) (*MoveOutQueueResponse, error)
 
+	// Actual move-out date
+	SetActualMoveOutDate(ctx context.Context, id uuid.UUID, req SetActualMoveOutDateRequest) (*MoveOutWithRelations, error)
+
 	// Forward commands
-	RecordExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	RecordExitMeter(ctx context.Context, id uuid.UUID, req RecordExitMeterRequest) (*MoveOutWithRelations, error)
 	GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	FinalizeSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error)
@@ -178,18 +181,86 @@ func (s *moveOutService) Update(ctx context.Context, id uuid.UUID, req UpdateMov
 	return result, nil
 }
 
-// --- Forward commands ---
+// --- Actual move-out date ---
 
-// RecordExitMeter advances PENDING_METER → PENDING_SETTLEMENT.
-// The EXIT reading must be created separately via the meter-reading endpoint
-// before calling this command.
-func (s *moveOutService) RecordExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+// SetActualMoveOutDate sets the real date the tenant vacated. Must be set before
+// settlement generation. Validates: non-terminal state, date >= contract start.
+func (s *moveOutService) SetActualMoveOutDate(ctx context.Context, id uuid.UUID, req SetActualMoveOutDateRequest) (*MoveOutWithRelations, error) {
+	actualDate, err := time.Parse("2006-01-02", req.ActualMoveOutDate)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ย้ายออกจริงไม่ถูกต้อง")
+	}
+
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
+		// Validate against contract start date
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
+		if actualDate.Before(c.StartDate) {
+			return respond.ErrBadRequest.WithMessage(ErrActualDateBeforeContractStart.Error())
+		}
+		if err := notice.SetActualDate(actualDate); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("set actual move-out date: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// --- Forward commands ---
+
+// RecordExitMeter is a single business command: set actual move-out date,
+// create EXIT reading, and advance PENDING_METER → PENDING_SETTLEMENT — all
+// atomically in one transaction.
+func (s *moveOutService) RecordExitMeter(ctx context.Context, id uuid.UUID, req RecordExitMeterRequest) (*MoveOutWithRelations, error) {
+	actualDate, err := time.Parse("2006-01-02", req.ActualMoveOutDate)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ย้ายออกจริงไม่ถูกต้อง")
+	}
+
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+
+		// 1. Set actual move-out date
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
+		if actualDate.Before(c.StartDate) {
+			return respond.ErrBadRequest.WithMessage(ErrActualDateBeforeContractStart.Error())
+		}
+		if err := notice.SetActualDate(actualDate); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+
+		// 2. Create EXIT meter reading
+		if err := s.meterCmd.CreateExitForMoveOut(txCtx, c.RoomID, actualDate, req.ElectricityCurrent, req.WaterCurrent); err != nil {
+			if _, ok := respond.Is(err); ok {
+				return err
+			}
+			return fmt.Errorf("create exit reading: %w", err)
+		}
+
+		// 3. Advance status
 		if err := notice.AdvanceToSettlement(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
@@ -220,7 +291,11 @@ func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (
 		if err := notice.CanRecordSettlement(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
-		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, notice.ScheduledMoveOutDate)
+		moveOutDate, err := notice.RequireActualDate()
+		if err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, moveOutDate)
 		if err != nil {
 			if _, ok := respond.Is(err); ok {
 				return err
@@ -321,6 +396,10 @@ func (s *moveOutService) CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveO
 		if err := notice.Close(now); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
+		moveOutDate, err := notice.RequireActualDate()
+		if err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
 		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
 		if err != nil {
 			return fmt.Errorf("find contract: %w", err)
@@ -328,7 +407,7 @@ func (s *moveOutService) CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveO
 		if err := s.repo.Update(txCtx, notice); err != nil {
 			return err
 		}
-		if err := s.contractCmd.EndContract(txCtx, notice.ContractID, notice.ScheduledMoveOutDate); err != nil {
+		if err := s.contractCmd.EndContract(txCtx, notice.ContractID, moveOutDate); err != nil {
 			return err
 		}
 		if err := s.roomCmd.MarkVacant(txCtx, c.RoomID); err != nil {
@@ -448,8 +527,12 @@ func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID)
 		if err := notice.CanRegenerateDraft(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
+		moveOutDate, err := notice.RequireActualDate()
+		if err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
 		// Void + regenerate with MANUAL preservation
-		result, err := s.billingCmd.RegenerateSettlement(txCtx, *notice.SettlementBillID, notice.ContractID, notice.ScheduledMoveOutDate)
+		result, err := s.billingCmd.RegenerateSettlement(txCtx, *notice.SettlementBillID, notice.ContractID, moveOutDate)
 		if err != nil {
 			if _, ok := respond.Is(err); ok {
 				return err

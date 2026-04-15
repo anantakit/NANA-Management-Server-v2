@@ -29,8 +29,12 @@ type RoomCommander interface {
 }
 
 // MeterReadingCommander manages move-out artifacts on the meter-reading side.
-// Implemented by meterreading.MeterReadingRepository; injected via main.go.
+// Implemented by meterreading.MeterReadingService; injected via main.go.
 type MeterReadingCommander interface {
+	// CreateExitForMoveOut creates an EXIT meter reading for the given room.
+	// Must be called within the caller's transaction context.
+	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error
+
 	// DeleteExitByRoomID soft-deletes the room's active EXIT reading.
 	// Used by Cancel() so the workflow can be re-initiated cleanly.
 	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error

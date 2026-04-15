@@ -23,6 +23,7 @@ func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	router.Get("/queue", h.Queue)
 	router.Get("/:id", h.GetByID)
 	router.Put("/:id", h.Update)
+	router.Patch("/:id/actual-date", h.SetActualMoveOutDate)
 
 	// Forward commands
 	router.Post("/:id/record-exit-meter", h.RecordExitMeter)
@@ -115,6 +116,25 @@ func (h *MoveOutHandler) Update(c fiber.Ctx) error {
 	return respond.Success(c, "อัปเดตใบแจ้งย้ายออกสำเร็จ", ToMoveOutResponse(*result))
 }
 
+func (h *MoveOutHandler) SetActualMoveOutDate(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	var req SetActualMoveOutDateRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.SetActualMoveOutDate(c.Context(), id, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "บันทึกวันย้ายออกจริงสำเร็จ", ToMoveOutResponse(*result))
+}
+
 // --- Forward commands ---
 
 func (h *MoveOutHandler) RecordExitMeter(c fiber.Ctx) error {
@@ -123,12 +143,17 @@ func (h *MoveOutHandler) RecordExitMeter(c fiber.Ctx) error {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
 	}
 
-	result, err := h.svc.RecordExitMeter(c.Context(), id)
+	var req RecordExitMeterRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.RecordExitMeter(c.Context(), id, req)
 	if err != nil {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "บันทึกมิเตอร์ย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+	return respond.Success(c, "บันทึกย้ายออกสำเร็จ", ToMoveOutResponse(*result))
 }
 
 func (h *MoveOutHandler) GenerateSettlement(c fiber.Ctx) error {

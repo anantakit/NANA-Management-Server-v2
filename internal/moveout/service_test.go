@@ -123,11 +123,19 @@ func (m *mockRoomCommander) MarkVacant(_ context.Context, id uuid.UUID) error {
 }
 
 type mockMeterCommander struct {
-	deletedRoomID uuid.UUID
-	calls         int
+	deletedRoomID    uuid.UUID
+	calls            int
+	createExitCalls  int
+	createExitRoomID uuid.UUID
 }
 
 var _ MeterReadingCommander = (*mockMeterCommander)(nil)
+
+func (m *mockMeterCommander) CreateExitForMoveOut(_ context.Context, roomID uuid.UUID, _ time.Time, _, _ int) error {
+	m.createExitCalls++
+	m.createExitRoomID = roomID
+	return nil
+}
 
 func (m *mockMeterCommander) DeleteExitByRoomID(_ context.Context, roomID uuid.UUID) error {
 	m.calls++
@@ -235,30 +243,44 @@ func newTestHarness(roomID, contractID uuid.UUID) testHarness {
 
 func TestRecordExitMeter_HappyPath(t *testing.T) {
 	noticeID := uuid.New()
-	h := newTestHarness(uuid.New(), uuid.New())
+	contractID := uuid.New()
+	h := newTestHarness(uuid.New(), contractID)
 	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
-		return &MoveOutNotice{ID: id, Status: MoveOutStatusPendingMeter}, nil
+		return &MoveOutNotice{ID: id, ContractID: contractID, Status: MoveOutStatusPendingMeter}, nil
 	}
 
-	_, err := h.svc.RecordExitMeter(context.Background(), noticeID)
+	req := RecordExitMeterRequest{
+		ActualMoveOutDate:  "2026-04-15",
+		ElectricityCurrent: 12345,
+		WaterCurrent:       678,
+	}
+	_, err := h.svc.RecordExitMeter(context.Background(), noticeID, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
 		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
 	}
+	if h.repo.updatedNotice.ActualMoveOutDate == nil {
+		t.Error("actual_move_out_date must be set")
+	}
+	if h.meterCmd.createExitCalls != 1 {
+		t.Errorf("CreateExitForMoveOut calls: got %d, want 1", h.meterCmd.createExitCalls)
+	}
 }
 
 func TestGenerateSettlement_HappyPath(t *testing.T) {
 	noticeID := uuid.New()
 	contractID := uuid.New()
+	actualDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 	h := newTestHarness(uuid.New(), contractID)
 
 	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
 		return &MoveOutNotice{
-			ID:         id,
-			ContractID: contractID,
-			Status:     MoveOutStatusPendingSettlement,
+			ID:                id,
+			ContractID:        contractID,
+			ActualMoveOutDate: &actualDate,
+			Status:            MoveOutStatusPendingSettlement,
 		}, nil
 	}
 
@@ -329,6 +351,7 @@ func TestCloseMoveOut_HappyPath(t *testing.T) {
 			ID:                   id,
 			ContractID:           contractID,
 			ScheduledMoveOutDate: scheduledDate,
+			ActualMoveOutDate:    &scheduledDate,
 			Status:               MoveOutStatusReadyToClose,
 			SettlementBillID:     &billID,
 			NetAmount:            &netAmount,
@@ -542,6 +565,7 @@ func TestRegenerateSettlement_HappyPath(t *testing.T) {
 			ID:                   id,
 			ContractID:           contractID,
 			ScheduledMoveOutDate: moveOutDate,
+			ActualMoveOutDate:    &moveOutDate,
 			Status:               MoveOutStatusPendingSettlement,
 			SettlementBillID:     &oldBillID,
 			NetAmount:            &netAmount,

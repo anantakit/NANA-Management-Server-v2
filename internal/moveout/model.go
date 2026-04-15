@@ -36,7 +36,11 @@ type MoveOutNotice struct {
 	ContractID           uuid.UUID      `gorm:"type:uuid;not null" json:"contract_id"`
 	NoticeDate           time.Time      `gorm:"type:date;not null" json:"notice_date"`
 	ScheduledMoveOutDate time.Time      `gorm:"column:scheduled_move_out_date;type:date;not null" json:"scheduled_move_out_date"`
-	Status               MoveOutStatus  `gorm:"type:varchar(20);not null;default:'PENDING_METER'" json:"status"`
+	// ActualMoveOutDate is the real date the tenant vacated the unit.
+	// This is the source of truth for all financial calculations (rent prorate, utilities, settlement).
+	// It is NOT tied to the date when settlement is generated.
+	ActualMoveOutDate *time.Time     `gorm:"type:date" json:"actual_move_out_date,omitempty"`
+	Status            MoveOutStatus  `gorm:"type:varchar(20);not null;default:'PENDING_METER'" json:"status"`
 	Note                 string         `gorm:"type:text;not null;default:''" json:"note"`
 
 	// V2 workflow columns
@@ -73,7 +77,10 @@ var (
 	ErrCannotClose             = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
 	ErrMissingSettlementBill   = errors.New("ต้องมีบิลสรุปก่อนปิด")
 	ErrMissingPaymentOutcome   = errors.New("ต้องระบุผลการชำระก่อนปิด")
-	ErrNotPendingMeter         = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอจดมิเตอร์")
+	ErrNotPendingMeter             = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอจดมิเตอร์")
+	ErrActualMoveOutDateRequired   = errors.New("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลสรุป")
+	ErrActualDateBeforeContractStart = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันเริ่มสัญญา")
+	ErrCannotSetActualDate         = errors.New("ไม่สามารถตั้งวันย้ายออกจริงได้ในสถานะนี้")
 )
 
 // --- Status checks ---
@@ -98,6 +105,35 @@ func (m *MoveOutNotice) ValidateDates() error {
 		return ErrDateOrderInvalid
 	}
 	return nil
+}
+
+// --- ActualMoveOutDate methods ---
+
+// CanSetActualDate returns nil if the actual move-out date can be set.
+// Allowed in any non-terminal state.
+func (m *MoveOutNotice) CanSetActualDate() error {
+	if m.IsTerminal() {
+		return ErrCannotSetActualDate
+	}
+	return nil
+}
+
+// SetActualDate sets the actual move-out date. Allowed in any non-terminal state.
+func (m *MoveOutNotice) SetActualDate(d time.Time) error {
+	if err := m.CanSetActualDate(); err != nil {
+		return err
+	}
+	m.ActualMoveOutDate = &d
+	return nil
+}
+
+// RequireActualDate returns the actual move-out date or an error if not set.
+// Must be called before settlement generation.
+func (m *MoveOutNotice) RequireActualDate() (time.Time, error) {
+	if m.ActualMoveOutDate == nil {
+		return time.Time{}, ErrActualMoveOutDateRequired
+	}
+	return *m.ActualMoveOutDate, nil
 }
 
 // --- Guard methods ---

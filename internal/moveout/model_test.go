@@ -413,6 +413,71 @@ func TestMoveOutNotice_Cancel(t *testing.T) {
 	}
 }
 
+// --- ActualMoveOutDate tests ---
+
+func TestMoveOutNotice_CanSetActualDate(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			err := m.CanSetActualDate()
+			wantOK := !m.IsTerminal()
+			if wantOK && err != nil {
+				t.Errorf("CanSetActualDate(%s) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanSetActualDate(%s) expected error, got nil", s)
+			}
+			if !wantOK && err != nil && err != ErrCannotSetActualDate {
+				t.Errorf("CanSetActualDate(%s) = %v, want ErrCannotSetActualDate", s, err)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_SetActualDate(t *testing.T) {
+	d := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+
+	t.Run("sets date in non-terminal state", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
+		if err := m.SetActualDate(d); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.ActualMoveOutDate == nil || !m.ActualMoveOutDate.Equal(d) {
+			t.Fatalf("actual_move_out_date = %v, want %v", m.ActualMoveOutDate, d)
+		}
+	})
+
+	t.Run("rejects in terminal state", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusCompleted}
+		if err := m.SetActualDate(d); err != ErrCannotSetActualDate {
+			t.Fatalf("expected ErrCannotSetActualDate, got %v", err)
+		}
+	})
+}
+
+func TestMoveOutNotice_RequireActualDate(t *testing.T) {
+	d := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+
+	t.Run("returns date when set", func(t *testing.T) {
+		m := &MoveOutNotice{ActualMoveOutDate: &d}
+		got, err := m.RequireActualDate()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got.Equal(d) {
+			t.Fatalf("got %v, want %v", got, d)
+		}
+	})
+
+	t.Run("error when nil", func(t *testing.T) {
+		m := &MoveOutNotice{}
+		_, err := m.RequireActualDate()
+		if err != ErrActualMoveOutDateRequired {
+			t.Fatalf("expected ErrActualMoveOutDateRequired, got %v", err)
+		}
+	})
+}
+
 // --- Urgency tests (unchanged) ---
 
 func TestComputeUrgency(t *testing.T) {

@@ -123,7 +123,7 @@ func main() {
 	billHandler := billing.NewBillingHandler(billService)
 
 	// Wire Move-Out service (needs billingService as BillingCommander)
-	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterRepo, billService, txManager)
+	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
 	// Create Fiber app
