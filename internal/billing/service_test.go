@@ -31,6 +31,7 @@ type mockBillingRepo struct {
 	createFn                            func(ctx context.Context, bill *Bill) error
 	updateFn                            func(ctx context.Context, bill *Bill) error
 	apartmentID                         uuid.UUID
+	findApartmentIDNotFound             bool // explicit opt-in for "room not found" path
 
 	createdBill  *Bill
 	updatedBills []*Bill
@@ -38,6 +39,13 @@ type mockBillingRepo struct {
 	createdBatch      *BillGenerationBatch
 	createdBatchItems []BillGenerationBatchItem
 }
+
+// defaultMockApartmentID is returned by FindApartmentIDByRoomID when neither
+// `apartmentID` nor `findApartmentIDNotFound` is set on the mock. addConfigFees
+// now treats ErrRecordNotFound as an invariant violation, so the default has
+// to be a valid UUID — tests that don't care about the apartment lookup just
+// pass through unaffected.
+var defaultMockApartmentID = uuid.MustParse("00000000-0000-0000-0000-000000000aaa")
 
 var _ BillingRepository = (*mockBillingRepo)(nil)
 
@@ -86,7 +94,13 @@ func (m *mockBillingRepo) FindApartmentIDByRoomID(_ context.Context, _ uuid.UUID
 	if m.apartmentID != uuid.Nil {
 		return m.apartmentID, nil
 	}
-	return uuid.Nil, gorm.ErrRecordNotFound
+	if m.findApartmentIDNotFound {
+		return uuid.Nil, gorm.ErrRecordNotFound
+	}
+	// Default: return a stable non-nil UUID. addConfigFees treats
+	// ErrRecordNotFound as an invariant violation, so most tests that don't
+	// care about the apartment lookup just need *some* valid UUID.
+	return defaultMockApartmentID, nil
 }
 func (m *mockBillingRepo) FindActiveContractsByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error) {
 	if m.findActiveContractsByApartmentIDFn != nil {

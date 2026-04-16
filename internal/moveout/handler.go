@@ -25,6 +25,9 @@ func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	router.Put("/:id", h.Update)
 	router.Patch("/:id/actual-date", h.SetActualMoveOutDate)
 
+	// Settlement preview (non-persisting)
+	router.Get("/:id/settlement-preview", h.PreviewSettlement)
+
 	// Forward commands
 	router.Post("/:id/record-exit-meter", h.RecordExitMeter)
 	router.Post("/:id/generate-settlement", h.GenerateSettlement)
@@ -156,13 +159,36 @@ func (h *MoveOutHandler) RecordExitMeter(c fiber.Ctx) error {
 	return respond.Success(c, "บันทึกย้ายออกสำเร็จ", ToMoveOutResponse(*result))
 }
 
+func (h *MoveOutHandler) PreviewSettlement(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	rentMode := RentMode(c.Query("rent_mode"))
+	if !rentMode.IsValid() {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("rent_mode ไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.PreviewSettlement(c.Context(), id, rentMode)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สำเร็จ", ToSettlementPreviewResponse(result))
+}
+
 func (h *MoveOutHandler) GenerateSettlement(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
 	}
 
-	result, err := h.svc.GenerateSettlement(c.Context(), id)
+	var req RentModeRequest
+	// Body is optional — ignore bind error for empty body
+	_ = bind.Body(c, &req)
+
+	result, err := h.svc.GenerateSettlement(c.Context(), id, RentMode(req.RentMode))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -253,7 +279,10 @@ func (h *MoveOutHandler) RegenerateSettlement(c fiber.Ctx) error {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
 	}
 
-	result, err := h.svc.RegenerateSettlement(c.Context(), id)
+	var req RentModeRequest
+	_ = bind.Body(c, &req)
+
+	result, err := h.svc.RegenerateSettlement(c.Context(), id, RentMode(req.RentMode))
 	if err != nil {
 		return respond.Error(c, err)
 	}

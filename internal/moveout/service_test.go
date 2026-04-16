@@ -144,8 +144,8 @@ func (m *mockMeterCommander) DeleteExitByRoomID(_ context.Context, roomID uuid.U
 }
 
 type mockBillingCommander struct {
-	generateFn     func(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
-	regenerateFn   func(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error)
+	generateFn     func(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode RentMode) (*SettlementBillResult, error)
+	regenerateFn   func(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode RentMode) (*SettlementBillResult, error)
 	finalizeFn     func(ctx context.Context, billID uuid.UUID) error
 	voidFn         func(ctx context.Context, billID uuid.UUID, reason string) error
 
@@ -160,10 +160,10 @@ type mockBillingCommander struct {
 
 var _ BillingCommander = (*mockBillingCommander)(nil)
 
-func (m *mockBillingCommander) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error) {
+func (m *mockBillingCommander) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode RentMode) (*SettlementBillResult, error) {
 	m.generateCalls++
 	if m.generateFn != nil {
-		return m.generateFn(ctx, contractID, moveOutDate)
+		return m.generateFn(ctx, contractID, moveOutDate, rentMode)
 	}
 	return &SettlementBillResult{
 		BillID:      uuid.New(),
@@ -172,16 +172,25 @@ func (m *mockBillingCommander) GenerateSettlement(ctx context.Context, contractI
 	}, nil
 }
 
-func (m *mockBillingCommander) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*SettlementBillResult, error) {
+func (m *mockBillingCommander) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode RentMode) (*SettlementBillResult, error) {
 	m.regenerateCalls++
 	if m.regenerateFn != nil {
-		return m.regenerateFn(ctx, existingBillID, contractID, moveOutDate)
+		return m.regenerateFn(ctx, existingBillID, contractID, moveOutDate, rentMode)
 	}
 	return &SettlementBillResult{
 		BillID:      uuid.New(),
 		NetAmount:   150000,
 		DepositUsed: 500000,
 	}, nil
+}
+
+// mockBillingQuerier satisfies BillingQuerier for tests.
+type mockBillingQuerier struct{}
+
+var _ BillingQuerier = (*mockBillingQuerier)(nil)
+
+func (m *mockBillingQuerier) PreviewSettlementForNotice(_ context.Context, _ uuid.UUID, _ RentMode) (*SettlementPreviewResult, error) {
+	return &SettlementPreviewResult{Outcome: "ZERO_BALANCE"}, nil
 }
 
 func (m *mockBillingCommander) FinalizeSettlement(_ context.Context, billID uuid.UUID) error {
@@ -235,7 +244,7 @@ func newTestHarness(roomID, contractID uuid.UUID) testHarness {
 		meterCmd:    &mockMeterCommander{},
 		billingCmd:  &mockBillingCommander{},
 	}
-	h.svc = NewMoveOutService(h.repo, h.contracts, h.contractCmd, h.roomCmd, h.meterCmd, h.billingCmd, noopTxManager{})
+	h.svc = NewMoveOutService(h.repo, h.contracts, h.contractCmd, h.roomCmd, h.meterCmd, h.billingCmd, &mockBillingQuerier{}, noopTxManager{})
 	return h
 }
 
@@ -284,7 +293,7 @@ func TestGenerateSettlement_HappyPath(t *testing.T) {
 		}, nil
 	}
 
-	_, err := h.svc.GenerateSettlement(context.Background(), noticeID)
+	_, err := h.svc.GenerateSettlement(context.Background(), noticeID, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -572,7 +581,7 @@ func TestRegenerateSettlement_HappyPath(t *testing.T) {
 		}, nil
 	}
 
-	_, err := h.svc.RegenerateSettlement(context.Background(), noticeID)
+	_, err := h.svc.RegenerateSettlement(context.Background(), noticeID, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -700,11 +709,11 @@ func TestGenerateSettlement_BillingError_Propagates(t *testing.T) {
 			Status: MoveOutStatusPendingSettlement,
 		}, nil
 	}
-	h.billingCmd.generateFn = func(_ context.Context, _ uuid.UUID, _ time.Time) (*SettlementBillResult, error) {
+	h.billingCmd.generateFn = func(_ context.Context, _ uuid.UUID, _ time.Time, _ RentMode) (*SettlementBillResult, error) {
 		return nil, respond.ErrBadRequest.WithMessage("ไม่พบข้อมูลมิเตอร์ย้ายออก")
 	}
 
-	_, err := h.svc.GenerateSettlement(context.Background(), uuid.New())
+	_, err := h.svc.GenerateSettlement(context.Background(), uuid.New(), "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

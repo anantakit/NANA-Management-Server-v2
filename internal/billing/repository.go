@@ -219,18 +219,27 @@ func (r *billingRepository) FindNonVoidedByContractAndMonth(ctx context.Context,
 
 // FindApartmentIDByRoomID resolves apartment ownership via room JOIN.
 // Display read — no cross-feature write.
+//
+// Scans into *string then parses, because GORM's generic column scan
+// (Scan/Pluck) reflects into uuid.UUID as [16]byte and never calls
+// uuid.UUID.Scan — this breaks silently when pgx returns UUIDs in text
+// encoding (connection-dependent behavior). Using *string + uuid.Parse
+// is driver-agnostic.
 func (r *billingRepository) FindApartmentIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error) {
-	var aptID uuid.UUID
+	var raw string
 	err := database.DB(ctx, r.db).
 		Table("rooms").
-		Select("apartment_id").
 		Where("id = ? AND deleted_at IS NULL", roomID).
-		Scan(&aptID).Error
+		Pluck("apartment_id", &raw).Error
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if aptID == uuid.Nil {
+	if raw == "" {
 		return uuid.Nil, gorm.ErrRecordNotFound
+	}
+	aptID, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("parse apartment_id %q: %w", raw, err)
 	}
 	return aptID, nil
 }

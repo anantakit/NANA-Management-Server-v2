@@ -21,9 +21,12 @@ type MoveOutService interface {
 	// Actual move-out date
 	SetActualMoveOutDate(ctx context.Context, id uuid.UUID, req SetActualMoveOutDateRequest) (*MoveOutWithRelations, error)
 
+	// Settlement preview (non-persisting, delegates to billing)
+	PreviewSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*SettlementPreviewResult, error)
+
 	// Forward commands
 	RecordExitMeter(ctx context.Context, id uuid.UUID, req RecordExitMeterRequest) (*MoveOutWithRelations, error)
-	GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	GenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error)
 	FinalizeSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error)
 	CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
@@ -31,18 +34,19 @@ type MoveOutService interface {
 
 	// Correction commands
 	UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
-	RegenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	RegenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error)
 	ReopenForCorrection(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 }
 
 type moveOutService struct {
-	repo        MoveOutRepository
-	contracts   ContractQuerier
-	contractCmd ContractCommander
-	roomCmd     RoomCommander
-	meterCmd    MeterReadingCommander
-	billingCmd  BillingCommander
-	tx          database.TxManager
+	repo         MoveOutRepository
+	contracts    ContractQuerier
+	contractCmd  ContractCommander
+	roomCmd      RoomCommander
+	meterCmd     MeterReadingCommander
+	billingCmd   BillingCommander
+	billingQuery BillingQuerier
+	tx           database.TxManager
 	// now is the clock used by Queue()/CloseMoveOut() for time-dependent logic.
 	// nil → time.Now (production); tests assign a fixed-time function.
 	now func() time.Time
@@ -57,16 +61,18 @@ func NewMoveOutService(
 	roomCmd RoomCommander,
 	meterCmd MeterReadingCommander,
 	billingCmd BillingCommander,
+	billingQuery BillingQuerier,
 	tx database.TxManager,
 ) MoveOutService {
 	return &moveOutService{
-		repo:        repo,
-		contracts:   contracts,
-		contractCmd: contractCmd,
-		roomCmd:     roomCmd,
-		meterCmd:    meterCmd,
-		billingCmd:  billingCmd,
-		tx:          tx,
+		repo:         repo,
+		contracts:    contracts,
+		contractCmd:  contractCmd,
+		roomCmd:      roomCmd,
+		meterCmd:     meterCmd,
+		billingCmd:   billingCmd,
+		billingQuery: billingQuery,
+		tx:           tx,
 	}
 }
 
@@ -278,10 +284,20 @@ func (s *moveOutService) RecordExitMeter(ctx context.Context, id uuid.UUID, req 
 	return s.repo.FindByID(ctx, noticeID)
 }
 
+// PreviewSettlement computes a settlement preview without creating a draft.
+// Thin adapter: resolves contract_id from notice, delegates to BillingQuerier.
+func (s *moveOutService) PreviewSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*SettlementPreviewResult, error) {
+	notice, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+	}
+	return s.billingQuery.PreviewSettlementForNotice(ctx, notice.ContractID, rentMode)
+}
+
 // GenerateSettlement creates a DRAFT settlement bill and attaches it to the notice.
 // Stays in PENDING_SETTLEMENT — user must review/edit then finalize separately.
 // Invariant D9: 1 active (non-VOIDED) settlement draft per notice.
-func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
@@ -295,7 +311,7 @@ func (s *moveOutService) GenerateSettlement(ctx context.Context, id uuid.UUID) (
 		if err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
-		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, moveOutDate)
+		result, err := s.billingCmd.GenerateSettlement(txCtx, notice.ContractID, moveOutDate, rentMode)
 		if err != nil {
 			if _, ok := respond.Is(err); ok {
 				return err
@@ -517,7 +533,7 @@ func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*Mo
 // RegenerateSettlement voids the current settlement draft and creates a new
 // one from fresh AUTO data, preserving MANUAL items + note.
 // Works from PENDING_SETTLEMENT when a draft is attached.
-func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
@@ -532,7 +548,7 @@ func (s *moveOutService) RegenerateSettlement(ctx context.Context, id uuid.UUID)
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		// Void + regenerate with MANUAL preservation
-		result, err := s.billingCmd.RegenerateSettlement(txCtx, *notice.SettlementBillID, notice.ContractID, moveOutDate)
+		result, err := s.billingCmd.RegenerateSettlement(txCtx, *notice.SettlementBillID, notice.ContractID, moveOutDate, rentMode)
 		if err != nil {
 			if _, ok := respond.Is(err); ok {
 				return err

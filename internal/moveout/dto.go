@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"nana/internal/shared/money"
 	"nana/internal/shared/pagination"
 )
 
@@ -171,4 +172,98 @@ func ToMoveOutResponseList(items []MoveOutWithRelations) []MoveOutResponse {
 		result[i] = ToMoveOutResponse(m)
 	}
 	return result
+}
+
+// --- Settlement Preview DTOs ---
+
+// RentModeRequest is the optional body for generate/regenerate settlement.
+type RentModeRequest struct {
+	RentMode string `json:"rent_mode" validate:"omitempty,oneof=PRORATED FULL_MONTH_KEEP_DEPOSIT"`
+}
+
+// SettlementPreviewLineItemResponse is a line item in a settlement preview.
+type SettlementPreviewLineItemResponse struct {
+	LineType    string  `json:"line_type"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Quantity    int     `json:"quantity"`
+	UnitPrice   float64 `json:"unit_price"`
+	SortOrder   int     `json:"sort_order"`
+}
+
+// SettlementPreviewDepositResponse is deposit breakdown in a settlement preview.
+type SettlementPreviewDepositResponse struct {
+	Original  float64 `json:"original"`
+	Forfeited float64 `json:"forfeited"`
+	Applied   float64 `json:"applied"`
+	Refund    float64 `json:"refund"`
+	Due       float64 `json:"due"`
+}
+
+// SettlementPreviewAbsorbedBillResponse is an outstanding bill absorbed into settlement.
+type SettlementPreviewAbsorbedBillResponse struct {
+	BillID       uuid.UUID `json:"bill_id"`
+	BillingMonth string    `json:"billing_month"`
+	TotalAmount  float64   `json:"total_amount"`
+}
+
+// SettlementPreviewAPIResponse is the move-out-scoped settlement preview response.
+type SettlementPreviewAPIResponse struct {
+	BillingMonth         string                                  `json:"billing_month"`
+	ActualMoveOutDate    string                                  `json:"actual_move_out_date"`
+	EffectiveMoveOutDate string                                  `json:"effective_move_out_date"`
+	RentMode             string                                  `json:"rent_mode"`
+	RentPaid             bool                                    `json:"rent_paid"`
+	MinMonths            int                                     `json:"min_months"`
+	DepositReturnable    bool                                    `json:"deposit_returnable"`
+	LineItems            []SettlementPreviewLineItemResponse     `json:"line_items"`
+	TotalAmount          float64                                 `json:"total_amount"`
+	Deposit              SettlementPreviewDepositResponse        `json:"deposit"`
+	AbsorbedBills        []SettlementPreviewAbsorbedBillResponse `json:"absorbed_bills"`
+	Outcome              string                                  `json:"outcome"`
+}
+
+// ToSettlementPreviewResponse maps the port result to API response (satang → baht).
+func ToSettlementPreviewResponse(r *SettlementPreviewResult) SettlementPreviewAPIResponse {
+	items := make([]SettlementPreviewLineItemResponse, len(r.LineItems))
+	for i, li := range r.LineItems {
+		items[i] = SettlementPreviewLineItemResponse{
+			LineType:    li.LineType,
+			Description: li.Description,
+			Amount:      money.ToBaht(li.Amount),
+			Quantity:    li.Quantity,
+			UnitPrice:   money.ToBaht(li.UnitPrice),
+			SortOrder:   li.SortOrder,
+		}
+	}
+
+	absorbed := make([]SettlementPreviewAbsorbedBillResponse, len(r.AbsorbedBills))
+	for i, b := range r.AbsorbedBills {
+		absorbed[i] = SettlementPreviewAbsorbedBillResponse{
+			BillID:       b.BillID,
+			BillingMonth: b.BillingMonth,
+			TotalAmount:  money.ToBaht(b.TotalAmount),
+		}
+	}
+
+	return SettlementPreviewAPIResponse{
+		BillingMonth:         r.BillingMonth,
+		ActualMoveOutDate:    r.ActualMoveOutDate.Format("2006-01-02"),
+		EffectiveMoveOutDate: r.EffectiveMoveOutDate.Format("2006-01-02"),
+		RentMode:             r.RentMode,
+		RentPaid:             r.RentPaid,
+		MinMonths:            r.MinMonths,
+		DepositReturnable:    r.DepositReturnable,
+		LineItems:            items,
+		TotalAmount:          money.ToBaht(r.TotalAmount),
+		Deposit: SettlementPreviewDepositResponse{
+			Original:  money.ToBaht(r.Deposit.Original),
+			Forfeited: money.ToBaht(r.Deposit.Forfeited),
+			Applied:   money.ToBaht(r.Deposit.Applied),
+			Refund:    money.ToBaht(r.Deposit.Refund),
+			Due:       money.ToBaht(r.Deposit.Due),
+		},
+		AbsorbedBills: absorbed,
+		Outcome:       r.Outcome,
+	}
 }

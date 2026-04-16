@@ -226,7 +226,7 @@ func TestPreviewSettlement_ParityWithCreate(t *testing.T) {
 
 	// --- Create (via GenerateSettlement — same prepareSettlementPlan path) ---
 	_, createSvc := settlementSetup(c, moveOut, []Bill{bill})
-	_, err = createSvc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err = createSvc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("create error: %v", err)
 	}

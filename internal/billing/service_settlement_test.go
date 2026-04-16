@@ -101,7 +101,7 @@ func TestGenerateSettlement_AbsorbsSingleUnpaidBill(t *testing.T) {
 	bill := unpaidBill(c.ID, "2026-02", 620000) // 6,200 baht
 	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestGenerateSettlement_AbsorbsMultipleUnpaidBills(t *testing.T) {
 	}
 	repo, svc := settlementSetup(c, moveOut, bills)
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestGenerateSettlement_DoesNotAbsorbPaidBills(t *testing.T) {
 	// A paid bill won't appear in the query results
 	repo, svc := settlementSetup(c, moveOut, nil) // no unpaid bills
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestGenerateSettlement_MarksAbsorbedBillsVoid(t *testing.T) {
 	bill := unpaidBill(c.ID, "2026-02", 620000)
 	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestGenerateSettlement_DepositAppliedWhenSufficient(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	_, svc := settlementSetup(c, moveOut, nil)
 
-	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestGenerateSettlement_DepositInsufficientRequiresPayment(t *testing.T) {
 	bills := []Bill{unpaidBill(c.ID, "2026-02", 620000)} // large outstanding
 	_, svc := settlementSetup(c, moveOut, bills)
 
-	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestGenerateSettlement_DepositExceedsReturnsRefund(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	_, svc := settlementSetup(c, moveOut, nil)
 
-	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestGenerateSettlement_EarlyExitDoesNotDoublePenalty(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC) // 3.5 months = early exit
 	repo, svc := settlementSetup(c, moveOut, nil)
 
-	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestGenerateSettlement_IsSingleDocument(t *testing.T) {
 	}
 	repo, svc := settlementSetup(c, moveOut, bills)
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestGenerateSettlement_AbsorbsOnlyUtilityFromAdvanceRentBill(t *testing.T) 
 
 	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 	)
 
 	// --- Cycle 1: Generate ---
-	result1, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	result1, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("generate 1: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 	repo.createdBill = nil
 	repo.findByIDFn = nil
 
-	_, err = svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err = svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("generate 2: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestGenerateSettlement_SkipsDraftBills(t *testing.T) {
 
 	repo, svc := settlementSetup(c, moveOut, []Bill{draftBill})
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestGenerateSettlement_ReturnsErrorOnCreateFailure(t *testing.T) {
 		&mockMoveOutQuerier{},
 	)
 
-	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut)
+	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err == nil {
 		t.Fatal("expected error when create fails")
 	}
@@ -864,7 +864,7 @@ func TestRegenerateSettlement_PreservesRentMode(t *testing.T) {
 		&mockMoveOutQuerier{},
 	)
 
-	_, err := svc.RegenerateSettlement(context.Background(), existingBill.ID, c.ID, moveOut)
+	_, err := svc.RegenerateSettlement(context.Background(), existingBill.ID, c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("RegenerateSettlement: %v", err)
 	}

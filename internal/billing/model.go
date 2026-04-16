@@ -83,6 +83,9 @@ const (
 // Phase 2: RentMode. Future: additional options.
 type SettlementOptions struct {
 	RentMode SettlementRentMode
+	// SkipDuplicateGuard disables the "one non-VOID settlement per month" check.
+	// Used by preview (read-only) which must work even when a draft exists.
+	SkipDuplicateGuard bool
 }
 
 // DefaultSettlementOptions returns PRORATED (backward-compatible default).

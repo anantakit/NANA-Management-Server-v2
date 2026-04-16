@@ -221,13 +221,31 @@ func (r *roomRepository) FindByID(ctx context.Context, id uuid.UUID) (*Room, err
 	return &m, nil
 }
 
+// FindRoomIDsByApartment returns the IDs of all non-deleted rooms in the apartment.
+//
+// Plucks into []string then parses, because GORM's generic column scan
+// reflects into uuid.UUID as [16]byte and never invokes uuid.UUID.Scan —
+// silently corrupts values when pgx returns UUIDs in text encoding. Using
+// []string + uuid.Parse is driver-agnostic. (Same fix pattern as
+// billing.FindApartmentIDByRoomID — see that method's docstring for history.)
 func (r *roomRepository) FindRoomIDsByApartment(ctx context.Context, apartmentID uuid.UUID) ([]uuid.UUID, error) {
-	var ids []uuid.UUID
+	var raws []string
 	err := database.DB(ctx, r.db).
 		Model(&Room{}).
 		Where("apartment_id = ?", apartmentID).
-		Pluck("id", &ids).Error
-	return ids, err
+		Pluck("id", &raws).Error
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(raws))
+	for _, s := range raws {
+		id, parseErr := uuid.Parse(s)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse room id %q: %w", s, parseErr)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func (r *roomRepository) Create(ctx context.Context, room *Room) error {

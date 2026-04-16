@@ -122,8 +122,8 @@ func main() {
 	billService := billing.NewBillingService(billRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txManager)
 	billHandler := billing.NewBillingHandler(billService)
 
-	// Wire Move-Out service (needs billingService as BillingCommander)
-	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, txManager)
+	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier)
+	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, billService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
 	// Create Fiber app
@@ -154,6 +154,31 @@ func main() {
 
 	// Public auth routes
 	authHandler.RegisterRoutes(v1.Group("/auth"))
+
+	// Dev-only smoke-test fixture endpoints (no auth; gated by env).
+	// Registered BEFORE `protected` group so JWT middleware doesn't apply.
+	if cfg.Env == "development" {
+		dev := v1.Group("/dev")
+		dev.Post("/smoke/seed", func(c fiber.Ctx) error {
+			if err := seed.Run(db, cfg.Env); err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "message": "smoke fixtures ready"})
+		})
+		dev.Post("/smoke/cleanup", func(c fiber.Ctx) error {
+			if err := seed.CleanupSmokeData(db); err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "message": "smoke fixtures removed"})
+		})
+		dev.Get("/smoke/fixtures", func(c fiber.Ctx) error {
+			fixtures, err := seed.ListSmokeFixtures(db)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "data": fixtures})
+		})
+	}
 
 	// Protected routes
 	protected := v1.Group("", middleware.JWTProtected(cfg))

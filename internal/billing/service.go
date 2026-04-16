@@ -53,9 +53,10 @@ type BillingService interface {
 	// Settlement draft editing
 	UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest) (*BillWithRelations, error)
 
-	// Move-out workflow ports (satisfies moveout.BillingCommander)
-	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error)
-	RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error)
+	// Move-out workflow ports (satisfies moveout.BillingCommander + moveout.BillingQuerier)
+	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error)
+	RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error)
+	PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error)
 	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
 	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
 }
@@ -201,6 +202,7 @@ func (s *billingService) PreviewSettlement(ctx context.Context, input PreviewSet
 	}
 
 	opts := DefaultSettlementOptions()
+	opts.SkipDuplicateGuard = true // preview is read-only — must work even when draft exists
 	if input.RentMode != "" {
 		opts.RentMode = input.RentMode
 	}
@@ -426,7 +428,7 @@ func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUI
 // RegenerateSettlement voids the existing draft, creates a new DRAFT with
 // fresh AUTO items, and preserves MANUAL items + note from the old bill.
 // The persisted SettlementRentMode is carried over to the new bill.
-func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
+func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error) {
 	// Load existing bill to extract MANUAL items + note + rent mode
 	existing, err := s.repo.FindByID(ctx, existingBillID)
 	if err != nil {
@@ -438,6 +440,10 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	manualItems := existing.ManualItems()
 	note := existing.Note
 	opts := SettlementOptions{RentMode: existing.SettlementRentMode}
+	// Override rent mode if explicitly provided
+	if rentMode != "" {
+		opts.RentMode = SettlementRentMode(rentMode)
+	}
 
 	// Void the existing bill
 	if err := existing.Void("REGENERATED"); err != nil {
@@ -647,13 +653,16 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 
 	billingMonth := toMonth(moveOutDate)
 
-	// Duplicate guard: reject if a non-VOID settlement already exists
-	existing, err := s.repo.FindByContractAndMonth(ctx, contractID, billingMonth, BillTypeSettlement)
-	if err == nil && !existing.IsVoid() {
-		return nil, ErrBillAlreadyExists
-	}
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return nil, fmt.Errorf("check existing settlement: %w", err)
+	// Duplicate guard: reject if a non-VOID settlement already exists.
+	// Skipped for preview (read-only) which must work even when a draft exists.
+	if !opts.SkipDuplicateGuard {
+		existing, err := s.repo.FindByContractAndMonth(ctx, contractID, billingMonth, BillTypeSettlement)
+		if err == nil && !existing.IsVoid() {
+			return nil, ErrBillAlreadyExists
+		}
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("check existing settlement: %w", err)
+		}
 	}
 
 	// Build line items
@@ -806,12 +815,25 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 }
 
 // addConfigFees adds configurable fees (CLEANING_FEE, KEY_SERVICE) from billing_configs.
+//
+// Graceful degradation is scoped to ONE case only:
+//
+//   - billing_configs is empty for the apartment → skip fees silently.
+//     This is the "config is optional, admin may add later" case — the
+//     for-loop below simply iterates zero times.
+//
+// All other failures, INCLUDING room-not-found, are invariant violations
+// (the contract that triggered settlement carries a non-nullable room_id;
+// the room must exist) and propagate as errors. Silent fallback here is
+// what masked the UUID-scan bug that dropped config fees in production.
+//
 // Fallback policy: ถ้า apartment ยังไม่มี config row → ไม่เพิ่ม fee (ไม่ error)
 // เพราะ config เป็น optional — admin สร้างได้ภายหลัง, บิลออกได้โดยไม่มี fee
 func (s *billingService) addConfigFees(ctx context.Context, items []BillLineItem, order int, roomID uuid.UUID) ([]BillLineItem, int, error) {
 	aptID, err := s.repo.FindApartmentIDByRoomID(ctx, roomID)
 	if err != nil {
-		return items, order, nil // skip fees if room lookup fails
+		// Includes ErrRecordNotFound — room MUST exist if we reached here.
+		return nil, 0, fmt.Errorf("find apartment for room %s: %w", roomID, err)
 	}
 
 	configs, err := s.configs.FindByApartmentID(ctx, aptID)
@@ -1005,8 +1027,12 @@ func effectiveMoveOutDate(moveOutDate time.Time, mode SettlementRentMode) time.T
 //
 // Delegates to prepareSettlementPlan (read-only computation) then
 // commitSettlementPlan (persistence). Same path as CreateSettlementBill.
-func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time) (*moveout.SettlementBillResult, error) {
-	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate, DefaultSettlementOptions())
+func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error) {
+	opts := DefaultSettlementOptions()
+	if rentMode != "" {
+		opts.RentMode = SettlementRentMode(rentMode)
+	}
+	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1033,4 +1059,73 @@ func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, r
 	}
 	// Restore absorbed bills so they can be re-collected or re-absorbed
 	return s.restoreAbsorbedBills(ctx, b.ContractID)
+}
+
+// PreviewSettlementForNotice satisfies moveout.BillingQuerier.
+// Delegates to the existing PreviewSettlement and maps to the moveout result type.
+func (s *billingService) PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error) {
+	input := PreviewSettlementInput{ContractID: contractID}
+	if rentMode != "" {
+		input.RentMode = SettlementRentMode(rentMode)
+	}
+
+	preview, err := s.PreviewSettlement(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := preview.Plan
+
+	items := make([]moveout.SettlementPreviewLineItem, len(plan.Bill.LineItems))
+	for i, li := range plan.Bill.LineItems {
+		items[i] = moveout.SettlementPreviewLineItem{
+			LineType:    string(li.LineType),
+			Description: li.Description,
+			Amount:      li.Amount,
+			Quantity:    li.Quantity,
+			UnitPrice:   li.UnitPrice,
+			SortOrder:   li.SortOrder,
+		}
+	}
+
+	absorbed := make([]moveout.SettlementPreviewAbsorbedBill, len(plan.BillsToAbsorb))
+	for i, b := range plan.BillsToAbsorb {
+		absorbed[i] = moveout.SettlementPreviewAbsorbedBill{
+			BillID:       b.ID,
+			BillingMonth: b.BillingMonth,
+			TotalAmount:  b.TotalAmount,
+		}
+	}
+
+	d := plan.Deposit
+	var outcome string
+	switch {
+	case d.RefundAmount > 0:
+		outcome = "REFUND"
+	case d.AmountDue > 0:
+		outcome = "PAY_MORE"
+	default:
+		outcome = "ZERO_BALANCE"
+	}
+
+	return &moveout.SettlementPreviewResult{
+		BillingMonth:         plan.Bill.BillingMonth,
+		ActualMoveOutDate:    preview.MoveOutDate,
+		EffectiveMoveOutDate: preview.EffectiveMoveOutDate,
+		RentMode:             string(preview.RentMode),
+		RentPaid:             plan.Bill.RentPaid,
+		MinMonths:            preview.MinMonths,
+		DepositReturnable:    preview.Returnable,
+		LineItems:            items,
+		TotalAmount:          plan.Bill.TotalAmount,
+		Deposit: moveout.SettlementPreviewDeposit{
+			Original:  d.OriginalAmount,
+			Forfeited: d.ForfeitedAmount,
+			Applied:   d.AppliedAmount,
+			Refund:    d.RefundAmount,
+			Due:       d.AmountDue,
+		},
+		AbsorbedBills: absorbed,
+		Outcome:       outcome,
+	}, nil
 }
