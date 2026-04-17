@@ -112,13 +112,17 @@ func (m *mockContractCommander) EndContract(_ context.Context, id uuid.UUID, end
 type mockRoomCommander struct {
 	vacantCalls  int
 	vacantRoomID uuid.UUID
+	vacantFn     func(ctx context.Context, id uuid.UUID) error
 }
 
 var _ RoomCommander = (*mockRoomCommander)(nil)
 
-func (m *mockRoomCommander) MarkVacant(_ context.Context, id uuid.UUID) error {
+func (m *mockRoomCommander) MarkVacant(ctx context.Context, id uuid.UUID) error {
 	m.vacantCalls++
 	m.vacantRoomID = id
+	if m.vacantFn != nil {
+		return m.vacantFn(ctx, id)
+	}
 	return nil
 }
 
@@ -127,13 +131,17 @@ type mockMeterCommander struct {
 	calls            int
 	createExitCalls  int
 	createExitRoomID uuid.UUID
+	createExitFn     func(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int) error
 }
 
 var _ MeterReadingCommander = (*mockMeterCommander)(nil)
 
-func (m *mockMeterCommander) CreateExitForMoveOut(_ context.Context, roomID uuid.UUID, _ time.Time, _, _ int) error {
+func (m *mockMeterCommander) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int) error {
 	m.createExitCalls++
 	m.createExitRoomID = roomID
+	if m.createExitFn != nil {
+		return m.createExitFn(ctx, roomID, date, elec, water)
+	}
 	return nil
 }
 
@@ -739,4 +747,92 @@ func TestCancel_NonCancellable_ReturnsAppError(t *testing.T) {
 	if h.repo.updateCalls != 0 {
 		t.Errorf("Update calls: got %d, want 0", h.repo.updateCalls)
 	}
+}
+
+// --- C6/D5: Atomicity — partial failure must not leave state behind ---
+
+// RecordExitMeter does 3 steps in one tx:
+//   1. SetActualDate
+//   2. CreateExitForMoveOut (meter port)
+//   3. AdvanceToSettlement + repo.Update
+// If step 2 fails, step 3 must NOT execute. With noopTxManager this
+// verifies behavioral rollback: repo.Update is never called, so no
+// state mutation is persisted.
+func TestRecordExitMeter_MeterFailure_NoStateChange(t *testing.T) {
+	contractID := uuid.New()
+	roomID := uuid.New()
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:         id,
+			ContractID: contractID,
+			Status:     MoveOutStatusPendingMeter,
+		}, nil
+	}
+	// Inject failure at step 2 — meter write fails
+	h.meterCmd.createExitFn = func(_ context.Context, _ uuid.UUID, _ time.Time, _, _ int) error {
+		return errors.New("disk full: cannot write meter reading")
+	}
+
+	_, err := h.svc.RecordExitMeter(context.Background(), uuid.New(), RecordExitMeterRequest{
+		ActualMoveOutDate:  "2026-04-15",
+		ElectricityCurrent: 1135,
+		WaterCurrent:       118,
+	})
+
+	// Error must surface
+	if err == nil {
+		t.Fatal("expected error from meter failure, got nil")
+	}
+	// Meter port was attempted
+	if h.meterCmd.createExitCalls != 1 {
+		t.Errorf("CreateExitForMoveOut calls: got %d, want 1", h.meterCmd.createExitCalls)
+	}
+	// Step 3 must NOT have executed — no repo.Update means no status change
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update calls: got %d, want 0 (must not persist partial state)", h.repo.updateCalls)
+	}
+}
+
+// CloseMoveOut does 3 steps in one tx:
+//   1. notice.Close + repo.Update
+//   2. contractCmd.EndContract
+//   3. roomCmd.MarkVacant
+// If step 3 fails, the entire tx should rollback. With noopTxManager we
+// verify the service returns an error (the real TxManager would undo
+// steps 1–2 via PostgreSQL ROLLBACK).
+func TestCloseMoveOut_MarkVacantFailure_ReturnsError(t *testing.T) {
+	contractID := uuid.New()
+	roomID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(0)
+	outcome := PaymentOutcomeZeroBalance
+	scheduledDate := time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ScheduledMoveOutDate: scheduledDate,
+			ActualMoveOutDate:    &scheduledDate,
+			Status:               MoveOutStatusReadyToClose,
+			SettlementBillID:     &billID,
+			NetAmount:            &netAmount,
+			PaymentOutcome:       &outcome,
+		}, nil
+	}
+	// Inject failure at step 3 — room port fails
+	h.roomCmd.vacantFn = func(_ context.Context, _ uuid.UUID) error {
+		return errors.New("room service unavailable")
+	}
+
+	_, err := h.svc.CloseMoveOut(context.Background(), uuid.New())
+
+	// Error must surface
+	if err == nil {
+		t.Fatal("expected error from MarkVacant failure, got nil")
+	}
+	// In real Postgres the ROLLBACK undoes steps 1–2.
+	// Here we at least verify the error propagated (service didn't swallow it).
 }

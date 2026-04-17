@@ -1,4 +1,5 @@
-.PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean
+.PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
+       smoke-settlement smoke-settlement-legacy smoke-settlement-all smoke-install
 
 # Development
 dev:
@@ -45,6 +46,21 @@ test-integration: test-integration-setup
 # Lint
 lint:
 	go vet ./...
+
+# Smoke tests — dev-only Playwright suites (NOT CI).
+# Requires: make dev (backend + frontend + postgres running)
+# First time: make smoke-install
+smoke-install:
+	cd devtools/smoke && npm install
+
+smoke-settlement:
+	cd devtools/smoke && node playwright-test-settlement-scenario-smoke.js
+
+smoke-settlement-legacy:
+	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js
+
+smoke-settlement-all:
+	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js && node playwright-test-settlement-scenario-smoke.js
 
 # Clean
 clean:

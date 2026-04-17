@@ -31,6 +31,15 @@ import (
 // | 6  | B203 | PENDING_SETTLEMENT | Advance rent already paid (M-1 PAID)      |
 // | 7  | B204 | PENDING_SETTLEMENT | Has absorbed bills (FINALIZED earlier)    |
 // | 10 | B205 | PENDING_METER      | No actual_move_out_date yet               |
+// | 13 | C201 | PENDING_SETTLEMENT | Scenario: paid monthly bill carry-forward |
+// | 14 | C202 | PENDING_SETTLEMENT | Scenario: ONE unpaid monthly bill absorbed |
+// | 15 | C203 | PENDING_SETTLEMENT | Scenario: THREE unpaid monthly bills       |
+// | 16 | C204 | PENDING_SETTLEMENT | Scenario: scheduled ≠ actual move-out date |
+// | 17 | C205 | PENDING_SETTLEMENT | Scenario: actual move-out date backdated   |
+// | 18 | C101 | PENDING_SETTLEMENT | Scenario: deposit refund (covers charges)  |
+// | 19 | C102 | PENDING_SETTLEMENT | Scenario: deposit shortfall (owe money)    |
+// | 20 | D101 | PENDING_METER      | Scenario: invalid exit < prior MONTHLY     |
+// | 21 | E201 | PENDING_SETTLEMENT | Scenario: missing baseline / incomplete data |
 //
 // Date-sensitive: TC3 requires mid-month "today" to flip across minMonths.
 // Works reliably when today.Day() <= daysInMonth(today) - 3.
@@ -91,7 +100,12 @@ func ListSmokeFixtures(db *gorm.DB) ([]SmokeFixture, error) {
 
 // smokeRoomNumbers is the exclusive set of rooms used by smoke fixtures.
 // Must be VACANT in base seed (none overlap with seed_dev_moveout.go).
-var smokeRoomNumbers = []string{"B105", "B201", "B202", "B203", "B204", "B205"}
+var smokeRoomNumbers = []string{
+	"B105", "B201", "B202", "B203", "B204", "B205",
+	// Scenario smoke v1 (TC13–TC21)
+	"C201", "C202", "C203", "C204", "C205", "C101", "C102", "D101",
+	"E201",
+}
 
 func seedDevSmoke(db *gorm.DB) error {
 	var existing int64
@@ -261,7 +275,224 @@ func seedDevSmoke(db *gorm.DB) error {
 		return err
 	}
 
-	slog.Info("seeded smoke test fixtures", "count", 6)
+	// ─── Scenario smoke v1 (TC13–TC20) ────────────────────────────────
+	// Backs playwright-test-settlement-scenario-smoke.js. Each fixture
+	// targets one business-risk scenario from senario.md.
+
+	// --- TC13: Paid monthly bill carry-forward (no absorbed section) ---
+	// Rent for move-out month already covered by M-1 PAID bill (advance-billing).
+	// Distinct from TC6 so the scenario suite has its own fixture.
+	tc13Notice, tc13Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C201"], smokeTenant{
+		idCard: "9999999999013",
+		name:   "TC13_SMOKE ค่าเช่าเดือนนี้จ่ายแล้ว",
+		phone:  "0999000013",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		actualOffset:        -2,
+		note:                "SMOKE TC13 — carry-forward, rent_paid=true, no absorbed",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	tc13Month := previousMonthStr(tc13Notice.ActualMoveOutDate.Format("2006-01"))
+	if err := createPaidMonthlyBill(db, tc13Contract, tc13Month); err != nil {
+		return fmt.Errorf("create paid M-1 bill for TC13: %w", err)
+	}
+
+	// --- TC14: ONE unpaid monthly bill absorbed ---
+	tc14Notice, tc14Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C202"], smokeTenant{
+		idCard: "9999999999014",
+		name:   "TC14_SMOKE บิลค้างโดนรวม 1 ใบ",
+		phone:  "0999000014",
+	}, smokeScenario{
+		contractStartMonths: 6,
+		minMonths:           6,
+		actualOffset:        -1,
+		note:                "SMOKE TC14 — single unpaid FINALIZED bill absorbed",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	tc14MoveOutMonth := tc14Notice.ActualMoveOutDate.Format("2006-01")
+	if err := createFinalizedMonthlyBill(db, tc14Contract, monthOffset(tc14MoveOutMonth, -2)); err != nil {
+		return fmt.Errorf("create finalized bill for TC14: %w", err)
+	}
+
+	// --- TC15: THREE unpaid monthly bills ---
+	tc15Notice, tc15Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C203"], smokeTenant{
+		idCard: "9999999999015",
+		name:   "TC15_SMOKE บิลค้างหลายใบ",
+		phone:  "0999000015",
+	}, smokeScenario{
+		contractStartMonths: 8,
+		minMonths:           6,
+		actualOffset:        -1,
+		note:                "SMOKE TC15 — 3 unpaid FINALIZED monthly bills",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	tc15MoveOutMonth := tc15Notice.ActualMoveOutDate.Format("2006-01")
+	for i := 4; i >= 2; i-- {
+		bm := monthOffset(tc15MoveOutMonth, -i)
+		if err := createFinalizedMonthlyBill(db, tc15Contract, bm); err != nil {
+			return fmt.Errorf("create finalized bill %s for TC15: %w", bm, err)
+		}
+	}
+
+	// --- TC16: scheduled_move_out_date ≠ actual_move_out_date ---
+	// Scheduled was 2 days ago; admin recorded actual 6 days ago (moved out earlier).
+	if _, _, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C204"], smokeTenant{
+		idCard: "9999999999016",
+		name:   "TC16_SMOKE นัดกับจริงต่างกัน",
+		phone:  "0999000016",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		noticeOffset:        -9,
+		scheduledOffset:     -2,
+		actualOffset:        -6,
+		note:                "SMOKE TC16 — scheduled=-2d, actual=-6d (differ)",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	}); err != nil {
+		return err
+	}
+
+	// --- TC17: Backdated actual move-out date (far in past) ---
+	// Simulates admin recording move-out ~10 days after the fact.
+	if _, _, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C205"], smokeTenant{
+		idCard: "9999999999017",
+		name:   "TC17_SMOKE บันทึกย้อนหลัง",
+		phone:  "0999000017",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		noticeOffset:        -13,
+		scheduledOffset:     -10,
+		actualOffset:        -10,
+		note:                "SMOKE TC17 — actual backdated 10 days",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	}); err != nil {
+		return err
+	}
+
+	// --- TC18: Deposit refund (deposit > charges) ---
+	// Air room (deposit=฿3,000), rent_paid=true via PAID M-1 bill.
+	// Settlement charges = utilities + cleaning only → well below deposit → REFUND.
+	tc18Notice, tc18Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C101"], smokeTenant{
+		idCard: "9999999999018",
+		name:   "TC18_SMOKE คืนเงินประกัน",
+		phone:  "0999000018",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		actualOffset:        -2,
+		note:                "SMOKE TC18 — deposit refund (rent paid, small charges)",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	tc18Month := previousMonthStr(tc18Notice.ActualMoveOutDate.Format("2006-01"))
+	if err := createPaidMonthlyBill(db, tc18Contract, tc18Month); err != nil {
+		return fmt.Errorf("create paid M-1 bill for TC18: %w", err)
+	}
+
+	// --- TC19: Deposit shortfall (charges > deposit) ---
+	// Air room (deposit=฿3,000), 3 unpaid FINALIZED bills absorbed (~฿4,480 each)
+	// + exit-period charges → far exceeds deposit → PAY_MORE.
+	tc19Notice, tc19Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["C102"], smokeTenant{
+		idCard: "9999999999019",
+		name:   "TC19_SMOKE ประกันไม่พอ",
+		phone:  "0999000019",
+	}, smokeScenario{
+		contractStartMonths: 8,
+		minMonths:           6,
+		actualOffset:        -1,
+		note:                "SMOKE TC19 — deposit shortfall (3 absorbed bills > deposit)",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	tc19MoveOutMonth := tc19Notice.ActualMoveOutDate.Format("2006-01")
+	for i := 4; i >= 2; i-- {
+		bm := monthOffset(tc19MoveOutMonth, -i)
+		if err := createFinalizedMonthlyBill(db, tc19Contract, bm); err != nil {
+			return fmt.Errorf("create finalized bill %s for TC19: %w", bm, err)
+		}
+	}
+
+	// --- TC20: Invalid exit reading (must reject current < previous) ---
+	// PENDING_METER fixture with a committed MONTHLY reading so the exit-meter
+	// drawer shows non-zero "previous" values. Playwright enters a lower value
+	// and expects the UI to reject.
+	tc20Room := roomByNumber["D101"]
+	if _, _, _, err := createSmokeScenarioReturn(db, apt, tc20Room, smokeTenant{
+		idCard: "9999999999020",
+		name:   "TC20_SMOKE เลขมิเตอร์ต่ำกว่าครั้งก่อน",
+		phone:  "0999000020",
+	}, smokeScenario{
+		contractStartMonths: 10,
+		minMonths:           6,
+		scheduledOffset:     3,
+		actualOffset:        0, // ignored — PENDING_METER has no actual date
+		skipActualDate:      true,
+		note:                "SMOKE TC20 — PENDING_METER w/ prior MONTHLY reading",
+		status:              moveout.MoveOutStatusPendingMeter,
+		withExitMeter:       false,
+		today:               today,
+	}); err != nil {
+		return err
+	}
+	// Prior MONTHLY reading supplies the "ครั้งก่อน" reference in the drawer.
+	// Current values (elec=2500, water=300) are well above the threshold
+	// Playwright will type (e.g. elec=100, water=50) so the negative-usage
+	// guard fires immediately.
+	tc20PrevMonth := previousMonthStr(today.Format("2006-01"))
+	if err := createMonthlyMeterReading(db, tc20Room.ID, tc20PrevMonth, 2200, 2500, 250, 300); err != nil {
+		return fmt.Errorf("create prior MONTHLY reading for TC20: %w", err)
+	}
+
+	// --- TC21: Missing baseline / incomplete data (C3) ---
+	// Short contract (1 month), no prior monthly bills, no historical meter
+	// readings → baseline API returns has_enough_data=false for this room.
+	// Preview drawer must degrade gracefully: no NaN, no undefined, helpers hidden.
+	if _, _, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["E201"], smokeTenant{
+		idCard: "9999999999021",
+		name:   "TC21_SMOKE ข้อมูลไม่ครบ",
+		phone:  "0999000021",
+	}, smokeScenario{
+		contractStartMonths: 1,
+		minMonths:           6,
+		actualOffset:        -1,
+		note:                "SMOKE TC21 — no baseline, no bills, fresh contract",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	}); err != nil {
+		return err
+	}
+
+	slog.Info("seeded smoke test fixtures", "count", 15)
 	return nil
 }
 
@@ -609,6 +840,22 @@ func createPaidMonthlyBill(db *gorm.DB, c *contract.Contract, billingMonth strin
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 140 หน่วย", Amount: elecAmount, Quantity: 140, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 	}
 	return createBillWithLines(db, &bill, items)
+}
+
+// createMonthlyMeterReading inserts a committed MONTHLY reading. Used by
+// TC20 to seed a non-zero "previous" reference for the exit-meter drawer.
+func createMonthlyMeterReading(db *gorm.DB, roomID uuid.UUID, billingMonth string, elecPrev, elecCurr, waterPrev, waterCurr int) error {
+	bm := billingMonth
+	reading := meterreading.MeterReading{
+		RoomID:              roomID,
+		ReadingType:         meterreading.ReadingTypeMonthly,
+		BillingMonth:        &bm,
+		ElectricityPrevious: elecPrev,
+		ElectricityCurrent:  elecCurr,
+		WaterPrevious:       waterPrev,
+		WaterCurrent:        waterCurr,
+	}
+	return db.Create(&reading).Error
 }
 
 // createFinalizedMonthlyBill creates a FINALIZED (unpaid) monthly bill
