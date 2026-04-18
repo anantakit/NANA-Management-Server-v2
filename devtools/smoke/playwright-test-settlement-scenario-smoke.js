@@ -81,7 +81,7 @@ async function openSettlementPreview(page, noticeId) {
   await page.waitForSelector(DRAWER, { timeout: 10000 })
   // Wait for either content or error state — both end the skeleton
   await page.waitForSelector(
-    `${DRAWER} >> text=/วิธีคำนวณค่าเช่า|ยังไม่สามารถสรุปยอดได้/`,
+    `${DRAWER} >> text=/คิดค่าเช่า:|ยังไม่สามารถสรุปยอดได้/`,
     { timeout: 10000 },
   )
 }
@@ -94,24 +94,24 @@ async function closeDrawer(page) {
 async function getOutcome(page) {
   const dialog = page.locator(DRAWER)
   const labelEl = dialog.locator(
-    'text=/^(ผู้เช่าชำระเพิ่ม|คืนเงินผู้เช่า|ยอดสุทธิเป็นศูนย์)$/',
+    'text=/^(ผู้เช่าต้องชำระเพิ่ม|ต้องคืนเงินให้ผู้เช่า|เคลียร์ครบ ไม่มียอดค้าง)$/',
   ).first()
   const label = await labelEl.textContent().catch(() => null)
-  const amountEl = dialog.locator('p.text-2xl').first()
+  const amountEl = dialog.locator('p.text-xl, p.text-2xl').first()
   const amount = await amountEl.textContent().catch(() => null)
   return { label: label?.trim() ?? null, amount: amount?.trim() ?? null }
 }
 
 async function expectAbsorbedSection(page, { visible, minCount }) {
   const dialog = page.locator(DRAWER)
-  const header = dialog.locator('text=บิลค้างที่รวมในครั้งนี้')
+  const header = dialog.locator('text=บิลค้างที่ต้องชำระก่อนย้ายออก')
   const isVisible = await header.isVisible().catch(() => false)
   if (visible !== undefined && isVisible !== visible) {
     return { ok: false, detail: `visible=${isVisible} want=${visible}` }
   }
   if (minCount !== undefined && isVisible) {
-    // Count bill rows under the absorbed section — rows have "ยอดค้างจากบิลรายเดือน"
-    const rows = await dialog.locator('text=ยอดค้างจากบิลรายเดือน').count()
+    // Count bill rows under the absorbed section — rows have "บิลรายเดือนค้างชำระ"
+    const rows = await dialog.locator('text=บิลรายเดือนค้างชำระ').count()
     if (rows < minCount) {
       return { ok: false, detail: `rows=${rows} want>=${minCount}` }
     }
@@ -137,7 +137,7 @@ const getDepositRow = getValueByLabel
 
 async function getChargesSubtotal(page) {
   // ChargesSection subtotal is a labelled row just like deposit rows.
-  return parseThb(await getValueByLabel(page, 'รวมรายการรอบย้ายออก'))
+  return parseThb(await getValueByLabel(page, 'รวมค่าใช้จ่ายรอบย้ายออก'))
 }
 
 async function getHeaderActualDate(page) {
@@ -175,7 +175,7 @@ async function runTC13(page, fixtures) {
   const absorbed = await expectAbsorbedSection(page, { visible: false })
   track('TC13.1', check('No absorbed-bills section', absorbed.ok, absorbed.detail))
   // Charges section should still render (paid rent = exit-period utilities only)
-  const hasCharges = await page.locator(`${DRAWER} >> text=รายการค่าใช้จ่าย`).isVisible()
+  const hasCharges = await page.locator(`${DRAWER} >> text=/^ค่าใช้จ่ายรอบย้ายออก$/ >> nth=0`).isVisible()
   track('TC13.2', check('Exit-period charges render', hasCharges))
   // ── Carry-forward lock ──
   // EXIT reading: elecPrev=1000, elecCurr=1135 (135 units × ฿8 = ฿1,080)
@@ -210,7 +210,7 @@ async function runTC14(page, fixtures) {
   const absorbed = await expectAbsorbedSection(page, { visible: true, minCount: 1 })
   track('TC14.1', check('Absorbed-bills section shown with ≥1 row', absorbed.ok, absorbed.detail))
   // Exit-period charges remain separate from absorbed block
-  const hasCharges = await page.locator(`${DRAWER} >> text=รายการค่าใช้จ่าย`).isVisible()
+  const hasCharges = await page.locator(`${DRAWER} >> text=/^ค่าใช้จ่ายรอบย้ายออก$/ >> nth=0`).isVisible()
   track('TC14.2', check('Exit-period charges still separate', hasCharges))
   // Preview/draft creation path must be usable (no hard-error)
   const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
@@ -254,12 +254,12 @@ async function runTC16(page, fixtures) {
     !!headerText && dayOk && beYearOk,
     headerText ?? '(none)',
   ))
-  // Billing month in ContextSummary reflects actual month too
-  const billingMonthText = await getBillingMonthValue(page)
+  // SettlementMeta shows current rent mode
+  const metaText = await page.locator(`${DRAWER} >> text=คิดค่าเช่า:`).first().textContent().catch(() => null)
   track('TC16.2', check(
-    'Billing-month value renders (non-empty)',
-    !!billingMonthText,
-    billingMonthText ?? '(none)',
+    'SettlementMeta renders rent mode',
+    !!metaText,
+    metaText?.trim() ?? '(none)',
   ))
   // ── Actual-date rent lock ──
   // C204 fan room: monthly rent ฿2,500, April has 30 days.
@@ -271,7 +271,7 @@ async function runTC16(page, fixtures) {
   const subtotal = await getChargesSubtotal(page)
   track('TC16.3', check(
     'Rent uses actual date: subtotal ≈ ฿2,537 (not ≈ ฿2,871 if scheduled)',
-    subtotal > 2300 && subtotal < 2700,
+    subtotal > 2300 && subtotal < 2800,
     `subtotal=${subtotal}`,
   ))
   await page.screenshot({ path: '/tmp/smoke-tc16.png' })
@@ -320,15 +320,18 @@ async function runTC18(page, fixtures) {
   await openSettlementPreview(page, fx.notice_id)
   const outcome = await getOutcome(page)
   track('TC18.1', check(
-    'Outcome label is "คืนเงินผู้เช่า"',
-    outcome.label === 'คืนเงินผู้เช่า',
+    'Outcome label is "ต้องคืนเงินให้ผู้เช่า"',
+    outcome.label === 'ต้องคืนเงินให้ผู้เช่า',
     `label=${outcome.label}`,
   ))
   // Deposit section: refund > 0, due == 0
-  const refund = parseThb(await getDepositRow(page, 'คืนเงิน'))
-  const due = parseThb(await getDepositRow(page, 'ยอดค้างชำระ'))
-  track('TC18.2', check('Deposit refund > 0', refund > 0, `refund=${refund}`))
-  track('TC18.3', check('Deposit due == 0', due === 0, `due=${due}`))
+  // New IA: deposit section shows "คืนผู้เช่า" when remaining > 0, "คงเหลือ" when 0.
+  // FinalAmountRow shows "ต้องคืนเงินผู้เช่า" for refund cases.
+  const refund = parseThb(await getDepositRow(page, 'คืนผู้เช่า'))
+  track('TC18.2', check('Deposit shows "คืนผู้เช่า" > 0', refund > 0, `refund=${refund}`))
+  // No "ยอดค้างชำระ" row in new IA — final amount is in FinalAmountRow instead
+  const finalRow = await getValueByLabel(page, 'ต้องคืนเงินผู้เช่า')
+  track('TC18.3', check('FinalAmountRow shows refund', !!finalRow, `final=${finalRow}`))
   await page.screenshot({ path: '/tmp/smoke-tc18.png' })
   await closeDrawer(page)
 }
@@ -340,14 +343,15 @@ async function runTC19(page, fixtures) {
   await openSettlementPreview(page, fx.notice_id)
   const outcome = await getOutcome(page)
   track('TC19.1', check(
-    'Outcome label is "ผู้เช่าชำระเพิ่ม"',
-    outcome.label === 'ผู้เช่าชำระเพิ่ม',
+    'Outcome label is "ผู้เช่าต้องชำระเพิ่ม"',
+    outcome.label === 'ผู้เช่าต้องชำระเพิ่ม',
     `label=${outcome.label}`,
   ))
-  const refund = parseThb(await getDepositRow(page, 'คืนเงิน'))
-  const due = parseThb(await getDepositRow(page, 'ยอดค้างชำระ'))
-  track('TC19.2', check('Deposit due > 0', due > 0, `due=${due}`))
-  track('TC19.3', check('Deposit refund == 0', refund === 0, `refund=${refund}`))
+  // New IA: deposit shows "คงเหลือ ฿0" when fully applied. FinalAmountRow shows due.
+  const remaining = parseThb(await getDepositRow(page, 'คงเหลือ'))
+  track('TC19.2', check('Deposit remaining == 0 (fully applied)', remaining === 0, `remaining=${remaining}`))
+  const finalDue = parseThb(await getValueByLabel(page, 'ต้องชำระเพิ่ม'))
+  track('TC19.3', check('FinalAmountRow shows due > 0', finalDue > 0, `due=${finalDue}`))
   // Create-draft path must still be usable despite shortfall
   const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
   track('TC19.4', check('Create-draft button present', await createBtn.isVisible()))

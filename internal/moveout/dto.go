@@ -221,6 +221,8 @@ type SettlementPreviewAPIResponse struct {
 	Deposit              SettlementPreviewDepositResponse        `json:"deposit"`
 	AbsorbedBills        []SettlementPreviewAbsorbedBillResponse `json:"absorbed_bills"`
 	Outcome              string                                  `json:"outcome"`
+	DataState            string                                  `json:"data_state"`
+	Warnings             []string                                `json:"warnings"`
 }
 
 // ToSettlementPreviewResponse maps the port result to API response (satang → baht).
@@ -265,5 +267,7 @@ func ToSettlementPreviewResponse(r *SettlementPreviewResult) SettlementPreviewAP
 		},
 		AbsorbedBills: absorbed,
 		Outcome:       r.Outcome,
+		DataState:     string(r.DataState),
+		Warnings:      r.Warnings,
 	}
 }

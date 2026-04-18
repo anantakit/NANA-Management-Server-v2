@@ -131,6 +131,14 @@ type SettlementPreviewAbsorbedBill struct {
 	TotalAmount  int64 // satang
 }
 
+// DataState indicates whether the preview data is complete or has gaps.
+type DataState string
+
+const (
+	DataStateComplete   DataState = "complete"
+	DataStateIncomplete DataState = "incomplete"
+)
+
 // SettlementPreviewResult holds the full non-persisted settlement preview.
 // Defined in moveout to avoid circular imports.
 type SettlementPreviewResult struct {
@@ -146,6 +154,8 @@ type SettlementPreviewResult struct {
 	Deposit              SettlementPreviewDeposit
 	AbsorbedBills        []SettlementPreviewAbsorbedBill
 	Outcome              string // "PAY_MORE", "REFUND", "ZERO_BALANCE"
+	DataState            DataState
+	Warnings             []string
 }
 
 // BillingQuerier provides read-only settlement preview computation.

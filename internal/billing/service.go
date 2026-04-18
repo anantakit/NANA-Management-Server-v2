@@ -1108,6 +1108,34 @@ func (s *billingService) PreviewSettlementForNotice(ctx context.Context, contrac
 		outcome = "ZERO_BALANCE"
 	}
 
+	// Derive data quality state from the computed plan.
+	dataState := moveout.DataStateComplete
+	var warnings []string
+
+	if len(plan.Bill.LineItems) == 0 {
+		dataState = moveout.DataStateIncomplete
+		warnings = append(warnings, "ไม่มีรายการค่าใช้จ่าย — อาจยังไม่มีข้อมูลมิเตอร์หรือค่าเช่า")
+	}
+
+	allZero := len(plan.Bill.LineItems) > 0
+	for _, li := range plan.Bill.LineItems {
+		if li.Amount != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero && len(plan.Bill.LineItems) > 0 {
+		dataState = moveout.DataStateIncomplete
+		warnings = append(warnings, "รายการค่าใช้จ่ายทั้งหมดเป็น ฿0 — อาจใช้ค่า default ในการคำนวณ")
+	}
+
+	// Only flag zero deposit when the contract actually has deposit but the
+	// computed value is 0 — a contract with no deposit is business-valid.
+	if plan.Bill.DepositAmount > 0 && d.OriginalAmount == 0 {
+		dataState = moveout.DataStateIncomplete
+		warnings = append(warnings, "สัญญามีเงินประกันแต่ไม่พบข้อมูลในการคำนวณ")
+	}
+
 	return &moveout.SettlementPreviewResult{
 		BillingMonth:         plan.Bill.BillingMonth,
 		ActualMoveOutDate:    preview.MoveOutDate,
@@ -1127,5 +1155,7 @@ func (s *billingService) PreviewSettlementForNotice(ctx context.Context, contrac
 		},
 		AbsorbedBills: absorbed,
 		Outcome:       outcome,
+		DataState:     dataState,
+		Warnings:      warnings,
 	}, nil
 }
