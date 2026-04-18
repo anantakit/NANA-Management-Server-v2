@@ -121,14 +121,12 @@ async function expectAbsorbedSection(page, { visible, minCount }) {
 }
 
 async function getValueByLabel(page, label) {
-  // DepositSection / ChargesSection rows share the same shape:
-  //   <div><span>{label}</span><span class="tabular-nums">{amount}</span></div>
-  // Grab the immediate following-sibling <span> of the label text node.
-  // XPath because `filter({has})` would also match ancestor divs (they
-  // "contain" the text too), picking the wrong tabular-nums node.
-  const amountEl = page.locator(
-    `${DRAWER} >> xpath=.//span[normalize-space(text())=${JSON.stringify(label)}]/following-sibling::span[1]`,
+  // BreakdownRow shape: <div class="flex"><div><span>label</span></div><span>amount</span></div>
+  // Find the row div that contains the label, then grab the tabular-nums span.
+  const row = page.locator(
+    `${DRAWER} >> xpath=.//span[normalize-space(text())=${JSON.stringify(label)}]/ancestor::div[contains(@class,"flex")][1]`,
   ).first()
+  const amountEl = row.locator('span.tabular-nums').first()
   return (await amountEl.textContent().catch(() => null))?.trim() ?? null
 }
 
