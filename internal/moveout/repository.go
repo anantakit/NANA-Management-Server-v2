@@ -43,6 +43,7 @@ func (r *moveOutRepository) baseJoinQuery(ctx context.Context) *gorm.DB {
 		Joins("JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
 		Joins("JOIN rooms ON rooms.id = contracts.room_id AND rooms.deleted_at IS NULL").
 		Joins("JOIN apartments ON apartments.id = rooms.apartment_id AND apartments.deleted_at IS NULL").
+		Joins("LEFT JOIN bills ON bills.id = move_out_notices.settlement_bill_id AND bills.deleted_at IS NULL").
 		Where("move_out_notices.deleted_at IS NULL")
 }
 
@@ -52,26 +53,32 @@ func (r *moveOutRepository) selectColumns() string {
 		rooms.apartment_id AS apartment_id,
 		tenants.full_name AS tenant_name,
 		rooms.number AS room_number,
-		apartments.name AS apartment_name`
+		apartments.name AS apartment_name,
+		COALESCE(bills.settlement_rent_mode, '') AS settlement_rent_mode,
+		COALESCE((SELECT COUNT(*) FROM bill_line_items WHERE bill_line_items.bill_id = bills.id AND bill_line_items.source = 'MANUAL' AND bill_line_items.deleted_at IS NULL), 0) AS manual_item_count`
 }
 
 type joinRow struct {
 	MoveOutNotice
-	RoomID        uuid.UUID `gorm:"column:room_id"`
-	ApartmentID   uuid.UUID `gorm:"column:apartment_id"`
-	TenantName    string    `gorm:"column:tenant_name"`
-	RoomNumber    string    `gorm:"column:room_number"`
-	ApartmentName string    `gorm:"column:apartment_name"`
+	RoomID              uuid.UUID `gorm:"column:room_id"`
+	ApartmentID         uuid.UUID `gorm:"column:apartment_id"`
+	TenantName          string    `gorm:"column:tenant_name"`
+	RoomNumber          string    `gorm:"column:room_number"`
+	ApartmentName       string    `gorm:"column:apartment_name"`
+	SettlementRentMode  string    `gorm:"column:settlement_rent_mode"`
+	ManualItemCount     int       `gorm:"column:manual_item_count"`
 }
 
 func rowToRelation(row joinRow) MoveOutWithRelations {
 	return MoveOutWithRelations{
-		MoveOutNotice: row.MoveOutNotice,
-		RoomID:        row.RoomID,
-		ApartmentID:   row.ApartmentID,
-		TenantName:    row.TenantName,
-		RoomNumber:    row.RoomNumber,
-		ApartmentName: row.ApartmentName,
+		MoveOutNotice:      row.MoveOutNotice,
+		RoomID:             row.RoomID,
+		ApartmentID:        row.ApartmentID,
+		TenantName:         row.TenantName,
+		RoomNumber:         row.RoomNumber,
+		ApartmentName:      row.ApartmentName,
+		SettlementRentMode: row.SettlementRentMode,
+		ManualItemCount:    row.ManualItemCount,
 	}
 }
 

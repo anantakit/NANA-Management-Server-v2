@@ -64,6 +64,8 @@ type MoveOutResponse struct {
 	Urgency              string   `json:"urgency,omitempty"`
 	DaysUntil            int      `json:"days_until"`
 	SettlementBillID     string   `json:"settlement_bill_id,omitempty"`
+	SettlementRentMode   string   `json:"settlement_rent_mode,omitempty"`
+	ManualItemCount      *int     `json:"manual_item_count,omitempty"`
 	NetAmount            *float64 `json:"net_amount,omitempty"`
 	PaymentOutcome       string   `json:"payment_outcome,omitempty"`
 	PaymentNote          string   `json:"payment_note,omitempty"`
@@ -105,11 +107,13 @@ type MoveOutQueueResponse struct {
 // MoveOutWithRelations is a projection for list/detail with joined data.
 type MoveOutWithRelations struct {
 	MoveOutNotice
-	RoomID        uuid.UUID
-	ApartmentID   uuid.UUID
-	TenantName    string
-	RoomNumber    string
-	ApartmentName string
+	RoomID             uuid.UUID
+	ApartmentID        uuid.UUID
+	TenantName         string
+	RoomNumber         string
+	ApartmentName      string
+	SettlementRentMode string
+	ManualItemCount    int
 }
 
 // --- Mappers ---
@@ -140,6 +144,11 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 	// V2 fields
 	if m.SettlementBillID != nil {
 		resp.SettlementBillID = m.SettlementBillID.String()
+		if m.SettlementRentMode != "" {
+			resp.SettlementRentMode = m.SettlementRentMode
+		}
+		count := m.ManualItemCount
+		resp.ManualItemCount = &count
 	}
 	if m.NetAmount != nil {
 		v := float64(*m.NetAmount) / 100
