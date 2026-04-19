@@ -3,11 +3,11 @@
 // Validates PENDING_SETTLEMENT flow on the /move-out queue page:
 //
 //   A  No draft → SettlementPreviewDrawer → "สร้างแบบร่าง" → SettlementPage
-//   B  Has draft, no manual items → drawer shows "อัปเดตยอดใหม่" + "เปิดแบบร่าง"
-//   C  Has draft + manual items → note shown, confirm modal before regenerate
+//   B  Has draft, no manual items → drawer shows "เปิดแบบร่าง" only (preview-only)
+//   C  Has draft + manual items → note shown, "เปิดแบบร่าง" only (no regenerate in drawer)
 //   D  Draft rent mode continuity → FULL_MONTH default, switch + warning
 //   E  Duplicate/race fallback → 409 → duplicateError state → navigate
-//   F  Queue refresh after regenerate → item stays PENDING_SETTLEMENT
+//   F  Queue state after draft create → item stays PENDING_SETTLEMENT
 //
 // Fixtures: reuses TC1 (no draft), TC4 (draft, no manual), TC22 (draft + manual),
 //           TC23 (draft + FULL_MONTH). All seeded by /dev/smoke/seed endpoint.
@@ -169,23 +169,23 @@ async function runScenarioA(page, fixtures) {
   track('A.6', check('Item still in PENDING_SETTLEMENT (not moved until finalize)', stillInQueue))
 }
 
-// ─── Scenario B: Has draft, no manual items ────────────────────────────
+// ─── Scenario B: Has draft, no manual items → preview-only ──────────
 
 async function runScenarioB(page, fixtures) {
-  console.log('\n── Scenario B: Has draft, no manual items ──')
+  console.log('\n── Scenario B: Has draft, no manual items (preview-only) ──')
   const fx = fixtures.TC4
   if (!fx) return track('B', check('Fixture TC4 present', false, 'missing'))
 
   await goToQueue(page)
   await clickQueueCard(page, fx.room_number)
 
-  // CTA = "อัปเดตยอดใหม่"
-  const updateBtn = page.locator(`${DRAWER} button:has-text("อัปเดตยอดใหม่")`)
-  track('B.1', check('CTA = "อัปเดตยอดใหม่"', await updateBtn.isVisible()))
-
-  // "เปิดแบบร่าง" button present
+  // "เปิดแบบร่าง" button present (primary action)
   const openDraftBtn = page.locator(`${DRAWER} button:has-text("เปิดแบบร่าง")`)
-  track('B.2', check('"เปิดแบบร่าง" button visible', await openDraftBtn.isVisible()))
+  track('B.1', check('"เปิดแบบร่าง" button visible', await openDraftBtn.isVisible()))
+
+  // No "อัปเดตยอดใหม่" button (removed from drawer)
+  const noRegenBtn = !(await page.locator(`${DRAWER} button:has-text("อัปเดตยอดใหม่")`).isVisible().catch(() => false))
+  track('B.2', check('No "อัปเดตยอดใหม่" in drawer', noRegenBtn))
 
   // No manual item note
   const dialogText = await getDialogText(page)
@@ -198,33 +198,19 @@ async function runScenarioB(page, fixtures) {
   await openDraftBtn.click()
   await page.waitForURL(/\/move-out\/[^/]+\/settlement/, { timeout: 10000 })
   track('B.4', check('"เปิดแบบร่าง" navigates to SettlementPage', page.url().includes('/settlement')))
-
-  // Go back and test regenerate (no confirm modal for 0 manual items)
-  await goToQueue(page)
-  await clickQueueCard(page, fx.room_number)
-  const updateBtn2 = page.locator(`${DRAWER} button:has-text("อัปเดตยอดใหม่")`)
-  await updateBtn2.click()
-  // Should NOT show confirm modal — wait briefly and check
-  await page.waitForTimeout(500)
-  const modalVisible = await page.locator('text=ระบบจะคำนวณรายการอัตโนมัติใหม่อีกครั้ง').isVisible().catch(() => false)
-  track('B.5', check('No confirm modal for 0 manual items', !modalVisible))
-
-  // Wait for regenerate to finish (toast or navigation)
-  await page.waitForSelector('text=อัปเดตยอดสรุปสำเร็จ', { timeout: 10000 }).catch(() => {})
-  await closeDrawer(page)
 }
 
-// ─── Scenario C: Has draft + manual items ──────────────────────────────
+// ─── Scenario C: Has draft + manual items → preview-only with note ───
 
 async function runScenarioC(page, fixtures) {
-  console.log('\n── Scenario C: Has draft + manual items ──')
+  console.log('\n── Scenario C: Has draft + manual items (preview-only with note) ──')
   const fx = fixtures.TC22
   if (!fx) return track('C', check('Fixture TC22 present', false, 'missing'))
 
   await goToQueue(page)
   await clickQueueCard(page, fx.room_number)
 
-  // Manual item note visible
+  // Manual item note visible (context only, not a regenerate trigger)
   const dialogText = await getDialogText(page)
   const hasManualNote = dialogText.includes('รายการปรับเพิ่ม')
   track('C.1', check('Manual item note visible', hasManualNote))
@@ -234,36 +220,20 @@ async function runScenarioC(page, fixtures) {
   const count = noteMatch ? parseInt(noteMatch[1]) : 0
   track('C.2', check('Manual item count = 2', count === 2, `count=${count}`))
 
+  // No "อัปเดตยอดใหม่" button (removed from drawer)
+  const noRegenBtn = !(await page.locator(`${DRAWER} button:has-text("อัปเดตยอดใหม่")`).isVisible().catch(() => false))
+  track('C.3', check('No "อัปเดตยอดใหม่" in drawer', noRegenBtn))
+
+  // "เปิดแบบร่าง" button present
+  const openDraftBtn = page.locator(`${DRAWER} button:has-text("เปิดแบบร่าง")`)
+  track('C.4', check('"เปิดแบบร่าง" button visible', await openDraftBtn.isVisible()))
+
   await page.screenshot({ path: '/tmp/smoke-queue-c.png' })
 
-  // Click "อัปเดตยอดใหม่" → confirm modal appears
-  const updateBtn = page.locator(`${DRAWER} button:has-text("อัปเดตยอดใหม่")`)
-  await updateBtn.click()
-
-  // Wait for confirm modal
-  await page.waitForSelector('text=ระบบจะคำนวณรายการอัตโนมัติใหม่อีกครั้ง', { timeout: 5000 })
-  track('C.3', check('Confirm modal shown', true))
-
-  // Modal title
-  const modalTitle = await page.locator('h3:has-text("อัปเดตยอดใหม่")').isVisible()
-  track('C.4', check('Modal title = "อัปเดตยอดใหม่"', modalTitle))
-
-  // Modal body mentions preserving manual items
-  const modalText = await page.locator('text=โดยคงรายการที่เพิ่มเองไว้').isVisible()
-  track('C.5', check('Modal body mentions preserving manual items', modalText))
-
-  // Modal actions: ยกเลิก / อัปเดตยอด
-  const cancelBtn = page.locator('button:has-text("ยกเลิก")')
-  const confirmBtn = page.getByRole('button', { name: 'อัปเดตยอด', exact: true })
-  track('C.6', check('Modal has "ยกเลิก" button', await cancelBtn.isVisible()))
-  track('C.7', check('Modal has "อัปเดตยอด" button', await confirmBtn.isVisible()))
-
-  await page.screenshot({ path: '/tmp/smoke-queue-c-modal.png' })
-
-  // Confirm regenerate
-  await confirmBtn.click()
-  await page.waitForSelector('text=อัปเดตยอดสรุปสำเร็จ', { timeout: 10000 }).catch(() => {})
-  await closeDrawer(page)
+  // Navigate to SettlementPage
+  await openDraftBtn.click()
+  await page.waitForURL(/\/move-out\/[^/]+\/settlement/, { timeout: 10000 })
+  track('C.5', check('"เปิดแบบร่าง" navigates to SettlementPage', page.url().includes('/settlement')))
 }
 
 // ─── Scenario D: Draft rent mode continuity ────────────────────────────
@@ -373,12 +343,12 @@ async function runScenarioE(page, fixtures) {
   await page.unroute(`**/api/v1/move-out-notices/*/generate-settlement`)
 }
 
-// ─── Scenario F: Queue refresh after regenerate ────────────────────────
+// ─── Scenario F: Queue state after draft create ────────────────────────
 
 async function runScenarioF(page, fixtures) {
-  console.log('\n── Scenario F: Queue refresh after regenerate ──')
-  // After scenario B already regenerated TC4, verify the queue reflects
-  // the updated state.
+  console.log('\n── Scenario F: Queue state after draft create ──')
+  // After scenario A created a draft for TC1, verify the queue still
+  // shows the item as PENDING_SETTLEMENT (not moved until finalize).
   const fx = fixtures.TC4
   if (!fx) return track('F', check('Fixture TC4 present', false, 'missing'))
 

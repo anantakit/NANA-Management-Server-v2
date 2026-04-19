@@ -344,6 +344,11 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			Status:               sc.status,
 			Note:                 sc.note,
 		}
+		// Set actual_move_out_date when exit meter exists — required for settlement preview
+		if sc.withExitMeter {
+			actual := today.AddDate(0, 0, sc.scheduledOffset)
+			notice.ActualMoveOutDate = &actual
+		}
 		if err := db.Create(&notice).Error; err != nil {
 			return fmt.Errorf("create notice %s: %w", rm.Number, err)
 		}

@@ -146,7 +146,7 @@ const track = (tc, ok) => {
     await page.screenshot({ path: '/tmp/smoke-tc3.png' })
     await closeDrawer(page)
 
-    // ── TC4: Has draft → regenerate ──
+    // ── TC4: Has draft → preview-only (no regenerate in drawer) ──
     console.log('\n── TC4: Has draft ──')
     await page.goto(`${FRONTEND}/move-out/${fixtures.TC4.notice_id}`)
     await page.waitForLoadState('networkidle')
@@ -155,8 +155,10 @@ const track = (tc, ok) => {
     await page.locator('button:has-text("ดูสรุปยอดใหม่")').click()
     await page.waitForSelector('[role="dialog"][aria-label="สรุปยอดย้ายออก"]', { timeout: 10000 })
     await page.waitForSelector('text=คิดค่าเช่า:')
-    const tc4HasUpdateBtn = await page.locator('[role="dialog"] button:has-text("อัปเดตยอดใหม่")').isVisible()
-    track('TC4.2', check('Footer has "อัปเดตยอดใหม่" button', tc4HasUpdateBtn))
+    const tc4HasOpenDraftBtn = await page.locator('[role="dialog"] button:has-text("เปิดแบบร่าง")').isVisible()
+    track('TC4.2', check('Footer has "เปิดแบบร่าง" button (preview-only)', tc4HasOpenDraftBtn))
+    const tc4NoRegenBtn = !(await page.locator('[role="dialog"] button:has-text("อัปเดตยอดใหม่")').isVisible().catch(() => false))
+    track('TC4.3', check('No "อัปเดตยอดใหม่" in drawer (moved to SettlementPage)', tc4NoRegenBtn))
     await page.screenshot({ path: '/tmp/smoke-tc4.png' })
 
     // ── TC5: Mode change hint ──
