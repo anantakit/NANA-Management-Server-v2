@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-legacy smoke-settlement-all smoke-install
+       smoke-settlement smoke-settlement-legacy smoke-settlement-all smoke-queue smoke-all smoke-install
 
 # Development
 dev:
@@ -61,6 +61,12 @@ smoke-settlement-legacy:
 
 smoke-settlement-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js && node playwright-test-settlement-scenario-smoke.js
+
+smoke-queue:
+	cd devtools/smoke && node playwright-test-queue-settlement-smoke.js
+
+smoke-all:
+	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-queue-settlement-smoke.js
 
 # Clean
 clean:

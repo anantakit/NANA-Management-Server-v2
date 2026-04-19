@@ -40,6 +40,8 @@ import (
 // | 19 | C102 | PENDING_SETTLEMENT | Scenario: deposit shortfall (owe money)    |
 // | 20 | D101 | PENDING_METER      | Scenario: invalid exit < prior MONTHLY     |
 // | 21 | E201 | PENDING_SETTLEMENT | Scenario: missing baseline / incomplete data |
+// | 22 | D201 | PENDING_SETTLEMENT | Queue: draft + 2 MANUAL items (confirm modal) |
+// | 23 | D202 | PENDING_SETTLEMENT | Queue: draft + FULL_MONTH rent mode (continuity)|
 //
 // Date-sensitive: TC3 requires mid-month "today" to flip across minMonths.
 // Works reliably when today.Day() <= daysInMonth(today) - 3.
@@ -57,13 +59,15 @@ const smokeIDCardPrefix = SmokeIDCardPrefix
 // SmokeFixture is a lightweight projection returned by ListSmokeFixtures —
 // used by the dev-only HTTP endpoint to expose fixture IDs to Playwright.
 type SmokeFixture struct {
-	IDCard            string  `json:"id_card"`
-	TenantName        string  `json:"tenant_name"`
-	RoomNumber        string  `json:"room_number"`
-	NoticeID          string  `json:"notice_id"`
-	Status            string  `json:"status"`
-	HasDraft          bool    `json:"has_draft"`
-	ActualMoveOutDate *string `json:"actual_move_out_date"`
+	IDCard             string  `json:"id_card"`
+	TenantName         string  `json:"tenant_name"`
+	RoomNumber         string  `json:"room_number"`
+	NoticeID           string  `json:"notice_id"`
+	Status             string  `json:"status"`
+	HasDraft           bool    `json:"has_draft"`
+	ActualMoveOutDate  *string `json:"actual_move_out_date"`
+	SettlementRentMode string  `json:"settlement_rent_mode"`
+	ManualItemCount    int     `json:"manual_item_count"`
 }
 
 // ListSmokeFixtures returns all active smoke-test fixtures in a compact form
@@ -73,11 +77,14 @@ func ListSmokeFixtures(db *gorm.DB) ([]SmokeFixture, error) {
 	rows, err := db.Raw(`
 		SELECT t.id_card, t.full_name, r.number, n.id::text, n.status,
 		       n.settlement_bill_id IS NOT NULL AS has_draft,
-		       to_char(n.actual_move_out_date, 'YYYY-MM-DD') AS actual_date
+		       to_char(n.actual_move_out_date, 'YYYY-MM-DD') AS actual_date,
+		       COALESCE(b.settlement_rent_mode, '') AS settlement_rent_mode,
+		       COALESCE((SELECT COUNT(*) FROM bill_line_items WHERE bill_line_items.bill_id = b.id AND bill_line_items.source = 'MANUAL'), 0) AS manual_item_count
 		FROM tenants t
 		JOIN contracts c ON c.tenant_id = t.id
 		JOIN rooms r ON r.id = c.room_id
 		JOIN move_out_notices n ON n.contract_id = c.id
+		LEFT JOIN bills b ON b.id = n.settlement_bill_id AND b.deleted_at IS NULL
 		WHERE t.id_card LIKE ? AND t.deleted_at IS NULL
 		ORDER BY t.id_card
 	`, SmokeIDCardPrefix+"%").Rows()
@@ -89,7 +96,7 @@ func ListSmokeFixtures(db *gorm.DB) ([]SmokeFixture, error) {
 	for rows.Next() {
 		var f SmokeFixture
 		var actualDate *string
-		if err := rows.Scan(&f.IDCard, &f.TenantName, &f.RoomNumber, &f.NoticeID, &f.Status, &f.HasDraft, &actualDate); err != nil {
+		if err := rows.Scan(&f.IDCard, &f.TenantName, &f.RoomNumber, &f.NoticeID, &f.Status, &f.HasDraft, &actualDate, &f.SettlementRentMode, &f.ManualItemCount); err != nil {
 			return nil, err
 		}
 		f.ActualMoveOutDate = actualDate
@@ -105,6 +112,8 @@ var smokeRoomNumbers = []string{
 	// Scenario smoke v1 (TC13–TC21)
 	"C201", "C202", "C203", "C204", "C205", "C101", "C102", "D101",
 	"E201",
+	// Queue settlement smoke (TC22–TC23)
+	"D201", "D202",
 }
 
 func seedDevSmoke(db *gorm.DB) error {
@@ -492,7 +501,51 @@ func seedDevSmoke(db *gorm.DB) error {
 		return err
 	}
 
-	slog.Info("seeded smoke test fixtures", "count", 15)
+	// ─── Queue settlement smoke (TC22–TC23) ──────────────────────────
+
+	// --- TC22: Has draft + MANUAL items (for queue drawer confirm modal) ---
+	tc22Notice, tc22Contract, tc22Room, err := createSmokeScenarioReturn(db, apt, roomByNumber["D201"], smokeTenant{
+		idCard: "9999999999022",
+		name:   "TC22_SMOKE มีร่าง+รายการปรับเอง",
+		phone:  "0999000022",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		actualOffset:        -3,
+		note:                "SMOKE TC22 — draft with MANUAL line items",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	if err := attachDraftSettlementBillWithManualItems(db, tc22Notice, tc22Contract, tc22Room, today.AddDate(0, 0, -3)); err != nil {
+		return fmt.Errorf("attach draft+manual for TC22: %w", err)
+	}
+
+	// --- TC23: Has draft with FULL_MONTH rent mode (for rent mode continuity) ---
+	tc23Notice, tc23Contract, tc23Room, err := createSmokeScenarioReturn(db, apt, roomByNumber["D202"], smokeTenant{
+		idCard: "9999999999023",
+		name:   "TC23_SMOKE ร่างเต็มเดือน",
+		phone:  "0999000023",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		actualOffset:        -4,
+		note:                "SMOKE TC23 — draft with FULL_MONTH rent mode",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	if err := attachDraftSettlementBillFullMonth(db, tc23Notice, tc23Contract, tc23Room, today.AddDate(0, 0, -4)); err != nil {
+		return fmt.Errorf("attach full-month draft for TC23: %w", err)
+	}
+
+	slog.Info("seeded smoke test fixtures", "count", 17)
 	return nil
 }
 
@@ -808,6 +861,100 @@ func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *co
 	}
 	if err := createBillWithLines(db, &bill, items); err != nil {
 		return fmt.Errorf("create draft bill: %w", err)
+	}
+
+	netAmount := total - c.DepositAmount
+	if err := db.Model(&moveout.MoveOutNotice{}).Where("id = ?", notice.ID).Updates(map[string]any{
+		"settlement_bill_id": bill.ID,
+		"net_amount":         netAmount,
+	}).Error; err != nil {
+		return fmt.Errorf("attach bill to notice: %w", err)
+	}
+
+	return nil
+}
+
+// attachDraftSettlementBillWithManualItems creates a DRAFT settlement bill with
+// MANUAL line items and links it to the notice. Used by TC22 for the queue
+// drawer confirm-modal scenario.
+func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveOutNotice, c *contract.Contract, _ *room.Room, actualMoveOut time.Time) error {
+	billingMonth := actualMoveOut.Format("2006-01")
+
+	day := actualMoveOut.Day()
+	totalDays := endOfMonth(actualMoveOut).Day()
+	proRateRent := (c.MonthlyRent * int64(day)) / int64(totalDays)
+
+	waterAmount := int64(18) * c.WaterRatePerUnit
+	elecAmount := int64(135) * c.ElectricityRatePerUnit
+	cleaningFee := int64(30000) // ฿300
+	manualCharge1 := int64(50000) // ฿500 — ค่าซ่อมแซม
+	manualCharge2 := int64(30000) // ฿300 — ค่าอื่น ๆ
+
+	total := proRateRent + waterAmount + elecAmount + cleaningFee + manualCharge1 + manualCharge2
+
+	bill := billing.Bill{
+		ContractID:         c.ID,
+		BillingMonth:       billingMonth,
+		BillType:           billing.BillTypeSettlement,
+		Status:             billing.BillStatusDraft,
+		DepositAmount:      c.DepositAmount,
+		TotalAmount:        total,
+		SettlementRentMode: billing.RentModeProrated,
+		RentPaid:           false,
+	}
+	items := []billing.BillLineItem{
+		{LineType: billing.LineItemProrateRent, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("ค่าเช่า (คิดตามสัดส่วน) %d/%d วัน", day, totalDays), Amount: proRateRent, SortOrder: 1},
+		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
+		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
+		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
+		{LineType: billing.LineItemOther, Source: billing.LineItemSourceManual, Description: "ค่าซ่อมแซมห้อง", Amount: manualCharge1, SortOrder: 5},
+		{LineType: billing.LineItemOther, Source: billing.LineItemSourceManual, Description: "ค่าเคลื่อนย้ายของ", Amount: manualCharge2, SortOrder: 6},
+	}
+	if err := createBillWithLines(db, &bill, items); err != nil {
+		return fmt.Errorf("create draft bill with manual: %w", err)
+	}
+
+	netAmount := total - c.DepositAmount
+	if err := db.Model(&moveout.MoveOutNotice{}).Where("id = ?", notice.ID).Updates(map[string]any{
+		"settlement_bill_id": bill.ID,
+		"net_amount":         netAmount,
+	}).Error; err != nil {
+		return fmt.Errorf("attach bill to notice: %w", err)
+	}
+
+	return nil
+}
+
+// attachDraftSettlementBillFullMonth creates a DRAFT settlement bill with
+// FULL_MONTH rent mode and links it to the notice. Used by TC23 for rent
+// mode continuity testing.
+func attachDraftSettlementBillFullMonth(db *gorm.DB, notice *moveout.MoveOutNotice, c *contract.Contract, _ *room.Room, actualMoveOut time.Time) error {
+	billingMonth := actualMoveOut.Format("2006-01")
+
+	waterAmount := int64(18) * c.WaterRatePerUnit
+	elecAmount := int64(135) * c.ElectricityRatePerUnit
+	cleaningFee := int64(30000) // ฿300
+
+	total := c.MonthlyRent + waterAmount + elecAmount + cleaningFee
+
+	bill := billing.Bill{
+		ContractID:         c.ID,
+		BillingMonth:       billingMonth,
+		BillType:           billing.BillTypeSettlement,
+		Status:             billing.BillStatusDraft,
+		DepositAmount:      c.DepositAmount,
+		TotalAmount:        total,
+		SettlementRentMode: billing.RentModeFullMonthKeepDeposit,
+		RentPaid:           false,
+	}
+	items := []billing.BillLineItem{
+		{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า (เต็มเดือน)", Amount: c.MonthlyRent, SortOrder: 1},
+		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
+		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
+		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
+	}
+	if err := createBillWithLines(db, &bill, items); err != nil {
+		return fmt.Errorf("create full-month draft bill: %w", err)
 	}
 
 	netAmount := total - c.DepositAmount

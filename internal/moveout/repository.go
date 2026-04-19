@@ -55,7 +55,7 @@ func (r *moveOutRepository) selectColumns() string {
 		rooms.number AS room_number,
 		apartments.name AS apartment_name,
 		COALESCE(bills.settlement_rent_mode, '') AS settlement_rent_mode,
-		COALESCE((SELECT COUNT(*) FROM bill_line_items WHERE bill_line_items.bill_id = bills.id AND bill_line_items.source = 'MANUAL' AND bill_line_items.deleted_at IS NULL), 0) AS manual_item_count`
+		COALESCE((SELECT COUNT(*) FROM bill_line_items WHERE bill_line_items.bill_id = bills.id AND bill_line_items.source = 'MANUAL'), 0) AS manual_item_count`
 }
 
 type joinRow struct {
