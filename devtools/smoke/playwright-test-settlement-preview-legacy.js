@@ -58,7 +58,7 @@ async function closeDrawer(page) {
 
 async function getOutcomeText(page) {
   const dialog = page.locator('[role="dialog"][aria-label="สรุปยอดย้ายออก"]')
-  const labelEl = await dialog.locator('text=/^(ผู้เช่าต้องชำระเพิ่ม|ต้องคืนเงินให้ผู้เช่า|เคลียร์ครบ ไม่มียอดค้าง)$/').first()
+  const labelEl = await dialog.locator('text=/^(ผู้เช่าต้องชำระเพิ่ม|ผู้เช่าต้องชำระเพิ่ม \\(เงินประกันถูกริบ\\)|ต้องคืนเงินให้ผู้เช่า|เคลียร์ครบ ไม่มียอดค้าง)$/').first()
   const label = await labelEl.textContent().catch(() => null)
   const amountEl = await dialog.locator('p.text-xl, p.text-2xl').first()
   const amount = await amountEl.textContent().catch(() => null)

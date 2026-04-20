@@ -492,19 +492,13 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 			return nil, fmt.Errorf("reload new bill: %w", err)
 		}
 		newBill.Note = note
-		newBill.CalculateTotal()
+		newBill.CalculateTotal() // DepositForfeited persisted on bill → DepositBalance correct
 		if err := s.repo.Update(ctx, newBill); err != nil {
 			return nil, fmt.Errorf("update new bill: %w", err)
 		}
 
-		// Recompute net amount with manual items included (using same rent mode)
-		c, err := s.contracts.FindByIDSimple(ctx, contractID)
-		if err != nil {
-			return nil, fmt.Errorf("find contract for deposit check: %w", err)
-		}
-		qualifyDate := effectiveMoveOutDate(moveOutDate, opts.RentMode)
-		returnable := isDepositReturnable(c.StartDate, qualifyDate, c.MinMonths)
-		ds := computeDepositSettlement(newBill.DepositAmount, newBill.TotalAmount, returnable)
+		// Recompute net amount with manual items included
+		ds := computeDepositSettlement(newBill.DepositAmount, newBill.TotalAmount, !newBill.DepositForfeited)
 		updated := toSettlementResult(result.BillID, ds)
 		result.NetAmount = updated.NetAmount
 		result.DepositUsed = updated.DepositUsed
@@ -565,14 +559,25 @@ type DepositSettlementState struct {
 // computeDepositSettlement computes the full deposit state for a settlement.
 //
 // Rules:
-//   - Returnable (min months met): full deposit available, excess refunded
-//   - Not returnable (early exit): deposit still offsets charges (no double penalty),
-//     but any remainder is forfeited, not refunded
+//   - Returnable (min months met): full deposit available to offset charges, excess refunded
+//   - Not returnable (early exit): deposit entirely forfeited — not applied to charges,
+//     tenant must pay full amount
 func computeDepositSettlement(depositAmount int64, grossCharges int64, returnable bool) DepositSettlementState {
 	s := DepositSettlementState{
-		OriginalAmount:   depositAmount,
-		AvailableToApply: depositAmount, // full deposit available regardless of returnability
+		OriginalAmount: depositAmount,
 	}
+
+	if !returnable {
+		// Early exit: entire deposit forfeited, not applied to charges.
+		// Tenant pays full charges.
+		s.ForfeitedAmount = depositAmount
+		s.AvailableToApply = 0
+		s.AmountDue = grossCharges
+		return s
+	}
+
+	// Returnable: full deposit available to offset charges
+	s.AvailableToApply = depositAmount
 
 	// Apply deposit to charges
 	s.AppliedAmount = s.AvailableToApply
@@ -583,15 +588,8 @@ func computeDepositSettlement(depositAmount int64, grossCharges int64, returnabl
 		s.AppliedAmount = 0
 	}
 
-	// Remaining deposit after application
-	remaining := s.AvailableToApply - s.AppliedAmount
-	if returnable {
-		s.RefundAmount = remaining
-	} else {
-		// Early exit: deposit still offsets charges (no double penalty),
-		// but remainder stays with landlord instead of being refunded.
-		s.ForfeitedAmount = remaining
-	}
+	// Remaining deposit → refunded to tenant
+	s.RefundAmount = s.AvailableToApply - s.AppliedAmount
 
 	// Amount tenant still owes
 	if grossCharges > s.AppliedAmount {
@@ -717,10 +715,11 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 		SettlementRentMode: opts.RentMode,
 		LineItems:          items,
 	}
-	bill.CalculateTotal()
-
 	qualifyDate := effectiveMoveOutDate(moveOutDate, opts.RentMode)
 	returnable := isDepositReturnable(c.StartDate, qualifyDate, c.MinMonths)
+	bill.DepositForfeited = !returnable
+	bill.CalculateTotal()
+
 	deposit := computeDepositSettlement(c.DepositAmount, bill.TotalAmount, returnable)
 
 	return &settlementPlan{

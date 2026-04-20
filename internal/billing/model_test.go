@@ -339,6 +339,28 @@ func TestBill_CalculateTotal(t *testing.T) {
 			t.Fatalf("expected DepositBalance 1300000, got %d", b.DepositBalance)
 		}
 	})
+
+	t.Run("settlement bill with forfeited deposit", func(t *testing.T) {
+		b := &Bill{
+			BillType:         BillTypeSettlement,
+			DepositAmount:    300000, // 3,000 baht deposit
+			DepositForfeited: true,
+			LineItems: []BillLineItem{
+				{Amount: 120000}, // electricity
+				{Amount: 30000},  // water
+				{Amount: 50000},  // cleaning fee
+			},
+		}
+		b.CalculateTotal()
+
+		if b.TotalAmount != 200000 {
+			t.Fatalf("expected TotalAmount 200000, got %d", b.TotalAmount)
+		}
+		// Forfeited: deposit NOT applied → DepositBalance = -TotalAmount
+		if b.DepositBalance != -200000 {
+			t.Fatalf("expected DepositBalance -200000 (forfeited), got %d", b.DepositBalance)
+		}
+	})
 }
 
 func TestBill_ChargesTotalAndCreditsTotal(t *testing.T) {

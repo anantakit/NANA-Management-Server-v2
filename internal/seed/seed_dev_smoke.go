@@ -38,6 +38,8 @@ import (
 // | 17 | C205 | PENDING_SETTLEMENT | Scenario: actual move-out date backdated   |
 // | 18 | C101 | PENDING_SETTLEMENT | Scenario: deposit refund (covers charges)  |
 // | 19 | C102 | PENDING_SETTLEMENT | Scenario: deposit shortfall (owe money)    |
+// | 24 | D103 | PENDING_SETTLEMENT | Scenario: zero balance (charges = deposit)  |
+// | 25 | D104 | PENDING_SETTLEMENT | Scenario: deposit forfeited (short stay)    |
 // | 20 | D101 | PENDING_METER      | Scenario: invalid exit < prior MONTHLY     |
 // | 21 | E201 | PENDING_SETTLEMENT | Scenario: missing baseline / incomplete data |
 // | 22 | D201 | PENDING_SETTLEMENT | Queue: draft + 2 MANUAL items (confirm modal) |
@@ -112,6 +114,8 @@ var smokeRoomNumbers = []string{
 	// Scenario smoke v1 (TC13–TC21)
 	"C201", "C202", "C203", "C204", "C205", "C101", "C102", "D101",
 	"E201",
+	// Zero-balance + forfeiture smoke (TC24–TC25)
+	"D103", "D104",
 	// Queue settlement smoke (TC22–TC23)
 	"D201", "D202",
 }
@@ -501,6 +505,69 @@ func seedDevSmoke(db *gorm.DB) error {
 		return err
 	}
 
+	// --- TC24: Zero balance (charges = deposit exactly) ---
+	// FAN room (deposit=฿2,000), rent_paid=true via PAID M-1 bill.
+	// Exit meter tuned so utilities + cleaning = deposit exactly:
+	//   electricity 190 units × ฿8 = ฿1,520
+	//   water 10 units × ฿18 = ฿180
+	//   cleaning fee = ฿300
+	//   total = ฿2,000 = deposit → ZERO_BALANCE
+	tc24Notice, tc24Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["D103"], smokeTenant{
+		idCard: "9999999999024",
+		name:   "TC24_SMOKE ประกันพอดี",
+		phone:  "0999000024",
+	}, smokeScenario{
+		contractStartMonths: 12,
+		minMonths:           6,
+		actualOffset:        -2,
+		note:                "SMOKE TC24 — zero balance (charges = deposit exactly)",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       false, // custom meter below
+		today:               today,
+	})
+	if err != nil {
+		return err
+	}
+	// Custom exit meter: 190 units electricity, 10 units water
+	tc24ReadingDate := today.AddDate(0, 0, -2)
+	tc24Exit := meterreading.MeterReading{
+		RoomID:              roomByNumber["D103"].ID,
+		ReadingType:         meterreading.ReadingTypeExit,
+		ReadingDateActual:   &tc24ReadingDate,
+		ElectricityPrevious: 1000,
+		ElectricityCurrent:  1190, // 190 units
+		WaterPrevious:       100,
+		WaterCurrent:        110, // 10 units
+	}
+	if err := db.Create(&tc24Exit).Error; err != nil {
+		return fmt.Errorf("create exit reading for TC24: %w", err)
+	}
+	tc24Month := previousMonthStr(tc24Notice.ActualMoveOutDate.Format("2006-01"))
+	if err := createPaidMonthlyBill(db, tc24Contract, tc24Month); err != nil {
+		return fmt.Errorf("create paid M-1 bill for TC24: %w", err)
+	}
+
+	// --- TC25: Deposit forfeited (short stay, not meeting minMonths) ---
+	// FAN room (deposit=฿2,000), contractStartMonths=3 < minMonths=6.
+	// No M-1 PAID bill → pro-rate rent included in charges.
+	// Standard exit meter → total charges > deposit → PAY_MORE,
+	// but deposit_returnable=false → any excess would be forfeited.
+	if _, _, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["D104"], smokeTenant{
+		idCard: "9999999999025",
+		name:   "TC25_SMOKE ริบเงินประกัน",
+		phone:  "0999000025",
+	}, smokeScenario{
+		contractStartMonths: 3,
+		minMonths:           6,
+		actualOffset:        -2,
+		note:                "SMOKE TC25 — deposit forfeited (3 months < 6 min)",
+		status:              moveout.MoveOutStatusPendingSettlement,
+		withExitMeter:       true,
+		today:               today,
+	}); err != nil {
+		return err
+	}
+
 	// ─── Queue settlement smoke (TC22–TC23) ──────────────────────────
 
 	// --- TC22: Has draft + MANUAL items (for queue drawer confirm modal) ---
@@ -545,7 +612,7 @@ func seedDevSmoke(db *gorm.DB) error {
 		return fmt.Errorf("attach full-month draft for TC23: %w", err)
 	}
 
-	slog.Info("seeded smoke test fixtures", "count", 17)
+	slog.Info("seeded smoke test fixtures", "count", 19)
 	return nil
 }
 

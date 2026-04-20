@@ -161,8 +161,18 @@ func TestPreviewSettlement_MinMonthsThreshold(t *testing.T) {
 		t.Error("expected deposit NOT returnable for early exit")
 	}
 	d := preview.Plan.Deposit
-	if d.ForfeitedAmount == 0 && d.RefundAmount > 0 {
-		t.Error("early exit should not produce a refund")
+	if d.AppliedAmount != 0 {
+		t.Errorf("AppliedAmount = %d, want 0 (forfeited deposit not applied)", d.AppliedAmount)
+	}
+	if d.ForfeitedAmount != d.OriginalAmount {
+		t.Errorf("ForfeitedAmount = %d, want %d (entire deposit forfeited)", d.ForfeitedAmount, d.OriginalAmount)
+	}
+	if d.RefundAmount != 0 {
+		t.Errorf("RefundAmount = %d, want 0", d.RefundAmount)
+	}
+	// Tenant pays full charges when deposit forfeited
+	if d.AmountDue != preview.Plan.Bill.TotalAmount {
+		t.Errorf("AmountDue = %d, want %d (full charges)", d.AmountDue, preview.Plan.Bill.TotalAmount)
 	}
 }
 

@@ -109,9 +109,10 @@ type BillResponse struct {
 	BillType       string             `json:"bill_type"`
 	Status         string             `json:"status"`
 	VoidReason     *string            `json:"void_reason"`
-	DepositAmount  float64            `json:"deposit_amount"`
-	DepositBalance float64            `json:"deposit_balance"`
-	TotalAmount    float64            `json:"total_amount"`
+	DepositAmount    float64            `json:"deposit_amount"`
+	DepositBalance   float64            `json:"deposit_balance"`
+	DepositForfeited bool               `json:"deposit_forfeited"`
+	TotalAmount      float64            `json:"total_amount"`
 	RentPaid           bool               `json:"rent_paid"`
 	SettlementRentMode string             `json:"settlement_rent_mode,omitempty"`
 	Note               string             `json:"note"`
@@ -393,10 +394,11 @@ func ToBillResponse(b Bill) BillResponse {
 		BillType:       string(b.BillType),
 		Status:         string(b.Status),
 		VoidReason:     b.VoidReason,
-		DepositAmount:  money.ToBaht(b.DepositAmount),
-		DepositBalance: money.ToBaht(b.DepositBalance),
-		TotalAmount:    money.ToBaht(b.TotalAmount),
-		RentPaid:       b.RentPaid,
+		DepositAmount:    money.ToBaht(b.DepositAmount),
+		DepositBalance:   money.ToBaht(b.DepositBalance),
+		DepositForfeited: b.DepositForfeited,
+		TotalAmount:      money.ToBaht(b.TotalAmount),
+		RentPaid:         b.RentPaid,
 		Note:           b.Note,
 		LineItems:      items,
 		CreatedAt:      b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),

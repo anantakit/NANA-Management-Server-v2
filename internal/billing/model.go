@@ -115,8 +115,9 @@ type Bill struct {
 	BillType       BillType       `gorm:"type:varchar(20);not null" json:"bill_type"`
 	Status         BillStatus     `gorm:"type:varchar(20);not null;default:'DRAFT'" json:"status"`
 	VoidReason     *string        `gorm:"type:varchar(100)" json:"void_reason"`
-	DepositAmount  int64          `gorm:"not null;default:0" json:"deposit_amount"`
-	DepositBalance int64          `gorm:"not null;default:0" json:"deposit_balance"`
+	DepositAmount    int64          `gorm:"not null;default:0" json:"deposit_amount"`
+	DepositBalance   int64          `gorm:"not null;default:0" json:"deposit_balance"`
+	DepositForfeited bool           `gorm:"not null;default:false" json:"deposit_forfeited"`
 	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
 	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
 	RentPaid           bool               `gorm:"not null;default:false" json:"rent_paid"`
@@ -266,6 +267,7 @@ func (b *Bill) IsAbsorbedBySettlement() bool {
 
 // CalculateTotal computes TotalAmount from line items.
 // For settlement bills, also computes DepositBalance.
+// When deposit is forfeited (early exit), it is NOT applied to charges.
 func (b *Bill) CalculateTotal() {
 	var total int64
 	for _, item := range b.LineItems {
@@ -274,7 +276,11 @@ func (b *Bill) CalculateTotal() {
 	b.TotalAmount = total
 
 	if b.IsSettlement() {
-		b.DepositBalance = b.DepositAmount - b.TotalAmount
+		if b.DepositForfeited {
+			b.DepositBalance = -b.TotalAmount // deposit not applied, tenant pays full charges
+		} else {
+			b.DepositBalance = b.DepositAmount - b.TotalAmount
+		}
 	}
 }
 

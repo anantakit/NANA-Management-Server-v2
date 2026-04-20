@@ -1,4 +1,4 @@
-// Move-out Settlement Scenario Smoke v1 — TC13–TC21
+// Move-out Settlement Scenario Smoke v1 — TC13–TC25
 // ----------------------------------------------------------------------
 // Covers business-risk scenarios from senario.md that the legacy preview
 // smoke (TC1–TC12) does NOT exercise:
@@ -12,6 +12,8 @@
 //   TC19  deposit shortfall / customer still owes money
 //   TC20  invalid exit reading (current < prior MONTHLY)
 //   TC21  missing baseline / incomplete data (C3)
+//   TC24  zero balance (charges = deposit exactly)
+//   TC25  deposit forfeited (short stay, not meeting minMonths)
 //
 // Legacy playwright-test-settlement-preview.js (TC1–TC12) stays intact.
 // This suite is independent — its own fixtures (TC13–TC20) + own login +
@@ -94,7 +96,7 @@ async function closeDrawer(page) {
 async function getOutcome(page) {
   const dialog = page.locator(DRAWER)
   const labelEl = dialog.locator(
-    'text=/^(ผู้เช่าต้องชำระเพิ่ม|ต้องคืนเงินให้ผู้เช่า|เคลียร์ครบ ไม่มียอดค้าง)$/',
+    'text=/^(ผู้เช่าต้องชำระเพิ่ม|ผู้เช่าต้องชำระเพิ่ม \\(เงินประกันถูกริบ\\)|ต้องคืนเงินให้ผู้เช่า|เคลียร์ครบ ไม่มียอดค้าง)$/',
   ).first()
   const label = await labelEl.textContent().catch(() => null)
   const amountEl = dialog.locator('p.text-xl, p.text-2xl').first()
@@ -322,14 +324,12 @@ async function runTC18(page, fixtures) {
     outcome.label === 'ต้องคืนเงินให้ผู้เช่า',
     `label=${outcome.label}`,
   ))
-  // Deposit section: refund > 0, due == 0
-  // New IA: deposit section shows "คืนผู้เช่า" when remaining > 0, "คงเหลือ" when 0.
-  // FinalAmountRow shows "ต้องคืนเงินผู้เช่า" for refund cases.
-  const refund = parseThb(await getDepositRow(page, 'คืนผู้เช่า'))
-  track('TC18.2', check('Deposit shows "คืนผู้เช่า" > 0', refund > 0, `refund=${refund}`))
-  // No "ยอดค้างชำระ" row in new IA — final amount is in FinalAmountRow instead
-  const finalRow = await getValueByLabel(page, 'ต้องคืนเงินผู้เช่า')
-  track('TC18.3', check('FinalAmountRow shows refund', !!finalRow, `final=${finalRow}`))
+  // Settlement section: outcome row shows "ต้องคืนเงินประกัน" with refund amount
+  const refund = parseThb(await getValueByLabel(page, 'ต้องคืนเงินประกัน'))
+  track('TC18.2', check('Settlement outcome shows refund > 0', refund > 0, `refund=${refund}`))
+  // Deposit row shows original amount (no line-through, not forfeited)
+  const deposit = parseThb(await getValueByLabel(page, 'เงินประกัน'))
+  track('TC18.3', check('Deposit shown as available', deposit > 0, `deposit=${deposit}`))
   await page.screenshot({ path: '/tmp/smoke-tc18.png' })
   await closeDrawer(page)
 }
@@ -345,11 +345,13 @@ async function runTC19(page, fixtures) {
     outcome.label === 'ผู้เช่าต้องชำระเพิ่ม',
     `label=${outcome.label}`,
   ))
-  // New IA: deposit shows "คงเหลือ ฿0" when fully applied. FinalAmountRow shows due.
-  const remaining = parseThb(await getDepositRow(page, 'คงเหลือ'))
-  track('TC19.2', check('Deposit remaining == 0 (fully applied)', remaining === 0, `remaining=${remaining}`))
-  const finalDue = parseThb(await getValueByLabel(page, 'ต้องชำระเพิ่ม'))
-  track('TC19.3', check('FinalAmountRow shows due > 0', finalDue > 0, `due=${finalDue}`))
+  // Settlement section: outcome row shows "ผู้เช่าต้องจ่ายเพิ่ม" with due amount
+  const due = parseThb(await getValueByLabel(page, 'ผู้เช่าต้องจ่ายเพิ่ม'))
+  track('TC19.2', check('Settlement outcome shows due > 0', due > 0, `due=${due}`))
+  // Charges > deposit (shortfall) — deposit still shown as available
+  const charges = parseThb(await getValueByLabel(page, 'ค่าใช้จ่ายทั้งหมด'))
+  const deposit = parseThb(await getValueByLabel(page, 'เงินประกัน'))
+  track('TC19.3', check('Charges > deposit (shortfall)', charges > deposit, `charges=${charges} deposit=${deposit}`))
   // Create-draft path must still be usable despite shortfall
   const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
   track('TC19.4', check('Create-draft button present', await createBtn.isVisible()))
@@ -440,16 +442,74 @@ async function runTC21(page, fixtures) {
   await closeDrawer(page)
 }
 
+async function runTC24(page, fixtures) {
+  console.log('\n── TC24 zero balance (charges = deposit exactly) ──')
+  const fx = fixtures.TC24
+  if (!fx) return track('TC24', check('Fixture TC24 present', false, 'missing'))
+  await openSettlementPreview(page, fx.notice_id)
+  const outcome = await getOutcome(page)
+  track('TC24.1', check(
+    'Outcome label is "เคลียร์ครบ ไม่มียอดค้าง"',
+    outcome.label === 'เคลียร์ครบ ไม่มียอดค้าง',
+    `label=${outcome.label}`,
+  ))
+  // Settlement section: charges == deposit, outcome = ฿0
+  const charges = parseThb(await getValueByLabel(page, 'ค่าใช้จ่ายทั้งหมด'))
+  const deposit = parseThb(await getValueByLabel(page, 'เงินประกัน'))
+  track('TC24.2', check('Charges == deposit', charges === deposit, `charges=${charges} deposit=${deposit}`))
+  const net = parseThb(await getValueByLabel(page, 'ยอดสุทธิ'))
+  track('TC24.3', check('Net outcome == ฿0', net === 0, `net=${net}`))
+  // No forfeiture annotation
+  const dialog = page.locator(DRAWER)
+  const forfeitedText = await dialog.locator('text=ถูกริบ').isVisible().catch(() => false)
+  track('TC24.4', check('No forfeiture annotation', !forfeitedText))
+  await page.screenshot({ path: '/tmp/smoke-tc24.png' })
+  await closeDrawer(page)
+}
+
+async function runTC25(page, fixtures) {
+  console.log('\n── TC25 deposit forfeited (short stay) ──')
+  const fx = fixtures.TC25
+  if (!fx) return track('TC25', check('Fixture TC25 present', false, 'missing'))
+  await openSettlementPreview(page, fx.notice_id)
+  const outcome = await getOutcome(page)
+  track('TC25.1', check(
+    'Outcome label includes "เงินประกันถูกริบ"',
+    outcome.label?.includes('เงินประกันถูกริบ') ?? false,
+    `label=${outcome.label}`,
+  ))
+  // Forfeiture annotation visible on deposit row
+  const dialog = page.locator(DRAWER)
+  const forfeitedText = await dialog.locator('text=ถูกริบ — อยู่ไม่ครบสัญญา').isVisible().catch(() => false)
+  track('TC25.2', check('Deposit row shows forfeiture annotation', forfeitedText))
+  // Deposit amount has line-through styling
+  const lineThrough = await dialog.locator('.line-through').first().isVisible().catch(() => false)
+  track('TC25.3', check('Deposit amount has line-through', lineThrough))
+  // Net == total charges (deposit NOT applied)
+  const charges = parseThb(await getValueByLabel(page, 'ค่าใช้จ่ายทั้งหมด'))
+  const net = parseThb(await getValueByLabel(page, 'ผู้เช่าต้องจ่ายเพิ่ม'))
+  track('TC25.4', check(
+    'Net == total charges (deposit not applied)',
+    !isNaN(charges) && !isNaN(net) && Math.abs(net - charges) < 0.01,
+    `charges=${charges} net=${net}`,
+  ))
+  // Create-draft button present
+  const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
+  track('TC25.5', check('Create-draft button present', await createBtn.isVisible()))
+  await page.screenshot({ path: '/tmp/smoke-tc25.png' })
+  await closeDrawer(page)
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────
 
 ;(async () => {
-  console.log('\n🧪 Move-out Settlement Scenario Smoke v1 (TC13–TC21)\n')
+  console.log('\n🧪 Move-out Settlement Scenario Smoke v1 (TC13–TC25)\n')
 
   console.log('📦 Refreshing smoke fixtures...')
   await fetch(`${BACKEND}/api/v1/dev/smoke/cleanup`, { method: 'POST' })
   await fetch(`${BACKEND}/api/v1/dev/smoke/seed`, { method: 'POST' })
   const fixtures = await fetchFixtures()
-  const scenarioKeys = ['TC13','TC14','TC15','TC16','TC17','TC18','TC19','TC20','TC21']
+  const scenarioKeys = ['TC13','TC14','TC15','TC16','TC17','TC18','TC19','TC20','TC21','TC24','TC25']
   const seeded = scenarioKeys.filter((k) => fixtures[k])
   console.log(`  ✅ ${seeded.length}/${scenarioKeys.length} scenario fixtures ready: ${seeded.join(', ')}`)
   const missing = scenarioKeys.filter((k) => !fixtures[k])
@@ -473,13 +533,15 @@ async function runTC21(page, fixtures) {
     await runTC18(page, fixtures)
     await runTC21(page, fixtures)
     await runTC20(page, fixtures)
+    await runTC24(page, fixtures)
+    await runTC25(page, fixtures)
 
     console.log(`\n${'='.repeat(60)}`)
     console.log(`📊 Results: ${results.pass}/${results.total} passed, ${results.fail} failed`)
     if (results.failedCases.length > 0) {
       console.log(`❌ Failed: ${results.failedCases.join(', ')}`)
     }
-    console.log(`📸 Screenshots in /tmp/smoke-tc1[3-9].png and /tmp/smoke-tc20.png`)
+    console.log(`📸 Screenshots in /tmp/smoke-tc{13-21,24,25}.png`)
     console.log('='.repeat(60))
   } catch (err) {
     console.error('\n💥 Fatal error:', err.message)

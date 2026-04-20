@@ -251,7 +251,7 @@ func TestGenerateSettlement_DepositExceedsReturnsRefund(t *testing.T) {
 	}
 }
 
-func TestGenerateSettlement_EarlyExitDoesNotDoublePenalty(t *testing.T) {
+func TestGenerateSettlement_EarlyExitDepositForfeited(t *testing.T) {
 	c := earlyExitContract() // start=Jan 1, minMonths=6, deposit=10,000
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC) // 3.5 months = early exit
 	repo, svc := settlementSetup(c, moveOut, nil)
@@ -263,24 +263,24 @@ func TestGenerateSettlement_EarlyExitDoesNotDoublePenalty(t *testing.T) {
 
 	created := repo.createdBill
 
-	// Deposit should be full amount (pool-based, NOT zero)
+	// Deposit should be full amount (recorded for display)
 	if created.DepositAmount != c.DepositAmount {
-		t.Errorf("DepositAmount = %d, want %d (full deposit as pool)", created.DepositAmount, c.DepositAmount)
+		t.Errorf("DepositAmount = %d, want %d (full deposit recorded)", created.DepositAmount, c.DepositAmount)
 	}
 
-	// For early exit: if deposit > charges, net = 0 (forfeited, not refunded)
-	// NOT the old behavior where deposit=0 and tenant pays everything
-	if created.TotalAmount < c.DepositAmount {
-		// Deposit covers everything — no additional payment
-		if result.NetAmount != 0 {
-			t.Errorf("NetAmount = %d, want 0 (deposit covers charges, remainder forfeited)", result.NetAmount)
-		}
-	} else {
-		// Charges exceed deposit — tenant pays overage only
-		expected := created.TotalAmount - c.DepositAmount
-		if result.NetAmount != expected {
-			t.Errorf("NetAmount = %d, want %d (tenant pays overage)", result.NetAmount, expected)
-		}
+	// DepositForfeited flag must be persisted on the bill
+	if !created.DepositForfeited {
+		t.Error("DepositForfeited = false, want true (early exit)")
+	}
+
+	// DepositBalance = -TotalAmount when forfeited (deposit not applied)
+	if created.DepositBalance != -created.TotalAmount {
+		t.Errorf("DepositBalance = %d, want %d (forfeited: -TotalAmount)", created.DepositBalance, -created.TotalAmount)
+	}
+
+	// Early exit: deposit forfeited → not applied → tenant pays full charges
+	if result.NetAmount != created.TotalAmount {
+		t.Errorf("NetAmount = %d, want %d (deposit forfeited, tenant pays full charges)", result.NetAmount, created.TotalAmount)
 	}
 }
 

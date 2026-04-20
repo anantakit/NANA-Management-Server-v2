@@ -1012,11 +1012,18 @@ func TestSettlement_Invariants(t *testing.T) {
 				t.Errorf("TotalAmount = %d, sum(lines) = %d — mismatch", bill.TotalAmount, sum)
 			}
 
-			// 6. DepositBalance consistency: deposit - total
-			wantBalance := bill.DepositAmount - bill.TotalAmount
+			// 6. DepositBalance consistency
+			// Forfeited: -TotalAmount (deposit not applied)
+			// Returnable: DepositAmount - TotalAmount
+			var wantBalance int64
+			if bill.DepositForfeited {
+				wantBalance = -bill.TotalAmount
+			} else {
+				wantBalance = bill.DepositAmount - bill.TotalAmount
+			}
 			if bill.DepositBalance != wantBalance {
-				t.Errorf("DepositBalance = %d, want %d (deposit %d - total %d)",
-					bill.DepositBalance, wantBalance, bill.DepositAmount, bill.TotalAmount)
+				t.Errorf("DepositBalance = %d, want %d (forfeited=%v deposit=%d total=%d)",
+					bill.DepositBalance, wantBalance, bill.DepositForfeited, bill.DepositAmount, bill.TotalAmount)
 			}
 		})
 	}
@@ -1812,32 +1819,68 @@ func TestComputeDepositSettlement(t *testing.T) {
 		}
 	})
 
-	t.Run("early exit — deposit covers charges, remainder forfeited", func(t *testing.T) {
+	t.Run("early exit — deposit forfeited, not applied to charges", func(t *testing.T) {
 		ds := computeDepositSettlement(1000000, 400000, false) // 10k deposit, 4k charges
-		if ds.AppliedAmount != 400000 {
-			t.Errorf("AppliedAmount = %d, want 400000", ds.AppliedAmount)
+		if ds.AvailableToApply != 0 {
+			t.Errorf("AvailableToApply = %d, want 0 (forfeited deposit not available)", ds.AvailableToApply)
 		}
-		if ds.ForfeitedAmount != 600000 {
-			t.Errorf("ForfeitedAmount = %d, want 600000 (remainder forfeited)", ds.ForfeitedAmount)
+		if ds.AppliedAmount != 0 {
+			t.Errorf("AppliedAmount = %d, want 0 (forfeited deposit not applied)", ds.AppliedAmount)
+		}
+		if ds.ForfeitedAmount != 1000000 {
+			t.Errorf("ForfeitedAmount = %d, want 1000000 (entire deposit forfeited)", ds.ForfeitedAmount)
 		}
 		if ds.RefundAmount != 0 {
-			t.Errorf("RefundAmount = %d, want 0 (no refund on early exit)", ds.RefundAmount)
+			t.Errorf("RefundAmount = %d, want 0", ds.RefundAmount)
 		}
-		if ds.AmountDue != 0 {
-			t.Errorf("AmountDue = %d, want 0 (deposit covers charges)", ds.AmountDue)
+		if ds.AmountDue != 400000 {
+			t.Errorf("AmountDue = %d, want 400000 (tenant pays full charges)", ds.AmountDue)
 		}
 	})
 
-	t.Run("early exit — charges exceed deposit → tenant pays overage", func(t *testing.T) {
+	t.Run("early exit — charges exceed deposit, tenant pays full charges", func(t *testing.T) {
 		ds := computeDepositSettlement(300000, 800000, false) // 3k deposit, 8k charges
-		if ds.AppliedAmount != 300000 {
-			t.Errorf("AppliedAmount = %d, want 300000", ds.AppliedAmount)
+		if ds.AppliedAmount != 0 {
+			t.Errorf("AppliedAmount = %d, want 0 (forfeited deposit not applied)", ds.AppliedAmount)
 		}
+		if ds.ForfeitedAmount != 300000 {
+			t.Errorf("ForfeitedAmount = %d, want 300000 (entire deposit forfeited)", ds.ForfeitedAmount)
+		}
+		if ds.AmountDue != 800000 {
+			t.Errorf("AmountDue = %d, want 800000 (tenant pays full charges)", ds.AmountDue)
+		}
+	})
+
+	t.Run("early exit — zero deposit, tenant pays full charges", func(t *testing.T) {
+		ds := computeDepositSettlement(0, 400000, false)
 		if ds.ForfeitedAmount != 0 {
-			t.Errorf("ForfeitedAmount = %d, want 0 (all deposit applied)", ds.ForfeitedAmount)
+			t.Errorf("ForfeitedAmount = %d, want 0 (nothing to forfeit)", ds.ForfeitedAmount)
+		}
+		if ds.AmountDue != 400000 {
+			t.Errorf("AmountDue = %d, want 400000", ds.AmountDue)
+		}
+	})
+
+	t.Run("early exit — charges exactly equal deposit", func(t *testing.T) {
+		ds := computeDepositSettlement(500000, 500000, false) // 5k deposit = 5k charges
+		if ds.AppliedAmount != 0 {
+			t.Errorf("AppliedAmount = %d, want 0 (forfeited)", ds.AppliedAmount)
+		}
+		if ds.ForfeitedAmount != 500000 {
+			t.Errorf("ForfeitedAmount = %d, want 500000 (entire deposit forfeited)", ds.ForfeitedAmount)
 		}
 		if ds.AmountDue != 500000 {
-			t.Errorf("AmountDue = %d, want 500000", ds.AmountDue)
+			t.Errorf("AmountDue = %d, want 500000 (tenant pays full charges)", ds.AmountDue)
+		}
+	})
+
+	t.Run("returnable — zero deposit", func(t *testing.T) {
+		ds := computeDepositSettlement(0, 400000, true)
+		if ds.RefundAmount != 0 {
+			t.Errorf("RefundAmount = %d, want 0 (no deposit to refund)", ds.RefundAmount)
+		}
+		if ds.AmountDue != 400000 {
+			t.Errorf("AmountDue = %d, want 400000", ds.AmountDue)
 		}
 	})
 }
