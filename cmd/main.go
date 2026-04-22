@@ -190,6 +190,8 @@ func main() {
 	admin := protected.Group("", middleware.RequireRole(role.Admin))
 	aptHandler.RegisterRoutes(admin.Group("/apartments"))
 	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
+	presetHandler := apartment.NewPresetHandler()
+	presetHandler.RegisterRoutes(admin.Group("/apartments/:id/manual-line-item-presets"))
 	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))
 	tenantHandler.RegisterRoutes(admin.Group("/tenants"))
 	contractHandler.RegisterRoutes(admin.Group("/contracts"))
