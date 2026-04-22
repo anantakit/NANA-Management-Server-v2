@@ -64,6 +64,79 @@ const (
 	LineItemSourceManual LineItemSource = "MANUAL"
 )
 
+// --- Override map (jsonb on bills) ---
+
+// OverrideMap stores override_key → amount (satang) for settlement draft editing.
+// Keys are strings to allow future composite keys (e.g., "OUTSTANDING_BILL:2026-03").
+// For current scope, key = LineType string for unique monetary AUTO rows.
+type OverrideMap map[string]int64
+
+// Scan implements sql.Scanner for jsonb column.
+func (m *OverrideMap) Scan(value any) error {
+	if value == nil {
+		*m = OverrideMap{}
+		return nil
+	}
+	var data []byte
+	switch v := value.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return fmt.Errorf("overrides: unsupported scan type %T", value)
+	}
+	if len(data) == 0 || string(data) == "{}" {
+		*m = OverrideMap{}
+		return nil
+	}
+	return json.Unmarshal(data, m)
+}
+
+// Value implements driver.Valuer for jsonb column.
+func (m OverrideMap) Value() (driver.Value, error) {
+	if len(m) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(m)
+}
+
+// --- Deposit application ---
+
+type DepositApplication string
+
+const (
+	DepositAppFull   DepositApplication = "FULL"
+	DepositAppNone   DepositApplication = "NONE"
+	DepositAppCustom DepositApplication = "CUSTOM"
+)
+
+func (d DepositApplication) IsValid() bool {
+	switch d {
+	case DepositAppFull, DepositAppNone, DepositAppCustom:
+		return true
+	}
+	return false
+}
+
+// --- Overrideable line types ---
+
+// overrideableLineTypes defines which AUTO line types can be overridden by the user.
+// Only monetary items with unique-per-bill guarantee are included.
+var overrideableLineTypes = map[LineItemType]bool{
+	LineItemRoomRent:    true,
+	LineItemProrateRent: true,
+	LineItemElectricity: true,
+	LineItemWater:       true,
+	LineItemCleaningFee: true,
+	LineItemKeyService:  true,
+}
+
+// IsOverrideableLineType returns true if the line type can be overridden.
+func IsOverrideableLineType(lt LineItemType) bool {
+	return overrideableLineTypes[lt]
+}
+
 // --- Settlement options ---
 
 type SettlementRentMode string
@@ -120,9 +193,12 @@ type Bill struct {
 	DepositForfeited bool           `gorm:"not null;default:false" json:"deposit_forfeited"`
 	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
 	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
-	RentPaid           bool               `gorm:"not null;default:false" json:"rent_paid"`
-	SettlementRentMode SettlementRentMode `gorm:"column:settlement_rent_mode;type:varchar(30);not null;default:'PRORATED'" json:"settlement_rent_mode"`
-	Note               string             `gorm:"type:text;not null;default:''" json:"note"`
+	RentPaid             bool               `gorm:"not null;default:false" json:"rent_paid"`
+	SettlementRentMode   SettlementRentMode `gorm:"column:settlement_rent_mode;type:varchar(30);not null;default:'PRORATED'" json:"settlement_rent_mode"`
+	Note                 string             `gorm:"type:text;not null;default:''" json:"note"`
+	Overrides            OverrideMap        `gorm:"type:jsonb;not null;default:'{}'::jsonb" json:"overrides,omitempty"`
+	DepositApp           DepositApplication `gorm:"column:deposit_application;type:varchar(10);not null;default:'FULL'" json:"deposit_application"`
+	CustomDepositApplied int64              `gorm:"not null;default:0" json:"custom_deposit_applied"`
 	CreatedAt      time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
@@ -155,6 +231,16 @@ type BillLineItem struct {
 
 func (li *BillLineItem) IsAuto() bool   { return li.Source == LineItemSourceAuto }
 func (li *BillLineItem) IsManual() bool { return li.Source == LineItemSourceManual }
+
+// OverrideKey returns the stable key used to match overrides.
+//
+// IMPORTANT ASSUMPTION:
+// For settlement bills, overrideable AUTO line items (rent, water, electricity, config fees)
+// are guaranteed to be unique per LineType within a single bill.
+//
+// If future requirements introduce multiple items per LineType (e.g. multiple outstanding bills),
+// OverrideKey MUST be upgraded to a composite key (e.g. type:identifier).
+func (li *BillLineItem) OverrideKey() string { return string(li.LineType) }
 
 func (BillLineItem) TableName() string { return "bill_line_items" }
 
@@ -265,21 +351,157 @@ func (b *Bill) IsAbsorbedBySettlement() bool {
 
 // --- Calculation ---
 
-// CalculateTotal computes TotalAmount from line items.
-// For settlement bills, also computes DepositBalance.
-// When deposit is forfeited (early exit), it is NOT applied to charges.
+// CalculateTotal computes TotalAmount from line items, applying overrides for settlement bills.
+// For settlement bills, also computes DepositBalance via DepositBreakdown().
 func (b *Bill) CalculateTotal() {
 	var total int64
 	for _, item := range b.LineItems {
+		if b.IsSettlement() && item.IsAuto() {
+			if override, ok := b.Overrides[item.OverrideKey()]; ok {
+				total += override
+				continue
+			}
+		}
 		total += item.Amount
 	}
 	b.TotalAmount = total
 
 	if b.IsSettlement() {
+		b.applyDepositCalculation()
+	}
+}
+
+// applyDepositCalculation sets DepositBalance directly.
+// DepositBalance: positive = refund to tenant, negative = tenant owes.
+// This handles negative TotalAmount (credits > charges) correctly.
+func (b *Bill) applyDepositCalculation() {
+	switch b.DepositApp {
+	case DepositAppNone:
+		b.DepositBalance = -b.TotalAmount
+	case DepositAppCustom:
+		applied := b.CustomDepositApplied
+		if applied > b.DepositAmount {
+			applied = b.DepositAmount
+		}
+		if applied < 0 {
+			applied = 0
+		}
+		b.DepositBalance = applied - b.TotalAmount
+	default: // FULL (including empty string)
 		if b.DepositForfeited {
-			b.DepositBalance = -b.TotalAmount // deposit not applied, tenant pays full charges
+			b.DepositBalance = -b.TotalAmount
 		} else {
 			b.DepositBalance = b.DepositAmount - b.TotalAmount
+		}
+	}
+}
+
+// --- Deposit breakdown ---
+
+// DepositBreakdownResult holds the fully decomposed deposit state for a settlement.
+// Every field has a single, unambiguous meaning — no dual-purpose fields.
+type DepositBreakdownResult struct {
+	OriginalAmount int64 // contract deposit held by landlord
+	AppliedAmount  int64 // deposit offset against charges
+	RefundAmount   int64 // deposit returned to tenant
+	WithheldAmount int64 // deposit kept by admin (NONE mode or forfeited)
+	AmountDue      int64 // remaining amount tenant must pay
+}
+
+// DepositBreakdown computes the full deposit state based on DepositApp mode.
+// Must be called AFTER TotalAmount is set (i.e. after CalculateTotal's sum phase).
+// Charges are clamped to 0 when TotalAmount is negative (credits > charges).
+func (b *Bill) DepositBreakdown() DepositBreakdownResult {
+	if !b.IsSettlement() {
+		return DepositBreakdownResult{AmountDue: b.TotalAmount}
+	}
+
+	// When credits exceed charges, there's nothing to offset.
+	charges := b.TotalAmount
+	if charges < 0 {
+		charges = 0
+	}
+
+	switch b.DepositApp {
+	case DepositAppNone:
+		// Admin withholds entire deposit; tenant pays full charges
+		return DepositBreakdownResult{
+			OriginalAmount: b.DepositAmount,
+			WithheldAmount: b.DepositAmount,
+			AmountDue:      charges,
+		}
+
+	case DepositAppCustom:
+		applied := b.CustomDepositApplied
+		if applied > b.DepositAmount {
+			applied = b.DepositAmount
+		}
+		if applied > charges {
+			applied = charges
+		}
+		if applied < 0 {
+			applied = 0
+		}
+		return DepositBreakdownResult{
+			OriginalAmount: b.DepositAmount,
+			AppliedAmount:  applied,
+			RefundAmount:   b.DepositAmount - applied,
+			AmountDue:      charges - applied,
+		}
+
+	default: // FULL (including empty string)
+		if b.DepositForfeited {
+			// Forfeited = withheld by contract terms; tenant pays full charges
+			return DepositBreakdownResult{
+				OriginalAmount: b.DepositAmount,
+				WithheldAmount: b.DepositAmount,
+				AmountDue:      charges,
+			}
+		}
+		applied := b.DepositAmount
+		if applied > charges {
+			applied = charges
+		}
+		return DepositBreakdownResult{
+			OriginalAmount: b.DepositAmount,
+			AppliedAmount:  applied,
+			RefundAmount:   b.DepositAmount - applied,
+			AmountDue:      charges - applied,
+		}
+	}
+}
+
+// --- Override validation/pruning ---
+
+// ValidateOverrides rejects non-overrideable keys and negative amounts.
+func (b *Bill) ValidateOverrides() error {
+	for key, amount := range b.Overrides {
+		lt := LineItemType(key)
+		if !IsOverrideableLineType(lt) {
+			return fmt.Errorf("ประเภท %q ไม่สามารถ override ได้", key)
+		}
+		if amount < 0 {
+			return fmt.Errorf("จำนวนเงิน override ต้องไม่ติดลบ (%q)", key)
+		}
+	}
+	return nil
+}
+
+// PruneStaleOverrides removes overrides for keys not present in current AUTO items.
+// Called after regeneration to drop overrides for line types that no longer exist.
+func (b *Bill) PruneStaleOverrides() {
+	if len(b.Overrides) == 0 {
+		return
+	}
+	autoKeys := make(map[string]bool)
+	for _, li := range b.LineItems {
+		if li.IsAuto() {
+			autoKeys[li.OverrideKey()] = true
+		}
+	}
+	for key := range b.Overrides {
+		if !autoKeys[key] {
+			delete(b.Overrides, key)
 		}
 	}
 }

@@ -32,15 +32,21 @@ type VoidBillRequest struct {
 }
 
 // UpdateSettlementDraftRequest replaces all MANUAL line items + note on a DRAFT settlement bill.
+// Also supports overrides (AUTO item amount adjustments) and deposit application mode.
 type UpdateSettlementDraftRequest struct {
-	ManualItems []ManualLineItemRequest `json:"manual_items" validate:"dive"`
-	Note        *string                 `json:"note"`
+	ManualItems          []ManualLineItemRequest `json:"manual_items" validate:"dive"`
+	Note                 *string                 `json:"note"`
+	Overrides            map[string]float64      `json:"overrides"`                                              // override_key → baht
+	DepositApplication   *string                 `json:"deposit_application" validate:"omitempty,oneof=FULL NONE CUSTOM"` // FULL|NONE|CUSTOM
+	CustomDepositApplied *float64                `json:"custom_deposit_applied" validate:"omitempty,min=0"`              // baht, when CUSTOM
 }
 
 type ManualLineItemRequest struct {
 	LineType    string  `json:"line_type" validate:"required"`
 	Description string  `json:"description" validate:"required,min=1,max=200"`
-	Amount      float64 `json:"amount" validate:"required"` // baht (converted to satang)
+	Amount      float64 `json:"amount"` // baht — required when quantity mode is not used
+	Quantity    *int    `json:"quantity,omitempty"`
+	UnitPrice   *float64 `json:"unit_price,omitempty"` // baht per unit
 }
 
 type BillListParams struct {
@@ -92,14 +98,18 @@ type SettlementPreview struct {
 // --- Response DTOs ---
 
 type LineItemResponse struct {
-	ID          uuid.UUID `json:"id"`
-	LineType    string    `json:"line_type"`
-	Source      string    `json:"source"`
-	Description string    `json:"description"`
-	Amount      float64   `json:"amount"`
-	Quantity    int       `json:"quantity"`
-	UnitPrice   float64   `json:"unit_price"`
-	SortOrder   int       `json:"sort_order"`
+	ID             uuid.UUID `json:"id"`
+	LineType       string    `json:"line_type"`
+	Source         string    `json:"source"`
+	Description    string    `json:"description"`
+	Amount         float64   `json:"amount"`
+	Quantity       int       `json:"quantity"`
+	UnitPrice      float64   `json:"unit_price"`
+	SortOrder      int       `json:"sort_order"`
+	OverrideKey    string    `json:"override_key"`
+	OriginalAmount float64   `json:"original_amount"`
+	IsOverridden   bool      `json:"is_overridden"`
+	Overrideable   bool      `json:"overrideable"`
 }
 
 type BillResponse struct {
@@ -116,6 +126,16 @@ type BillResponse struct {
 	RentPaid           bool               `json:"rent_paid"`
 	SettlementRentMode string             `json:"settlement_rent_mode,omitempty"`
 	Note               string             `json:"note"`
+	// Override + deposit application fields
+	Overrides            map[string]float64 `json:"overrides,omitempty"`
+	DepositApplication   string             `json:"deposit_application"`
+	CustomDepositApplied float64            `json:"custom_deposit_applied"`
+	// Deposit breakdown (settlement bills only)
+	DepositApplied  float64 `json:"deposit_applied"`
+	DepositRefund   float64 `json:"deposit_refund"`
+	DepositWithheld float64 `json:"deposit_withheld"`
+	AmountDue       float64 `json:"amount_due"`
+	// Relation fields
 	TenantName         string             `json:"tenant_name"`
 	RoomNumber     string             `json:"room_number"`
 	ApartmentName  string             `json:"apartment_name"`
@@ -368,45 +388,90 @@ func toSnapshotPreview(s ComputedSnapshot) *SnapshotPreview {
 
 // --- Converters ---
 
-func ToLineItemResponse(li BillLineItem) LineItemResponse {
+// toLineItemResponse converts a line item, enriching it with override state from the bill.
+func toLineItemResponse(li BillLineItem, overrides OverrideMap, isSettlement bool) LineItemResponse {
+	key := li.OverrideKey()
+	originalAmount := money.ToBaht(li.Amount)
+	effectiveAmount := originalAmount
+	isOverridden := false
+	overrideable := false
+
+	if isSettlement && li.IsAuto() {
+		overrideable = IsOverrideableLineType(li.LineType)
+		if override, ok := overrides[key]; ok {
+			effectiveAmount = money.ToBaht(override)
+			isOverridden = true
+		}
+	}
+
 	return LineItemResponse{
-		ID:          li.ID,
-		LineType:    string(li.LineType),
-		Source:      string(li.Source),
-		Description: li.Description,
-		Amount:      money.ToBaht(li.Amount),
-		Quantity:    li.Quantity,
-		UnitPrice:   money.ToBaht(li.UnitPrice),
-		SortOrder:   li.SortOrder,
+		ID:             li.ID,
+		LineType:       string(li.LineType),
+		Source:         string(li.Source),
+		Description:    li.Description,
+		Amount:         effectiveAmount,
+		Quantity:       li.Quantity,
+		UnitPrice:      money.ToBaht(li.UnitPrice),
+		SortOrder:      li.SortOrder,
+		OverrideKey:    key,
+		OriginalAmount: originalAmount,
+		IsOverridden:   isOverridden,
+		Overrideable:   overrideable,
 	}
 }
 
 func ToBillResponse(b Bill) BillResponse {
+	isSettlement := b.IsSettlement()
+
 	items := make([]LineItemResponse, len(b.LineItems))
 	for i, li := range b.LineItems {
-		items[i] = ToLineItemResponse(li)
+		items[i] = toLineItemResponse(li, b.Overrides, isSettlement)
 	}
 
 	resp := BillResponse{
-		ID:             b.ID,
-		ContractID:     b.ContractID,
-		BillingMonth:   b.BillingMonth,
-		BillType:       string(b.BillType),
-		Status:         string(b.Status),
-		VoidReason:     b.VoidReason,
+		ID:               b.ID,
+		ContractID:       b.ContractID,
+		BillingMonth:     b.BillingMonth,
+		BillType:         string(b.BillType),
+		Status:           string(b.Status),
+		VoidReason:       b.VoidReason,
 		DepositAmount:    money.ToBaht(b.DepositAmount),
 		DepositBalance:   money.ToBaht(b.DepositBalance),
 		DepositForfeited: b.DepositForfeited,
 		TotalAmount:      money.ToBaht(b.TotalAmount),
 		RentPaid:         b.RentPaid,
-		Note:           b.Note,
-		LineItems:      items,
-		CreatedAt:      b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:      b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		Note:             b.Note,
+		LineItems:        items,
+		CreatedAt:        b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:        b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
-	if b.IsSettlement() {
+
+	if isSettlement {
 		resp.SettlementRentMode = string(b.SettlementRentMode)
+
+		// Override + deposit application
+		if len(b.Overrides) > 0 {
+			overrides := make(map[string]float64, len(b.Overrides))
+			for k, v := range b.Overrides {
+				overrides[k] = money.ToBaht(v)
+			}
+			resp.Overrides = overrides
+		}
+		depApp := string(b.DepositApp)
+		if depApp == "" {
+			depApp = string(DepositAppFull)
+		}
+		resp.DepositApplication = depApp
+		resp.CustomDepositApplied = money.ToBaht(b.CustomDepositApplied)
+
+		// Deposit breakdown
+		bd := b.DepositBreakdown()
+		resp.DepositApplied = money.ToBaht(bd.AppliedAmount)
+		resp.DepositRefund = money.ToBaht(bd.RefundAmount)
+		resp.DepositWithheld = money.ToBaht(bd.WithheldAmount)
+		resp.AmountDue = money.ToBaht(bd.AmountDue)
 	}
+
 	return resp
 }
 

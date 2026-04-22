@@ -452,3 +452,542 @@ func TestNewFeeLine(t *testing.T) {
 		t.Fatalf("expected 50000, got %d", line.Amount)
 	}
 }
+
+// --- Override + DepositBreakdown ---
+
+func TestCalculateTotal_WithOverrides(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 200000,
+		Overrides: OverrideMap{
+			"ELECTRICITY": 80000, // override from 120000 to 80000
+		},
+		LineItems: []BillLineItem{
+			{LineType: LineItemProrateRent, Source: LineItemSourceAuto, Amount: 150000},
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 120000},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 30000},
+		},
+	}
+	b.CalculateTotal()
+
+	// 150000 + 80000(override) + 30000 = 260000
+	if b.TotalAmount != 260000 {
+		t.Fatalf("TotalAmount = %d, want 260000", b.TotalAmount)
+	}
+}
+
+func TestCalculateTotal_OverrideIgnoredForNonSettlement(t *testing.T) {
+	b := &Bill{
+		BillType: BillTypeMonthly,
+		Overrides: OverrideMap{
+			"ELECTRICITY": 1, // should be ignored
+		},
+		LineItems: []BillLineItem{
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 120000},
+		},
+	}
+	b.CalculateTotal()
+
+	if b.TotalAmount != 120000 {
+		t.Fatalf("TotalAmount = %d, want 120000 (override ignored for monthly)", b.TotalAmount)
+	}
+}
+
+func TestCalculateTotal_OverrideIgnoredForManualItems(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 0,
+		Overrides: OverrideMap{
+			"CLEANING_FEE": 1, // should NOT apply to MANUAL items
+		},
+		LineItems: []BillLineItem{
+			{LineType: LineItemCleaningFee, Source: LineItemSourceManual, Amount: 50000},
+		},
+	}
+	b.CalculateTotal()
+
+	if b.TotalAmount != 50000 {
+		t.Fatalf("TotalAmount = %d, want 50000 (override ignored for MANUAL)", b.TotalAmount)
+	}
+}
+
+func TestDepositBreakdown_Full_Returnable(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 500000, // 5000 baht
+		TotalAmount:   300000, // 3000 baht
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 300000 {
+		t.Errorf("Applied = %d, want 300000", bd.AppliedAmount)
+	}
+	if bd.RefundAmount != 200000 {
+		t.Errorf("Refund = %d, want 200000", bd.RefundAmount)
+	}
+	if bd.WithheldAmount != 0 {
+		t.Errorf("Withheld = %d, want 0", bd.WithheldAmount)
+	}
+	if bd.AmountDue != 0 {
+		t.Errorf("Due = %d, want 0", bd.AmountDue)
+	}
+}
+
+func TestDepositBreakdown_Full_Returnable_ChargesExceedDeposit(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 200000, // 2000 baht
+		TotalAmount:   350000, // 3500 baht
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 200000 {
+		t.Errorf("Applied = %d, want 200000", bd.AppliedAmount)
+	}
+	if bd.RefundAmount != 0 {
+		t.Errorf("Refund = %d, want 0", bd.RefundAmount)
+	}
+	if bd.AmountDue != 150000 {
+		t.Errorf("Due = %d, want 150000", bd.AmountDue)
+	}
+}
+
+func TestDepositBreakdown_Full_Forfeited(t *testing.T) {
+	b := &Bill{
+		BillType:         BillTypeSettlement,
+		DepositAmount:    300000,
+		DepositForfeited: true,
+		TotalAmount:      200000,
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 0 {
+		t.Errorf("Applied = %d, want 0 (forfeited)", bd.AppliedAmount)
+	}
+	if bd.WithheldAmount != 300000 {
+		t.Errorf("Withheld = %d, want 300000", bd.WithheldAmount)
+	}
+	if bd.AmountDue != 200000 {
+		t.Errorf("Due = %d, want 200000", bd.AmountDue)
+	}
+	if bd.RefundAmount != 0 {
+		t.Errorf("Refund = %d, want 0", bd.RefundAmount)
+	}
+}
+
+func TestDepositBreakdown_None(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 500000,
+		DepositApp:    DepositAppNone,
+		TotalAmount:   300000,
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 0 {
+		t.Errorf("Applied = %d, want 0", bd.AppliedAmount)
+	}
+	if bd.WithheldAmount != 500000 {
+		t.Errorf("Withheld = %d, want 500000", bd.WithheldAmount)
+	}
+	if bd.AmountDue != 300000 {
+		t.Errorf("Due = %d, want 300000", bd.AmountDue)
+	}
+	if bd.RefundAmount != 0 {
+		t.Errorf("Refund = %d, want 0", bd.RefundAmount)
+	}
+}
+
+func TestDepositBreakdown_Custom(t *testing.T) {
+	b := &Bill{
+		BillType:             BillTypeSettlement,
+		DepositAmount:        500000,
+		DepositApp:           DepositAppCustom,
+		CustomDepositApplied: 200000, // apply 2000 of 5000 deposit
+		TotalAmount:          300000,
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 200000 {
+		t.Errorf("Applied = %d, want 200000", bd.AppliedAmount)
+	}
+	if bd.RefundAmount != 300000 {
+		t.Errorf("Refund = %d, want 300000 (500000 - 200000)", bd.RefundAmount)
+	}
+	if bd.AmountDue != 100000 {
+		t.Errorf("Due = %d, want 100000 (300000 - 200000)", bd.AmountDue)
+	}
+}
+
+func TestDepositBreakdown_Custom_ClampedToDeposit(t *testing.T) {
+	b := &Bill{
+		BillType:             BillTypeSettlement,
+		DepositAmount:        200000,
+		DepositApp:           DepositAppCustom,
+		CustomDepositApplied: 500000, // exceeds deposit → clamped to 200000
+		TotalAmount:          300000,
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 200000 {
+		t.Errorf("Applied = %d, want 200000 (clamped to deposit)", bd.AppliedAmount)
+	}
+	if bd.AmountDue != 100000 {
+		t.Errorf("Due = %d, want 100000", bd.AmountDue)
+	}
+}
+
+func TestDepositBreakdown_Custom_ClampedToCharges(t *testing.T) {
+	b := &Bill{
+		BillType:             BillTypeSettlement,
+		DepositAmount:        500000,
+		DepositApp:           DepositAppCustom,
+		CustomDepositApplied: 400000, // exceeds charges → clamped to 100000
+		TotalAmount:          100000,
+	}
+	bd := b.DepositBreakdown()
+
+	if bd.AppliedAmount != 100000 {
+		t.Errorf("Applied = %d, want 100000 (clamped to charges)", bd.AppliedAmount)
+	}
+	if bd.RefundAmount != 400000 {
+		t.Errorf("Refund = %d, want 400000", bd.RefundAmount)
+	}
+	if bd.AmountDue != 0 {
+		t.Errorf("Due = %d, want 0", bd.AmountDue)
+	}
+}
+
+func TestPruneStaleOverrides(t *testing.T) {
+	b := &Bill{
+		BillType: BillTypeSettlement,
+		Overrides: OverrideMap{
+			"ELECTRICITY":      80000,
+			"PRORATE_RENT":     150000,
+			"OUTSTANDING_BILL": 99999, // stale — no matching AUTO item
+		},
+		LineItems: []BillLineItem{
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 120000},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 30000},
+		},
+	}
+	b.PruneStaleOverrides()
+
+	if len(b.Overrides) != 1 {
+		t.Fatalf("expected 1 override remaining, got %d", len(b.Overrides))
+	}
+	if _, ok := b.Overrides["ELECTRICITY"]; !ok {
+		t.Error("expected ELECTRICITY override to survive")
+	}
+	if _, ok := b.Overrides["PRORATE_RENT"]; ok {
+		t.Error("expected PRORATE_RENT override to be pruned (no matching AUTO item)")
+	}
+}
+
+func TestValidateOverrides_RejectsNonOverrideable(t *testing.T) {
+	b := &Bill{
+		Overrides: OverrideMap{
+			"OUTSTANDING_BILL": 100000,
+		},
+	}
+	if err := b.ValidateOverrides(); err == nil {
+		t.Fatal("expected error for non-overrideable type")
+	}
+}
+
+func TestValidateOverrides_RejectsNegativeAmount(t *testing.T) {
+	b := &Bill{
+		Overrides: OverrideMap{
+			"ELECTRICITY": -50000,
+		},
+	}
+	if err := b.ValidateOverrides(); err == nil {
+		t.Fatal("expected error for negative amount")
+	}
+}
+
+func TestValidateOverrides_AcceptsValid(t *testing.T) {
+	b := &Bill{
+		Overrides: OverrideMap{
+			"ELECTRICITY": 80000,
+			"WATER":       15000,
+		},
+	}
+	if err := b.ValidateOverrides(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOverrideKey(t *testing.T) {
+	li := BillLineItem{LineType: LineItemElectricity}
+	if li.OverrideKey() != "ELECTRICITY" {
+		t.Fatalf("expected ELECTRICITY, got %s", li.OverrideKey())
+	}
+}
+
+// --- Checklist edge cases ---
+
+// #1: deposit > charges → refund, net direction correct, DepositBalance positive
+func TestChecklist_DepositExceedsCharges_FullRefund(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 500000, // 5000 baht
+		LineItems: []BillLineItem{
+			{LineType: LineItemProrateRent, Source: LineItemSourceAuto, Amount: 150000},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 30000},
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 20000},
+		},
+	}
+	b.CalculateTotal()
+
+	// total = 200000 (2000 baht)
+	if b.TotalAmount != 200000 {
+		t.Fatalf("TotalAmount = %d, want 200000", b.TotalAmount)
+	}
+
+	bd := b.DepositBreakdown()
+	// applied = min(500000, 200000) = 200000
+	if bd.AppliedAmount != 200000 {
+		t.Errorf("Applied = %d, want 200000", bd.AppliedAmount)
+	}
+	// refund = 500000 - 200000 = 300000 (3000 baht)
+	if bd.RefundAmount != 300000 {
+		t.Errorf("Refund = %d, want 300000", bd.RefundAmount)
+	}
+	if bd.AmountDue != 0 {
+		t.Errorf("Due = %d, want 0", bd.AmountDue)
+	}
+	// DepositBalance: positive = refund
+	if b.DepositBalance != 300000 {
+		t.Errorf("DepositBalance = %d, want 300000 (positive = refund)", b.DepositBalance)
+	}
+}
+
+// #3: NONE mode end-to-end with CalculateTotal
+func TestChecklist_NoneMode_EndToEnd(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 500000, // 5000 baht
+		DepositApp:    DepositAppNone,
+		LineItems: []BillLineItem{
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 200000},
+		},
+	}
+	b.CalculateTotal()
+
+	bd := b.DepositBreakdown()
+	if bd.AppliedAmount != 0 {
+		t.Errorf("Applied = %d, want 0", bd.AppliedAmount)
+	}
+	if bd.RefundAmount != 0 {
+		t.Errorf("Refund = %d, want 0", bd.RefundAmount)
+	}
+	if bd.WithheldAmount != 500000 {
+		t.Errorf("Withheld = %d, want 500000", bd.WithheldAmount)
+	}
+	if bd.AmountDue != 200000 {
+		t.Errorf("Due = %d, want 200000", bd.AmountDue)
+	}
+	// DepositBalance: -200000 (tenant owes full charges)
+	if b.DepositBalance != -200000 {
+		t.Errorf("DepositBalance = %d, want -200000", b.DepositBalance)
+	}
+}
+
+// #5: Manual + Override coexist — override replaces AUTO amount, MANUAL adds separately
+func TestChecklist_ManualAndOverrideCoexist(t *testing.T) {
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 0,
+		Overrides: OverrideMap{
+			"ELECTRICITY": 80000, // override AUTO from 100000 to 80000
+		},
+		LineItems: []BillLineItem{
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 100000},
+			{LineType: LineItemPenalty, Source: LineItemSourceManual, Amount: 20000},
+		},
+	}
+	b.CalculateTotal()
+
+	// total = 80000 (override) + 20000 (manual) = 100000
+	if b.TotalAmount != 100000 {
+		t.Fatalf("TotalAmount = %d, want 100000 (override 80000 + manual 20000)", b.TotalAmount)
+	}
+}
+
+// #2: Override survives regeneration (PruneStaleOverrides keeps matching keys)
+func TestChecklist_OverrideSurvivesRegenerate(t *testing.T) {
+	// Simulate: old bill had override for ELECTRICITY, new bill still has ELECTRICITY AUTO item
+	b := &Bill{
+		BillType: BillTypeSettlement,
+		Overrides: OverrideMap{
+			"ELECTRICITY": 80000,
+			"WATER":       15000,
+		},
+		LineItems: []BillLineItem{
+			// After regen: ELECTRICITY still exists (maybe different base amount), WATER still exists
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 110000}, // new base
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 25000},         // new base
+		},
+	}
+	b.PruneStaleOverrides()
+
+	// Both overrides should survive
+	if len(b.Overrides) != 2 {
+		t.Fatalf("expected 2 overrides, got %d", len(b.Overrides))
+	}
+
+	b.CalculateTotal()
+
+	// total = 80000 (override) + 15000 (override) = 95000
+	// NOT 110000 + 25000 = 135000
+	if b.TotalAmount != 95000 {
+		t.Fatalf("TotalAmount = %d, want 95000 (overrides applied to new base)", b.TotalAmount)
+	}
+}
+
+// --- computeDepositSettlementFromBill invariants ---
+
+func TestComputeDepositSettlementFromBill_Forfeited(t *testing.T) {
+	// DepositForfeited=true → ForfeitedAmount = deposit, AvailableToApply = 0
+	b := &Bill{
+		BillType:         BillTypeSettlement,
+		DepositAmount:    500000,
+		DepositForfeited: true,
+		TotalAmount:      200000,
+	}
+	ds := computeDepositSettlementFromBill(b)
+
+	if ds.ForfeitedAmount != 500000 {
+		t.Errorf("ForfeitedAmount = %d, want 500000", ds.ForfeitedAmount)
+	}
+	if ds.AvailableToApply != 0 {
+		t.Errorf("AvailableToApply = %d, want 0 (fully forfeited)", ds.AvailableToApply)
+	}
+	if ds.AppliedAmount != 0 {
+		t.Errorf("AppliedAmount = %d, want 0", ds.AppliedAmount)
+	}
+	if ds.AmountDue != 200000 {
+		t.Errorf("AmountDue = %d, want 200000", ds.AmountDue)
+	}
+}
+
+func TestComputeDepositSettlementFromBill_NoneMode_NotForfeited(t *testing.T) {
+	// DepositForfeited=false + NONE → ForfeitedAmount = 0, withheld by admin choice
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 500000,
+		DepositApp:    DepositAppNone,
+		TotalAmount:   200000,
+	}
+	ds := computeDepositSettlementFromBill(b)
+
+	if ds.ForfeitedAmount != 0 {
+		t.Errorf("ForfeitedAmount = %d, want 0 (NONE is admin choice, not forfeiture)", ds.ForfeitedAmount)
+	}
+	if ds.AvailableToApply != 500000 {
+		t.Errorf("AvailableToApply = %d, want 500000 (deposit not forfeited)", ds.AvailableToApply)
+	}
+	if ds.AppliedAmount != 0 {
+		t.Errorf("AppliedAmount = %d, want 0 (NONE = not applied)", ds.AppliedAmount)
+	}
+	if ds.AmountDue != 200000 {
+		t.Errorf("AmountDue = %d, want 200000", ds.AmountDue)
+	}
+}
+
+func TestComputeDepositSettlementFromBill_FullReturnable(t *testing.T) {
+	// FULL + returnable → ForfeitedAmount = 0, AvailableToApply = deposit
+	b := &Bill{
+		BillType:      BillTypeSettlement,
+		DepositAmount: 500000,
+		TotalAmount:   300000,
+	}
+	ds := computeDepositSettlementFromBill(b)
+
+	if ds.ForfeitedAmount != 0 {
+		t.Errorf("ForfeitedAmount = %d, want 0", ds.ForfeitedAmount)
+	}
+	if ds.AvailableToApply != 500000 {
+		t.Errorf("AvailableToApply = %d, want 500000", ds.AvailableToApply)
+	}
+	if ds.AppliedAmount != 300000 {
+		t.Errorf("AppliedAmount = %d, want 300000", ds.AppliedAmount)
+	}
+	if ds.RefundAmount != 200000 {
+		t.Errorf("RefundAmount = %d, want 200000", ds.RefundAmount)
+	}
+	if ds.AmountDue != 0 {
+		t.Errorf("AmountDue = %d, want 0", ds.AmountDue)
+	}
+}
+
+func TestComputeDepositSettlementFromBill_CustomMode(t *testing.T) {
+	// CUSTOM with amount < deposit → applied = custom, no forfeiture
+	b := &Bill{
+		BillType:             BillTypeSettlement,
+		DepositAmount:        500000,
+		DepositApp:           DepositAppCustom,
+		CustomDepositApplied: 200000,
+		TotalAmount:          300000,
+	}
+	ds := computeDepositSettlementFromBill(b)
+
+	if ds.ForfeitedAmount != 0 {
+		t.Errorf("ForfeitedAmount = %d, want 0", ds.ForfeitedAmount)
+	}
+	if ds.AvailableToApply != 500000 {
+		t.Errorf("AvailableToApply = %d, want 500000", ds.AvailableToApply)
+	}
+	if ds.AppliedAmount != 200000 {
+		t.Errorf("AppliedAmount = %d, want 200000", ds.AppliedAmount)
+	}
+	if ds.RefundAmount != 300000 {
+		t.Errorf("RefundAmount = %d, want 300000 (500000 - 200000)", ds.RefundAmount)
+	}
+	if ds.AmountDue != 100000 {
+		t.Errorf("AmountDue = %d, want 100000 (300000 - 200000)", ds.AmountDue)
+	}
+}
+
+func TestComputeDepositSettlementFromBill_CustomExceedsDeposit(t *testing.T) {
+	// CUSTOM > deposit → clamped to deposit
+	b := &Bill{
+		BillType:             BillTypeSettlement,
+		DepositAmount:        200000,
+		DepositApp:           DepositAppCustom,
+		CustomDepositApplied: 999999, // exceeds deposit
+		TotalAmount:          300000,
+	}
+	ds := computeDepositSettlementFromBill(b)
+
+	if ds.AppliedAmount != 200000 {
+		t.Errorf("AppliedAmount = %d, want 200000 (clamped to deposit)", ds.AppliedAmount)
+	}
+	if ds.AmountDue != 100000 {
+		t.Errorf("AmountDue = %d, want 100000", ds.AmountDue)
+	}
+}
+
+func TestComputeDepositSettlementFromBill_Invariant_AvailableEqualsDepositMinusForfeited(t *testing.T) {
+	// Invariant: AvailableToApply = DepositAmount - ForfeitedAmount (always)
+	cases := []struct {
+		name      string
+		bill      Bill
+	}{
+		{"FULL returnable", Bill{BillType: BillTypeSettlement, DepositAmount: 500000, TotalAmount: 200000}},
+		{"FULL forfeited", Bill{BillType: BillTypeSettlement, DepositAmount: 500000, DepositForfeited: true, TotalAmount: 200000}},
+		{"NONE", Bill{BillType: BillTypeSettlement, DepositAmount: 500000, DepositApp: DepositAppNone, TotalAmount: 200000}},
+		{"CUSTOM", Bill{BillType: BillTypeSettlement, DepositAmount: 500000, DepositApp: DepositAppCustom, CustomDepositApplied: 100000, TotalAmount: 200000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := computeDepositSettlementFromBill(&tc.bill)
+			expected := tc.bill.DepositAmount - ds.ForfeitedAmount
+			if ds.AvailableToApply != expected {
+				t.Errorf("AvailableToApply = %d, want %d (deposit %d - forfeited %d)",
+					ds.AvailableToApply, expected, tc.bill.DepositAmount, ds.ForfeitedAmount)
+			}
+		})
+	}
+}

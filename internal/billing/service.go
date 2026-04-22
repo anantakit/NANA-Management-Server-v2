@@ -369,14 +369,22 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 		baseOrder := autoCount + 1
 		var manualItems []BillLineItem
 		for i, item := range req.ManualItems {
-			manualItems = append(manualItems, BillLineItem{
+			li := BillLineItem{
 				BillID:      id,
 				LineType:    LineItemType(item.LineType),
 				Source:      LineItemSourceManual,
 				Description: item.Description,
-				Amount:      money.ToSatang(item.Amount),
 				SortOrder:   baseOrder + i,
-			})
+			}
+			if item.Quantity != nil && item.UnitPrice != nil && *item.Quantity > 0 {
+				// Quantity mode: compute amount from quantity × unit_price
+				li.Quantity = *item.Quantity
+				li.UnitPrice = money.ToSatang(*item.UnitPrice)
+				li.Amount = int64(*item.Quantity) * li.UnitPrice
+			} else {
+				li.Amount = money.ToSatang(item.Amount)
+			}
+			manualItems = append(manualItems, li)
 		}
 		if err := s.repo.CreateLineItems(txCtx, manualItems); err != nil {
 			return fmt.Errorf("create manual items: %w", err)
@@ -387,6 +395,33 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 		if err != nil {
 			return fmt.Errorf("reload bill: %w", err)
 		}
+
+		// Apply overrides
+		if req.Overrides != nil {
+			overrides := make(OverrideMap, len(req.Overrides))
+			for key, amount := range req.Overrides {
+				overrides[key] = money.ToSatang(amount)
+			}
+			reloaded.Overrides = overrides
+			if err := reloaded.ValidateOverrides(); err != nil {
+				return respond.ErrBadRequest.WithMessage(err.Error())
+			}
+		}
+
+		// Apply deposit application
+		if req.DepositApplication != nil {
+			app := DepositApplication(*req.DepositApplication)
+			if !app.IsValid() {
+				return respond.ErrBadRequest.WithMessage("deposit_application ต้องเป็น FULL, NONE, หรือ CUSTOM")
+			}
+			reloaded.DepositApp = app
+			if app == DepositAppCustom && req.CustomDepositApplied != nil {
+				reloaded.CustomDepositApplied = money.ToSatang(*req.CustomDepositApplied)
+			} else if app != DepositAppCustom {
+				reloaded.CustomDepositApplied = 0
+			}
+		}
+
 		reloaded.CalculateTotal()
 		if req.Note != nil {
 			reloaded.Note = *req.Note
@@ -429,7 +464,7 @@ func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUI
 // fresh AUTO items, and preserves MANUAL items + note from the old bill.
 // The persisted SettlementRentMode is carried over to the new bill.
 func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error) {
-	// Load existing bill to extract MANUAL items + note + rent mode
+	// Load existing bill to extract MANUAL items + note + rent mode + overrides + deposit app
 	existing, err := s.repo.FindByID(ctx, existingBillID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -439,6 +474,9 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	}
 	manualItems := existing.ManualItems()
 	note := existing.Note
+	existingOverrides := existing.Overrides
+	existingDepositApp := existing.DepositApp
+	existingCustomDeposit := existing.CustomDepositApplied
 	opts := SettlementOptions{RentMode: existing.SettlementRentMode}
 	// Override rent mode if explicitly provided
 	if rentMode != "" {
@@ -468,8 +506,9 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 		return nil, err
 	}
 
-	// Carry over MANUAL items + note to the new bill
-	if len(manualItems) > 0 || note != "" {
+	// Carry over MANUAL items + note + overrides + deposit app to the new bill
+	needsCarryOver := len(manualItems) > 0 || note != "" || len(existingOverrides) > 0 || existingDepositApp != DepositAppFull
+	if needsCarryOver {
 		newBill, err := s.repo.FindByID(ctx, result.BillID)
 		if err != nil {
 			return nil, fmt.Errorf("reload new bill: %w", err)
@@ -482,23 +521,41 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 			manualItems[i].BillID = result.BillID
 			manualItems[i].SortOrder = autoCount + 1 + i
 		}
-		if err := s.repo.CreateLineItems(ctx, manualItems); err != nil {
-			return nil, fmt.Errorf("carry over manual items: %w", err)
+		if len(manualItems) > 0 {
+			if err := s.repo.CreateLineItems(ctx, manualItems); err != nil {
+				return nil, fmt.Errorf("carry over manual items: %w", err)
+			}
+
+			// Reload to include manual items in LineItems slice
+			newBill, err = s.repo.FindByID(ctx, result.BillID)
+			if err != nil {
+				return nil, fmt.Errorf("reload new bill: %w", err)
+			}
 		}
 
-		// Reload + recompute with manual items included
-		newBill, err = s.repo.FindByID(ctx, result.BillID)
-		if err != nil {
-			return nil, fmt.Errorf("reload new bill: %w", err)
-		}
 		newBill.Note = note
-		newBill.CalculateTotal() // DepositForfeited persisted on bill → DepositBalance correct
+
+		// Carry over overrides — prune keys that no longer match new AUTO items
+		if len(existingOverrides) > 0 {
+			carried := make(OverrideMap, len(existingOverrides))
+			for k, v := range existingOverrides {
+				carried[k] = v
+			}
+			newBill.Overrides = carried
+			newBill.PruneStaleOverrides()
+		}
+
+		// Carry over deposit application
+		newBill.DepositApp = existingDepositApp
+		newBill.CustomDepositApplied = existingCustomDeposit
+
+		newBill.CalculateTotal() // applies overrides + deposit app
 		if err := s.repo.Update(ctx, newBill); err != nil {
 			return nil, fmt.Errorf("update new bill: %w", err)
 		}
 
-		// Recompute net amount with manual items included
-		ds := computeDepositSettlement(newBill.DepositAmount, newBill.TotalAmount, !newBill.DepositForfeited)
+		// Recompute net amount using single source of truth
+		ds := computeDepositSettlementFromBill(newBill)
 		updated := toSettlementResult(result.BillID, ds)
 		result.NetAmount = updated.NetAmount
 		result.DepositUsed = updated.DepositUsed
@@ -562,6 +619,9 @@ type DepositSettlementState struct {
 //   - Returnable (min months met): full deposit available to offset charges, excess refunded
 //   - Not returnable (early exit): deposit entirely forfeited — not applied to charges,
 //     tenant must pay full amount
+//
+// DEPRECATED: Use computeDepositSettlementFromBill for new code.
+// Kept for commitSettlementPlan where the bill is not yet persisted.
 func computeDepositSettlement(depositAmount int64, grossCharges int64, returnable bool) DepositSettlementState {
 	s := DepositSettlementState{
 		OriginalAmount: depositAmount,
@@ -597,6 +657,31 @@ func computeDepositSettlement(depositAmount int64, grossCharges int64, returnabl
 	}
 
 	return s
+}
+
+// computeDepositSettlementFromBill delegates to Bill.DepositBreakdown() as single source of truth.
+// Use this for any bill that may have DepositApp or Overrides set.
+func computeDepositSettlementFromBill(bill *Bill) DepositSettlementState {
+	bd := bill.DepositBreakdown()
+
+	// ForfeitedAmount = deposit lost due to contract terms (DepositForfeited flag).
+	// WithheldAmount includes both forfeited AND admin-chosen NONE — only map forfeited here.
+	var forfeited int64
+	if bill.DepositForfeited {
+		forfeited = bill.DepositAmount
+	}
+
+	// AvailableToApply = deposit minus forfeiture (what can be offset against charges).
+	available := bill.DepositAmount - forfeited
+
+	return DepositSettlementState{
+		OriginalAmount:   bd.OriginalAmount,
+		ForfeitedAmount:  forfeited,
+		AvailableToApply: available,
+		AppliedAmount:    bd.AppliedAmount,
+		RefundAmount:     bd.RefundAmount,
+		AmountDue:        bd.AmountDue,
+	}
 }
 
 // toSettlementResult converts deposit state into the moveout result DTO.
