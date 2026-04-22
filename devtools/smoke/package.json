@@ -7,7 +7,8 @@
     "smoke:settlement:legacy": "node playwright-test-settlement-preview-legacy.js",
     "smoke:settlement:all": "npm run smoke:settlement:legacy && npm run smoke:settlement",
     "smoke:queue": "node playwright-test-queue-settlement-smoke.js",
-    "smoke:all": "npm run smoke:settlement:all && npm run smoke:queue",
+    "smoke:draft": "node playwright-test-draft-settlement-smoke.js",
+    "smoke:all": "npm run smoke:settlement:all && npm run smoke:queue && npm run smoke:draft",
     "postinstall": "npx playwright install chromium"
   },
   "dependencies": {

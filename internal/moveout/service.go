@@ -486,6 +486,11 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 // UpdateExitMeter signals that the EXIT reading has been modified.
 // - PENDING_SETTLEMENT: voids draft if exists, stays PENDING_SETTLEMENT
 // - PENDING_PAYMENT: voids settlement bill, reverts → PENDING_SETTLEMENT
+//
+// NOTE: This endpoint does NOT update the meter reading itself — it only
+// handles settlement side effects. The actual meter update is a known gap;
+// see backlog_exit_meter_update.md for the planned full implementation
+// (DTO + meter update + regenerate with preservation).
 func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {

@@ -26,6 +26,8 @@ make dev   # postgres + backend + frontend ต้องพร้อมทั้�
 | `make smoke-settlement` | TC13–TC21 scenario smoke (28 assertions) |
 | `make smoke-settlement-legacy` | TC1–TC12 preview interaction smoke (20 assertions) |
 | `make smoke-settlement-all` | legacy แล้วต่อ scenario (45 assertions) |
+| `make smoke-draft` | TC-D01–D12 draft page + regenerate preservation smoke |
+| `make smoke-queue` | Scenarios A–F queue settlement smoke |
 
 หรือรันตรงจาก `backend/devtools/smoke/`:
 
@@ -33,9 +35,40 @@ make dev   # postgres + backend + frontend ต้องพร้อมทั้�
 npm run smoke:settlement
 npm run smoke:settlement:legacy
 npm run smoke:settlement:all
+npm run smoke:draft
+npm run smoke:queue
 ```
 
 ## Test Suites
+
+### Draft Page — Recalculation Surfaces (TC-D01–D08)
+
+ไฟล์: `playwright-test-draft-settlement-smoke.js`
+
+ทดสอบ settlement draft page (หน้าแก้ไขแบบร่าง):
+
+**D01–D08: Recalculation surfaces**
+
+| TC | เรื่อง |
+|----|--------|
+| TC-D01 | Happy path — page renders, all sections visible, no NaN |
+| TC-D02 | Edit meter readings → usage + charges + total recalculate |
+| TC-D03 | Change rent mode (PRORATED → FULL_MONTH) → total updates |
+| TC-D04 | Deposit: "ใช้เงินประกันหัก" (FULL) → net reflects deduction |
+| TC-D05 | Deposit: "ไม่ใช้เงินประกัน" (NONE) → net = total charges |
+| TC-D06 | Deposit: "กำหนดเอง" (CUSTOM) → partial deposit applied |
+| TC-D07 | Add extra charge via preset chip → total increases |
+| TC-D08 | Sequential multi-edit (deposit toggle + extra charge) → no stale state |
+
+**D09–D12: Regenerate preservation (high-risk area)**
+
+| TC | เรื่อง |
+|----|--------|
+| TC-D09 | Regenerate preserves manual items (no loss, no duplication) |
+| TC-D10 | Regenerate preserves deposit override (CUSTOM mode + amount) |
+| TC-D11 | Regenerate preserves manual + override combined |
+| TC-D12 | Multiple regenerations — idempotent (no additive drift) |
+
 
 ### Legacy — Preview Interaction (TC1–TC12)
 
