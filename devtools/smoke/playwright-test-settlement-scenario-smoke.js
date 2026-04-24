@@ -262,16 +262,23 @@ async function runTC16(page, fixtures) {
     metaText?.trim() ?? '(none)',
   ))
   // ── Actual-date rent lock ──
-  // C204 fan room: monthly rent ฿2,500, April has 30 days.
-  //   actual day 10  → prorate rent ≈ ฿833  → subtotal ≈ ฿2,537
-  //   scheduled day 14 → prorate rent ≈ ฿1,167 → subtotal ≈ ฿2,871
-  // If the backend silently used scheduled, subtotal would exceed ฿2,700.
-  // Asserting subtotal < ฿2,700 locks the financial calculation to the
-  // actual date (spec rule D1: "actual move-out date for settlement").
+  // C204 fan room: monthly rent ฿2,500. actualOffset=-6, scheduledOffset=-2.
+  // If backend used actual date → smaller prorate (fewer days).
+  // If backend used scheduled date → larger prorate (more days).
+  // Compute expected subtotals dynamically from today.
+  const now = new Date()
+  const actualDate = new Date(now); actualDate.setDate(now.getDate() - 6)
+  const scheduledDate = new Date(now); scheduledDate.setDate(now.getDate() - 2)
+  const dim = new Date(actualDate.getFullYear(), actualDate.getMonth() + 1, 0).getDate()
+  const actualRent = Math.trunc((250000 * actualDate.getDate()) / dim) / 100
+  const scheduledRent = Math.trunc((250000 * scheduledDate.getDate()) / dim) / 100
+  const fixedCharges = 324 + 1080 + 300 // water + elec + cleaning
+  const expectedActual = actualRent + fixedCharges
+  const expectedScheduled = scheduledRent + fixedCharges
   const subtotal = await getChargesSubtotal(page)
   track('TC16.3', check(
-    'Rent uses actual date: subtotal ≈ ฿2,537 (not ≈ ฿2,871 if scheduled)',
-    subtotal > 2300 && subtotal < 2800,
+    `Rent uses actual date: subtotal ≈ ฿${expectedActual} (not ≈ ฿${expectedScheduled} if scheduled)`,
+    Math.abs(subtotal - expectedActual) < 1,
     `subtotal=${subtotal}`,
   ))
   await page.screenshot({ path: '/tmp/smoke-tc16.png' })

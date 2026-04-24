@@ -44,6 +44,12 @@ type MeterReadingService interface {
 	// Must be called within the caller's transaction context.
 	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error
 
+	// UpdateExitForMoveOut updates an existing EXIT reading in-place.
+	// Must be called within the caller's transaction context.
+	UpdateExitForMoveOut(ctx context.Context, roomID uuid.UUID,
+		elecCurrent, waterCurrent *int, readingDate *time.Time,
+		elecReplaced, waterReplaced, elecRollover, waterRollover *bool) error
+
 	// DeleteExitByRoomID soft-deletes the room's active EXIT reading.
 	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
 }
@@ -355,6 +361,60 @@ func matchTenantForReading(billingMonth string, contracts []contract.ContractTen
 		return c.TenantName, c.StartDate, false
 	}
 	return "", time.Time{}, false
+}
+
+// UpdateExitForMoveOut updates an existing EXIT reading in-place.
+// Skips apartment-room ownership validation (caller already verified).
+// Reuses domain ApplyUpdate for validation (current >= previous, rollover/replaced conflict).
+func (s *meterReadingService) UpdateExitForMoveOut(ctx context.Context, roomID uuid.UUID,
+	elecCurrent, waterCurrent *int, readingDate *time.Time,
+	elecReplaced, waterReplaced, elecRollover, waterRollover *bool) error {
+
+	reading, err := s.repo.FindExitByRoomID(ctx, roomID)
+	if err != nil {
+		return respond.ErrNotFound.WithMessage("ไม่พบข้อมูลมิเตอร์ย้ายออก")
+	}
+
+	// Build flags — two different semantics:
+	// Rollover = stored state → merge with existing
+	// Replaced = write-time action → nil means "don't apply"
+	replaced := MeterReplacedFlags{
+		Electricity: derefBool(elecReplaced),
+		Water:       derefBool(waterReplaced),
+	}
+	rollover := MeterRolloverFlags{
+		Electricity: chooseBool(elecRollover, reading.IsRolloverElectricity),
+		Water:       chooseBool(waterRollover, reading.IsRolloverWater),
+	}
+
+	if err := reading.ApplyUpdate(elecCurrent, waterCurrent, replaced, rollover); err != nil {
+		return respond.ErrBadRequest.WithMessage(err.Error())
+	}
+
+	if readingDate != nil {
+		reading.ReadingDateActual = readingDate
+	}
+
+	if err := s.repo.Update(ctx, reading); err != nil {
+		return fmt.Errorf("update exit reading: %w", err)
+	}
+	return nil
+}
+
+// chooseBool returns *ptr if non-nil, otherwise returns current.
+func chooseBool(ptr *bool, current bool) bool {
+	if ptr == nil {
+		return current
+	}
+	return *ptr
+}
+
+// derefBool returns *ptr if non-nil, otherwise returns false.
+func derefBool(ptr *bool) bool {
+	if ptr == nil {
+		return false
+	}
+	return *ptr
 }
 
 // DeleteExitByRoomID delegates to repo — satisfies moveout.MeterReadingCommander.

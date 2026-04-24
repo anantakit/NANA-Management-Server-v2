@@ -33,7 +33,7 @@ type MoveOutService interface {
 	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 
 	// Correction commands
-	UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	UpdateExitMeter(ctx context.Context, id uuid.UUID, req UpdateExitMeterRequest) (*MoveOutWithRelations, error)
 	RegenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error)
 	ReopenForCorrection(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 }
@@ -483,44 +483,81 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 
 // --- Correction commands ---
 
-// UpdateExitMeter signals that the EXIT reading has been modified.
-// - PENDING_SETTLEMENT: voids draft if exists, stays PENDING_SETTLEMENT
-// - PENDING_PAYMENT: voids settlement bill, reverts → PENDING_SETTLEMENT
-//
-// NOTE: This endpoint does NOT update the meter reading itself — it only
-// handles settlement side effects. The actual meter update is a known gap;
-// see backlog_exit_meter_update.md for the planned full implementation
-// (DTO + meter update + regenerate with preservation).
-func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+// UpdateExitMeter updates the EXIT meter reading in-place, then handles
+// settlement side effects (void + regenerate if draft exists).
+// - PENDING_SETTLEMENT: update meter → void+regenerate draft (if exists) → stays PENDING_SETTLEMENT
+// - PENDING_PAYMENT: update meter → void+regenerate draft → reverts → PENDING_SETTLEMENT
+// All steps run atomically in one transaction.
+func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID, req UpdateExitMeterRequest) (*MoveOutWithRelations, error) {
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
-		switch {
-		case notice.IsPendingSettlement():
-			// Void settlement draft if exists (meter data changed)
-			if notice.SettlementBillID != nil {
-				if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "EXIT_METER_UPDATED"); err != nil {
-					return fmt.Errorf("void settlement: %w", err)
-				}
-				notice.SettlementBillID = nil
-				notice.NetAmount = nil
-			}
-		case notice.IsPendingPayment():
-			// Void the settlement draft (D8)
-			if notice.SettlementBillID != nil {
-				if err := s.billingCmd.VoidSettlement(txCtx, *notice.SettlementBillID, "EXIT_METER_UPDATED"); err != nil {
-					return fmt.Errorf("void settlement: %w", err)
-				}
-			}
-			notice.Status = MoveOutStatusPendingSettlement
-			notice.SettlementBillID = nil
-			notice.NetAmount = nil
-		default:
+
+		if !notice.IsPendingSettlement() && !notice.IsPendingPayment() {
 			return respond.ErrBadRequest.WithMessage("แก้ไขมิเตอร์ย้ายออกได้เฉพาะสถานะรอสร้างบิลหรือรอชำระ")
 		}
+
+		// 1. Guard: at least one meter field must be provided
+		if req.ElectricityCurrent == nil && req.WaterCurrent == nil && req.ReadingDateActual == nil {
+			return respond.ErrBadRequest.WithMessage("ต้องระบุค่ามิเตอร์อย่างน้อย 1 รายการ")
+		}
+
+		// 2. Resolve roomID via contract
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
+
+		// 3. Parse optional reading date
+		var readingDate *time.Time
+		if req.ReadingDateActual != nil {
+			d, err := time.Parse("2006-01-02", *req.ReadingDateActual)
+			if err != nil {
+				return respond.ErrBadRequest.WithMessage("รูปแบบวันที่บันทึกมิเตอร์ไม่ถูกต้อง")
+			}
+			readingDate = &d
+		}
+
+		// 4. Update EXIT meter reading in-place
+		if err := s.meterCmd.UpdateExitForMoveOut(txCtx, c.RoomID,
+			req.ElectricityCurrent, req.WaterCurrent, readingDate,
+			req.IsElectricityReplaced, req.IsWaterReplaced,
+			req.IsElectricityRollover, req.IsWaterRollover); err != nil {
+			if _, ok := respond.Is(err); ok {
+				return err
+			}
+			return fmt.Errorf("update exit reading: %w", err)
+		}
+
+		// 5. Handle settlement side effects
+		if notice.SettlementBillID != nil {
+			// Void + regenerate (preserves MANUAL items + note)
+			moveOutDate, err := notice.RequireActualDate()
+			if err != nil {
+				return respond.ErrBadRequest.WithMessage(err.Error())
+			}
+			result, err := s.billingCmd.RegenerateSettlement(txCtx, *notice.SettlementBillID, notice.ContractID, moveOutDate, "")
+			if err != nil {
+				if _, ok := respond.Is(err); ok {
+					return err
+				}
+				return fmt.Errorf("regenerate settlement: %w", err)
+			}
+			// Explicitly update notice with new bill
+			notice.SettlementBillID = &result.BillID
+			notice.NetAmount = &result.NetAmount
+		}
+
+		// 6. If was PENDING_PAYMENT → revert to PENDING_SETTLEMENT
+		// PENDING_PAYMENT references a FINALIZED bill — step 5 voids it
+		// (CanVoid accepts FINALIZED) then regenerates a new DRAFT.
+		if notice.IsPendingPayment() {
+			notice.Status = MoveOutStatusPendingSettlement
+		}
+
 		if err := s.repo.Update(txCtx, notice); err != nil {
 			return err
 		}

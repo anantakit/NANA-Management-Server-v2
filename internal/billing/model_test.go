@@ -258,10 +258,15 @@ func TestBill_Void(t *testing.T) {
 		}
 	})
 
-	t.Run("already void — error", func(t *testing.T) {
-		b := &Bill{Status: BillStatusVoid}
-		if err := b.Void("test"); err != ErrAlreadyVoided {
-			t.Fatalf("expected ErrAlreadyVoided, got %v", err)
+	t.Run("already void — idempotent no-op", func(t *testing.T) {
+		reason := "old reason"
+		b := &Bill{Status: BillStatusVoid, VoidReason: &reason}
+		if err := b.Void("new reason"); err != nil {
+			t.Fatalf("expected nil (idempotent), got %v", err)
+		}
+		// Must not overwrite existing reason
+		if *b.VoidReason != "old reason" {
+			t.Fatalf("void reason should not change, got %q", *b.VoidReason)
 		}
 	})
 

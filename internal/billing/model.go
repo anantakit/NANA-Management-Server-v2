@@ -305,6 +305,10 @@ func (b *Bill) Void(reason string) error {
 	if reason == "" {
 		return ErrVoidReasonEmpty
 	}
+	// Idempotent: already voided → no-op
+	if b.IsVoid() {
+		return nil
+	}
 	if err := b.CanVoid(); err != nil {
 		return err
 	}

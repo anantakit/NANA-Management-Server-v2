@@ -265,7 +265,12 @@ func (h *MoveOutHandler) UpdateExitMeter(c fiber.Ctx) error {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
 	}
 
-	result, err := h.svc.UpdateExitMeter(c.Context(), id)
+	var req UpdateExitMeterRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.UpdateExitMeter(c.Context(), id, req)
 	if err != nil {
 		return respond.Error(c, err)
 	}

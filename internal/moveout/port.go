@@ -35,6 +35,13 @@ type MeterReadingCommander interface {
 	// Must be called within the caller's transaction context.
 	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error
 
+	// UpdateExitForMoveOut updates an existing EXIT reading in-place.
+	// Flags use *bool: nil = keep existing value.
+	// Must be called within the caller's transaction context.
+	UpdateExitForMoveOut(ctx context.Context, roomID uuid.UUID,
+		elecCurrent, waterCurrent *int, readingDate *time.Time,
+		elecReplaced, waterReplaced, elecRollover, waterRollover *bool) error
+
 	// DeleteExitByRoomID soft-deletes the room's active EXIT reading.
 	// Used by Cancel() so the workflow can be re-initiated cleanly.
 	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error

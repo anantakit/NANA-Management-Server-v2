@@ -38,6 +38,7 @@ type MeterReadingRepository interface {
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
 	HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
 	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
+	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
 	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
@@ -281,6 +282,19 @@ func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context,
 		result[readings[i].RoomID] = &readings[i]
 	}
 	return result, nil
+}
+
+// FindExitByRoomID finds the active EXIT reading for a room.
+// Returns gorm.ErrRecordNotFound if none exists.
+func (r *meterReadingRepository) FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error) {
+	var m MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id = ? AND reading_type = ? AND deleted_at IS NULL", roomID, ReadingTypeExit).
+		First(&m).Error
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 func (r *meterReadingRepository) Create(ctx context.Context, reading *MeterReading) error {

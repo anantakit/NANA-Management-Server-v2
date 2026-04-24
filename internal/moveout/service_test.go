@@ -132,6 +132,10 @@ type mockMeterCommander struct {
 	createExitCalls  int
 	createExitRoomID uuid.UUID
 	createExitFn     func(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int) error
+
+	updateExitCalls  int
+	updateExitRoomID uuid.UUID
+	updateExitFn     func(ctx context.Context, roomID uuid.UUID, elecCurrent, waterCurrent *int, readingDate *time.Time, elecReplaced, waterReplaced, elecRollover, waterRollover *bool) error
 }
 
 var _ MeterReadingCommander = (*mockMeterCommander)(nil)
@@ -141,6 +145,15 @@ func (m *mockMeterCommander) CreateExitForMoveOut(ctx context.Context, roomID uu
 	m.createExitRoomID = roomID
 	if m.createExitFn != nil {
 		return m.createExitFn(ctx, roomID, date, elec, water)
+	}
+	return nil
+}
+
+func (m *mockMeterCommander) UpdateExitForMoveOut(ctx context.Context, roomID uuid.UUID, elecCurrent, waterCurrent *int, readingDate *time.Time, elecReplaced, waterReplaced, elecRollover, waterRollover *bool) error {
+	m.updateExitCalls++
+	m.updateExitRoomID = roomID
+	if m.updateExitFn != nil {
+		return m.updateExitFn(ctx, roomID, elecCurrent, waterCurrent, readingDate, elecReplaced, waterReplaced, elecRollover, waterRollover)
 	}
 	return nil
 }
@@ -467,105 +480,230 @@ func TestFinalizeSettlement_HappyPath(t *testing.T) {
 
 // --- Correction command tests ---
 
-func TestUpdateExitMeter_PendingPayment_VoidsAndReverts(t *testing.T) {
-	noticeID := uuid.New()
-	billID := uuid.New()
-	netAmount := int64(100000)
+// --- UpdateExitMeter (full flow: meter update → void+regenerate → state) ---
 
-	h := newTestHarness(uuid.New(), uuid.New())
+func intPtr(v int) *int { return &v }
+
+func TestUpdateExitMeter_WithBody_UpdatesMeterAndRegenerates(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	roomID := uuid.New()
+	oldBillID := uuid.New()
+	netAmount := int64(100000)
+	actualDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
 	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
 		return &MoveOutNotice{
-			ID:               id,
-			Status:           MoveOutStatusPendingPayment,
-			SettlementBillID: &billID,
-			NetAmount:        &netAmount,
+			ID:                   id,
+			ContractID:           contractID,
+			ActualMoveOutDate:    &actualDate,
+			ScheduledMoveOutDate: actualDate,
+			Status:               MoveOutStatusPendingSettlement,
+			SettlementBillID:     &oldBillID,
+			NetAmount:            &netAmount,
 		}, nil
 	}
 
-	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID)
+	req := UpdateExitMeterRequest{
+		ElectricityCurrent: intPtr(5000),
+		WaterCurrent:       intPtr(200),
+	}
+	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Must void the settlement
-	if h.billingCmd.voidCalls != 1 {
-		t.Errorf("VoidSettlement calls: got %d, want 1", h.billingCmd.voidCalls)
+	// Meter port called
+	if h.meterCmd.updateExitCalls != 1 {
+		t.Errorf("UpdateExitForMoveOut calls: got %d, want 1", h.meterCmd.updateExitCalls)
 	}
-	if h.billingCmd.voidBillID != billID {
-		t.Errorf("VoidSettlement billID: got %v, want %v", h.billingCmd.voidBillID, billID)
+	if h.meterCmd.updateExitRoomID != roomID {
+		t.Errorf("UpdateExitForMoveOut roomID: got %v, want %v", h.meterCmd.updateExitRoomID, roomID)
 	}
-	// Must revert to PENDING_SETTLEMENT
+	// Regenerate called (void + new draft)
+	if h.billingCmd.regenerateCalls != 1 {
+		t.Errorf("RegenerateSettlement calls: got %d, want 1", h.billingCmd.regenerateCalls)
+	}
+	// Status stays PENDING_SETTLEMENT
 	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
 		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
 	}
-	// Fields cleared
-	if h.repo.updatedNotice.SettlementBillID != nil {
-		t.Error("settlement_bill_id must be nil after revert")
+	// New bill attached (different from old)
+	if h.repo.updatedNotice.SettlementBillID == nil {
+		t.Error("settlement_bill_id must be set after regenerate")
 	}
-	if h.repo.updatedNotice.NetAmount != nil {
-		t.Error("net_amount must be nil after revert")
+	if *h.repo.updatedNotice.SettlementBillID == oldBillID {
+		t.Error("settlement_bill_id must differ from old bill")
+	}
+	if h.repo.updatedNotice.NetAmount == nil {
+		t.Error("net_amount must be set after regenerate")
 	}
 }
 
-func TestUpdateExitMeter_PendingSettlement_NoDraft_NoOp(t *testing.T) {
+func TestUpdateExitMeter_WithBody_NoDraft_UpdatesMeterOnly(t *testing.T) {
 	noticeID := uuid.New()
+	contractID := uuid.New()
+	roomID := uuid.New()
+	actualDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ActualMoveOutDate:    &actualDate,
+			ScheduledMoveOutDate: actualDate,
+			Status:               MoveOutStatusPendingSettlement,
+			// No SettlementBillID
+		}, nil
+	}
+
+	req := UpdateExitMeterRequest{ElectricityCurrent: intPtr(5000)}
+	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Meter updated
+	if h.meterCmd.updateExitCalls != 1 {
+		t.Errorf("UpdateExitForMoveOut calls: got %d, want 1", h.meterCmd.updateExitCalls)
+	}
+	// No void/regenerate (no draft)
+	if h.billingCmd.regenerateCalls != 0 {
+		t.Errorf("RegenerateSettlement calls: got %d, want 0", h.billingCmd.regenerateCalls)
+	}
+	if h.billingCmd.voidCalls != 0 {
+		t.Errorf("VoidSettlement calls: got %d, want 0", h.billingCmd.voidCalls)
+	}
+	// Status stays
+	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
+		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
+	}
+}
+
+func TestUpdateExitMeter_WithBody_PendingPayment_RevertsAndRegenerates(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	roomID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(100000)
+	actualDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ActualMoveOutDate:    &actualDate,
+			ScheduledMoveOutDate: actualDate,
+			Status:               MoveOutStatusPendingPayment,
+			SettlementBillID:     &billID,
+			NetAmount:            &netAmount,
+		}, nil
+	}
+
+	req := UpdateExitMeterRequest{WaterCurrent: intPtr(300)}
+	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Meter updated
+	if h.meterCmd.updateExitCalls != 1 {
+		t.Errorf("UpdateExitForMoveOut calls: got %d, want 1", h.meterCmd.updateExitCalls)
+	}
+	// Regenerate called
+	if h.billingCmd.regenerateCalls != 1 {
+		t.Errorf("RegenerateSettlement calls: got %d, want 1", h.billingCmd.regenerateCalls)
+	}
+	// Reverted to PENDING_SETTLEMENT
+	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
+		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
+	}
+	// New bill attached
+	if h.repo.updatedNotice.SettlementBillID == nil {
+		t.Error("settlement_bill_id must be set")
+	}
+}
+
+func TestUpdateExitMeter_MeterFailure_NoStateChange(t *testing.T) {
+	contractID := uuid.New()
+	roomID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(100000)
+	actualDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ActualMoveOutDate:    &actualDate,
+			ScheduledMoveOutDate: actualDate,
+			Status:               MoveOutStatusPendingSettlement,
+			SettlementBillID:     &billID,
+			NetAmount:            &netAmount,
+		}, nil
+	}
+	h.meterCmd.updateExitFn = func(_ context.Context, _ uuid.UUID, _, _ *int, _ *time.Time, _, _, _, _ *bool) error {
+		return errors.New("disk full")
+	}
+
+	req := UpdateExitMeterRequest{ElectricityCurrent: intPtr(9999)}
+	_, err := h.svc.UpdateExitMeter(context.Background(), uuid.New(), req)
+	if err == nil {
+		t.Fatal("expected error from meter failure, got nil")
+	}
+
+	// Meter port was attempted
+	if h.meterCmd.updateExitCalls != 1 {
+		t.Errorf("UpdateExitForMoveOut calls: got %d, want 1", h.meterCmd.updateExitCalls)
+	}
+	// No regenerate (meter failed first)
+	if h.billingCmd.regenerateCalls != 0 {
+		t.Errorf("RegenerateSettlement calls: got %d, want 0", h.billingCmd.regenerateCalls)
+	}
+	// No repo.Update (atomicity)
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update calls: got %d, want 0", h.repo.updateCalls)
+	}
+}
+
+func TestUpdateExitMeter_EmptyBody_ReturnsAppError(t *testing.T) {
 	h := newTestHarness(uuid.New(), uuid.New())
 	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
 		return &MoveOutNotice{ID: id, Status: MoveOutStatusPendingSettlement}, nil
 	}
 
-	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// All fields nil → should be rejected
+	_, err := h.svc.UpdateExitMeter(context.Background(), uuid.New(), UpdateExitMeterRequest{})
+	if err == nil {
+		t.Fatal("expected error for empty body, got nil")
 	}
-
-	// No void (no draft)
-	if h.billingCmd.voidCalls != 0 {
-		t.Errorf("VoidSettlement calls: got %d, want 0", h.billingCmd.voidCalls)
+	if _, ok := respond.Is(err); !ok {
+		t.Errorf("expected AppError, got %T: %v", err, err)
 	}
-	// Status stays PENDING_SETTLEMENT
-	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
-		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
+	if h.meterCmd.updateExitCalls != 0 {
+		t.Errorf("meter port should not be called, got %d calls", h.meterCmd.updateExitCalls)
 	}
 }
 
-func TestUpdateExitMeter_PendingSettlement_WithDraft_VoidsAndClears(t *testing.T) {
-	noticeID := uuid.New()
-	billID := uuid.New()
-	netAmount := int64(100000)
-
+func TestUpdateExitMeter_InvalidStatus_ReturnsAppError(t *testing.T) {
 	h := newTestHarness(uuid.New(), uuid.New())
 	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
-		return &MoveOutNotice{
-			ID:               id,
-			Status:           MoveOutStatusPendingSettlement,
-			SettlementBillID: &billID,
-			NetAmount:        &netAmount,
-		}, nil
+		return &MoveOutNotice{ID: id, Status: MoveOutStatusCompleted}, nil
 	}
 
-	_, err := h.svc.UpdateExitMeter(context.Background(), noticeID)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := h.svc.UpdateExitMeter(context.Background(), uuid.New(), UpdateExitMeterRequest{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-
-	// Must void the draft
-	if h.billingCmd.voidCalls != 1 {
-		t.Errorf("VoidSettlement calls: got %d, want 1", h.billingCmd.voidCalls)
+	if _, ok := respond.Is(err); !ok {
+		t.Errorf("expected AppError, got %T: %v", err, err)
 	}
-	if h.billingCmd.voidBillID != billID {
-		t.Errorf("VoidSettlement billID: got %v, want %v", h.billingCmd.voidBillID, billID)
-	}
-	// Status stays PENDING_SETTLEMENT
-	if h.repo.updatedStatus != MoveOutStatusPendingSettlement {
-		t.Errorf("status: got %q, want PENDING_SETTLEMENT", h.repo.updatedStatus)
-	}
-	// Fields cleared
-	if h.repo.updatedNotice.SettlementBillID != nil {
-		t.Error("settlement_bill_id must be nil after void")
-	}
-	if h.repo.updatedNotice.NetAmount != nil {
-		t.Error("net_amount must be nil after void")
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update calls: got %d, want 0", h.repo.updateCalls)
 	}
 }
 

@@ -40,6 +40,20 @@ type RecordExitMeterRequest struct {
 	WaterCurrent       int    `json:"water_current" validate:"min=0"`
 }
 
+// UpdateExitMeterRequest holds the body for POST /:id/update-exit-meter.
+// All fields optional — partial update. Flags use *bool: nil = keep existing.
+// ReadingDateActual uses *string (not *time.Time) because frontend sends "YYYY-MM-DD"
+// which Go's time.Time.UnmarshalJSON rejects (expects RFC3339).
+type UpdateExitMeterRequest struct {
+	ReadingDateActual     *string `json:"reading_date_actual"`
+	ElectricityCurrent    *int    `json:"electricity_current" validate:"omitempty,min=0"`
+	WaterCurrent          *int    `json:"water_current" validate:"omitempty,min=0"`
+	IsElectricityReplaced *bool   `json:"is_electricity_meter_replaced"`
+	IsWaterReplaced       *bool   `json:"is_water_meter_replaced"`
+	IsElectricityRollover *bool   `json:"is_electricity_meter_rollover"`
+	IsWaterRollover       *bool   `json:"is_water_meter_rollover"`
+}
+
 // RecordPaymentOutcomeRequest holds the body for POST /:id/record-payment.
 type RecordPaymentOutcomeRequest struct {
 	PaymentOutcome string `json:"payment_outcome" validate:"required,oneof=PAID_EXTRA REFUNDED ZERO_BALANCE"`
