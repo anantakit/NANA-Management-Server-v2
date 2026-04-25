@@ -511,12 +511,23 @@ func (s *moveOutService) UpdateExitMeter(ctx context.Context, id uuid.UUID, req 
 			return fmt.Errorf("find contract: %w", err)
 		}
 
-		// 3. Parse optional reading date
+		// 3. Parse optional reading date.
+		// When the date changes, sync notice.ActualMoveOutDate too — settlement
+		// preview + regenerate read prorate from the notice (RequireActualDate),
+		// not from the meter row, so updating only the meter would leave the
+		// settlement using the OLD date. Validates against contract start for
+		// parity with RecordExitMeter.
 		var readingDate *time.Time
 		if req.ReadingDateActual != nil {
 			d, err := time.Parse("2006-01-02", *req.ReadingDateActual)
 			if err != nil {
 				return respond.ErrBadRequest.WithMessage("รูปแบบวันที่บันทึกมิเตอร์ไม่ถูกต้อง")
+			}
+			if d.Before(c.StartDate) {
+				return respond.ErrBadRequest.WithMessage(ErrActualDateBeforeContractStart.Error())
+			}
+			if err := notice.SetActualDate(d); err != nil {
+				return respond.ErrBadRequest.WithMessage(err.Error())
 			}
 			readingDate = &d
 		}

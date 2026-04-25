@@ -627,6 +627,54 @@ func TestUpdateExitMeter_WithBody_PendingPayment_RevertsAndRegenerates(t *testin
 	}
 }
 
+// Regression: editing the meter date must sync notice.ActualMoveOutDate so
+// the regenerated draft (and any future settlement preview) prorates against
+// the new date — not the original one.
+func TestUpdateExitMeter_DateChange_SyncsNoticeAndRegeneratesWithNewDate(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	roomID := uuid.New()
+	oldBillID := uuid.New()
+	netAmount := int64(100000)
+	contractStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	originalDate := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+	editedDate := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.contracts.findFn = func(_ context.Context, id uuid.UUID) (*contract.Contract, error) {
+		return &contract.Contract{ID: id, RoomID: roomID, StartDate: contractStart}, nil
+	}
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ActualMoveOutDate:    &originalDate,
+			ScheduledMoveOutDate: originalDate,
+			Status:               MoveOutStatusPendingSettlement,
+			SettlementBillID:     &oldBillID,
+			NetAmount:            &netAmount,
+		}, nil
+	}
+	var capturedRegenDate time.Time
+	h.billingCmd.regenerateFn = func(_ context.Context, _ uuid.UUID, _ uuid.UUID, moveOutDate time.Time, _ RentMode) (*SettlementBillResult, error) {
+		capturedRegenDate = moveOutDate
+		return &SettlementBillResult{BillID: uuid.New(), NetAmount: 200000, DepositUsed: 500000}, nil
+	}
+
+	editedDateStr := editedDate.Format("2006-01-02")
+	req := UpdateExitMeterRequest{ReadingDateActual: &editedDateStr}
+	if _, err := h.svc.UpdateExitMeter(context.Background(), noticeID, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if h.repo.updatedNotice.ActualMoveOutDate == nil || !h.repo.updatedNotice.ActualMoveOutDate.Equal(editedDate) {
+		t.Errorf("notice.ActualMoveOutDate: got %v, want %v", h.repo.updatedNotice.ActualMoveOutDate, editedDate)
+	}
+	if !capturedRegenDate.Equal(editedDate) {
+		t.Errorf("RegenerateSettlement moveOutDate: got %v, want %v (must use NEW date for prorate)", capturedRegenDate, editedDate)
+	}
+}
+
 func TestUpdateExitMeter_MeterFailure_NoStateChange(t *testing.T) {
 	contractID := uuid.New()
 	roomID := uuid.New()
