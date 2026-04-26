@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nana/internal/contract"
+	"nana/internal/domain"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -351,6 +352,7 @@ func TestRecordPaymentOutcome_HappyPath(t *testing.T) {
 
 	req := RecordPaymentOutcomeRequest{
 		PaymentOutcome: "PAID_EXTRA",
+		PaymentMethod:  "CASH",
 		PaymentNote:    "ชำระเพิ่ม 1500",
 	}
 	_, err := h.svc.RecordPaymentOutcome(context.Background(), noticeID, req)
@@ -363,6 +365,147 @@ func TestRecordPaymentOutcome_HappyPath(t *testing.T) {
 	}
 	if h.repo.updatedNotice.PaymentOutcome == nil || *h.repo.updatedNotice.PaymentOutcome != PaymentOutcomePaidExtra {
 		t.Error("payment_outcome must be PAID_EXTRA")
+	}
+	// Silent-failure case: forgetting to wire req.PaymentMethod through to
+	// the domain method wouldn't be caught by status/outcome assertions alone.
+	if h.repo.updatedNotice.PaymentMethod == nil || *h.repo.updatedNotice.PaymentMethod != domain.PaymentMethodCash {
+		t.Errorf("payment_method: got %v, want CASH", h.repo.updatedNotice.PaymentMethod)
+	}
+}
+
+func TestRecordPaymentOutcome_RequiresMethodWhenNotZero(t *testing.T) {
+	billID := uuid.New()
+	netAmount := int64(150000)
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusPendingPayment,
+			SettlementBillID: &billID,
+			NetAmount:        &netAmount,
+		}, nil
+	}
+
+	req := RecordPaymentOutcomeRequest{
+		PaymentOutcome: "PAID_EXTRA",
+		PaymentMethod:  "", // missing — must reject
+	}
+	_, err := h.svc.RecordPaymentOutcome(context.Background(), uuid.New(), req)
+	if err == nil {
+		t.Fatal("expected error when PAID_EXTRA submitted without method")
+	}
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update should not be called on validation failure, got %d calls", h.repo.updateCalls)
+	}
+}
+
+// ZERO_BALANCE normalization: even if FE sends a stale method (race after
+// outcome flips), service forces method to nil so we never persist a
+// nonsensical "ZERO + CASH" record.
+func TestRecordPaymentOutcome_NormalizesZeroBalance(t *testing.T) {
+	billID := uuid.New()
+	zero := int64(0)
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusPendingPayment,
+			SettlementBillID: &billID,
+			NetAmount:        &zero,
+		}, nil
+	}
+
+	req := RecordPaymentOutcomeRequest{
+		PaymentOutcome: "ZERO_BALANCE",
+		PaymentMethod:  "CASH", // stale — should be normalized away
+	}
+	_, err := h.svc.RecordPaymentOutcome(context.Background(), uuid.New(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.repo.updatedNotice.PaymentMethod != nil {
+		t.Errorf("payment_method should be nil for ZERO_BALANCE; got %v", *h.repo.updatedNotice.PaymentMethod)
+	}
+}
+
+func TestSkipPayment_HappyPath(t *testing.T) {
+	billID := uuid.New()
+	netAmount := int64(150000)
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusPendingPayment,
+			SettlementBillID: &billID,
+			NetAmount:        &netAmount,
+		}, nil
+	}
+
+	_, err := h.svc.SkipPayment(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.repo.updatedStatus != MoveOutStatusReadyToClose {
+		t.Errorf("status: got %q, want READY_TO_CLOSE", h.repo.updatedStatus)
+	}
+	if h.repo.updatedNotice.PaymentOutcome != nil {
+		t.Errorf("PaymentOutcome must stay nil for skip; got %v", *h.repo.updatedNotice.PaymentOutcome)
+	}
+}
+
+// Idempotency: a second call against an already-READY_TO_CLOSE notice must
+// be a no-op — neither overwrite a recorded outcome nor flip status.
+func TestSkipPayment_Idempotent(t *testing.T) {
+	billID := uuid.New()
+	outcome := PaymentOutcomePaidExtra
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusReadyToClose,
+			SettlementBillID: &billID,
+			PaymentOutcome:   &outcome,
+		}, nil
+	}
+
+	_, err := h.svc.SkipPayment(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update should not be called for already-past notice; got %d", h.repo.updateCalls)
+	}
+}
+
+// Idempotency is narrow: only READY_TO_CLOSE is "already skipped, double-
+// click safe". COMPLETED / CANCELLED notices represent a stale-tab situation
+// (another tab finished closing the move-out, or it was cancelled) — silent
+// no-op would mask the inconsistency. Domain SkipPayment rejects, service
+// surfaces it as 400.
+func TestSkipPayment_RejectsCompleted(t *testing.T) {
+	billID := uuid.New()
+	outcome := PaymentOutcomePaidExtra
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusCompleted,
+			SettlementBillID: &billID,
+			PaymentOutcome:   &outcome,
+		}, nil
+	}
+
+	_, err := h.svc.SkipPayment(context.Background(), uuid.New())
+	if err == nil {
+		t.Fatal("expected error for SkipPayment on COMPLETED notice, got nil")
+	}
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update should not be called when domain rejects; got %d", h.repo.updateCalls)
 	}
 }
 

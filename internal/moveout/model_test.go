@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"nana/internal/domain"
 )
 
 func TestMoveOutNotice_ValidateDates(t *testing.T) {
@@ -164,12 +166,30 @@ func TestMoveOutNotice_CanRecordPayment(t *testing.T) {
 		t.Run(string(s), func(t *testing.T) {
 			m := &MoveOutNotice{Status: s}
 			err := m.CanRecordPayment()
-			wantOK := s == MoveOutStatusPendingPayment
+			// Phase-1 broadens this: PENDING_PAYMENT (initial record) AND
+			// READY_TO_CLOSE (back-fill skipped / correct prior record) both pass.
+			wantOK := s == MoveOutStatusPendingPayment || s == MoveOutStatusReadyToClose
 			if wantOK && err != nil {
 				t.Errorf("CanRecordPayment(%s) unexpected error: %v", s, err)
 			}
 			if !wantOK && err == nil {
 				t.Errorf("CanRecordPayment(%s) expected error, got nil", s)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CanSkipPayment(t *testing.T) {
+	for _, s := range allStatuses() {
+		t.Run(string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			err := m.CanSkipPayment()
+			wantOK := s == MoveOutStatusPendingPayment
+			if wantOK && err != nil {
+				t.Errorf("CanSkipPayment(%s) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanSkipPayment(%s) expected error, got nil", s)
 			}
 		})
 	}
@@ -318,9 +338,12 @@ func TestMoveOutNotice_AdvanceToPayment(t *testing.T) {
 }
 
 func TestMoveOutNotice_RecordPayment(t *testing.T) {
-	t.Run("PENDING_PAYMENT → READY_TO_CLOSE", func(t *testing.T) {
+	cash := domain.PaymentMethodCash
+	transfer := domain.PaymentMethodTransfer
+
+	t.Run("PENDING_PAYMENT → READY_TO_CLOSE with method", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
-		if err := m.RecordPayment(PaymentOutcomeRefunded, "คืนเงิน 500 บาท"); err != nil {
+		if err := m.RecordPayment(PaymentOutcomeRefunded, &transfer, "คืนเงิน 500 บาท"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if m.Status != MoveOutStatusReadyToClose {
@@ -329,17 +352,156 @@ func TestMoveOutNotice_RecordPayment(t *testing.T) {
 		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
 			t.Fatal("payment_outcome not set")
 		}
+		if m.PaymentMethod == nil || *m.PaymentMethod != domain.PaymentMethodTransfer {
+			t.Fatalf("payment_method = %v, want TRANSFER", m.PaymentMethod)
+		}
 		if m.PaymentNote != "คืนเงิน 500 บาท" {
 			t.Fatalf("payment_note = %q, want 'คืนเงิน 500 บาท'", m.PaymentNote)
 		}
 	})
 
-	t.Run("wrong status rejects", func(t *testing.T) {
+	t.Run("ZERO_BALANCE accepts nil method", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
+		if err := m.RecordPayment(PaymentOutcomeZeroBalance, nil, ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.PaymentMethod != nil {
+			t.Fatalf("expected nil method for ZERO, got %v", *m.PaymentMethod)
+		}
+	})
+
+	// Correction path: a previously-recorded notice (READY_TO_CLOSE + outcome
+	// set) accepts a re-record. Outcome/method/note are REPLACED — no merge.
+	t.Run("correction from READY_TO_CLOSE replaces outcome and stays at READY_TO_CLOSE", func(t *testing.T) {
+		old := PaymentOutcomePaidExtra
+		m := &MoveOutNotice{
+			Status:         MoveOutStatusReadyToClose,
+			PaymentOutcome: &old,
+			PaymentMethod:  &cash,
+			PaymentNote:    "ของเดิม",
+		}
+		if err := m.RecordPayment(PaymentOutcomeRefunded, &transfer, "ของใหม่"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusReadyToClose {
+			t.Fatalf("status changed unexpectedly: got %s, want READY_TO_CLOSE", m.Status)
+		}
+		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
+			t.Fatalf("outcome not replaced: got %v, want REFUNDED", m.PaymentOutcome)
+		}
+		if m.PaymentMethod == nil || *m.PaymentMethod != domain.PaymentMethodTransfer {
+			t.Fatalf("method not replaced: got %v, want TRANSFER", m.PaymentMethod)
+		}
+		if m.PaymentNote != "ของใหม่" {
+			t.Fatalf("note not replaced: got %q, want 'ของใหม่'", m.PaymentNote)
+		}
+	})
+
+	// Back-fill path: a skipped notice (READY_TO_CLOSE + nil outcome) accepts
+	// a first record without flipping status backwards.
+	t.Run("backfill from skipped READY_TO_CLOSE sets fields, status stays", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusReadyToClose}
-		if err := m.RecordPayment(PaymentOutcomePaidExtra, ""); err != ErrCannotRecordPayment {
+		if err := m.RecordPayment(PaymentOutcomePaidExtra, &cash, ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusReadyToClose {
+			t.Fatalf("status changed unexpectedly: got %s, want READY_TO_CLOSE", m.Status)
+		}
+		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomePaidExtra {
+			t.Fatal("outcome not set")
+		}
+	})
+
+	// Pin the invariant: removing the `if m.IsPendingPayment() { ... }` guard
+	// in RecordPayment would silently demote READY_TO_CLOSE back to itself
+	// (no symptom) but break correction semantics if a later refactor flipped
+	// the conditional. This test exists to anchor the rule for future readers.
+	t.Run("does not change status when called on READY_TO_CLOSE", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusReadyToClose}
+		_ = m.RecordPayment(PaymentOutcomeZeroBalance, nil, "")
+		if m.Status != MoveOutStatusReadyToClose {
+			t.Fatalf("status changed: got %s, want READY_TO_CLOSE", m.Status)
+		}
+	})
+
+	t.Run("wrong status rejects", func(t *testing.T) {
+		// PENDING_METER stands in for any non-(PENDING_PAYMENT|READY_TO_CLOSE)
+		// status; the parameterized CanRecordPayment loop covers the rest.
+		m := &MoveOutNotice{Status: MoveOutStatusPendingMeter}
+		if err := m.RecordPayment(PaymentOutcomePaidExtra, &cash, ""); err != ErrCannotRecordPayment {
 			t.Fatalf("expected ErrCannotRecordPayment, got %v", err)
 		}
 	})
+}
+
+func TestMoveOutNotice_SkipPayment(t *testing.T) {
+	t.Run("PENDING_PAYMENT → READY_TO_CLOSE, outcome stays nil", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
+		if err := m.SkipPayment(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusReadyToClose {
+			t.Fatalf("expected READY_TO_CLOSE, got %s", m.Status)
+		}
+		if m.PaymentOutcome != nil {
+			t.Fatalf("expected nil PaymentOutcome, got %v", *m.PaymentOutcome)
+		}
+	})
+
+	// Domain layer is strict — service layer adds the idempotency short-circuit.
+	wrongStatuses := []MoveOutStatus{
+		MoveOutStatusPendingMeter,
+		MoveOutStatusPendingSettlement,
+		MoveOutStatusReadyToClose,
+		MoveOutStatusCompleted,
+		MoveOutStatusCancelled,
+	}
+	for _, s := range wrongStatuses {
+		t.Run("rejects from "+string(s), func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			if err := m.SkipPayment(); err != ErrCannotSkipPayment {
+				t.Fatalf("expected ErrCannotSkipPayment, got %v", err)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_IsUnsettled(t *testing.T) {
+	outcome := PaymentOutcomePaidExtra
+	for _, s := range allStatuses() {
+		t.Run(string(s)+"_with_nil_outcome", func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			want := s == MoveOutStatusReadyToClose
+			if got := m.IsUnsettled(); got != want {
+				t.Errorf("IsUnsettled(%s, nil) = %v, want %v", s, got, want)
+			}
+		})
+		t.Run(string(s)+"_with_set_outcome", func(t *testing.T) {
+			m := &MoveOutNotice{Status: s, PaymentOutcome: &outcome}
+			if m.IsUnsettled() {
+				t.Errorf("IsUnsettled(%s, set) = true, want false (set outcome → not unsettled)", s)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_IsSettled(t *testing.T) {
+	outcome := PaymentOutcomePaidExtra
+	for _, s := range allStatuses() {
+		t.Run(string(s)+"_with_nil_outcome", func(t *testing.T) {
+			m := &MoveOutNotice{Status: s}
+			if m.IsSettled() {
+				t.Errorf("IsSettled(%s, nil) = true, want false (nil outcome → not settled)", s)
+			}
+		})
+		t.Run(string(s)+"_with_set_outcome", func(t *testing.T) {
+			m := &MoveOutNotice{Status: s, PaymentOutcome: &outcome}
+			want := s == MoveOutStatusReadyToClose
+			if got := m.IsSettled(); got != want {
+				t.Errorf("IsSettled(%s, set) = %v, want %v", s, got, want)
+			}
+		})
+	}
 }
 
 func TestMoveOutNotice_Close(t *testing.T) {

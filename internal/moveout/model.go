@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	"nana/internal/domain"
 )
 
 // --- Types ---
@@ -44,13 +46,14 @@ type MoveOutNotice struct {
 	Note                 string         `gorm:"type:text;not null;default:''" json:"note"`
 
 	// V2 workflow columns
-	SettlementBillID *uuid.UUID      `gorm:"type:uuid" json:"settlement_bill_id,omitempty"`
-	NetAmount        *int64          `gorm:"type:bigint" json:"net_amount,omitempty"`
-	PaymentOutcome   *PaymentOutcome `gorm:"type:varchar(20)" json:"payment_outcome,omitempty"`
-	PaymentNote      string          `gorm:"type:text;not null;default:''" json:"payment_note"`
-	ClosedAt         *time.Time      `gorm:"type:timestamptz" json:"closed_at,omitempty"`
-	LastActionBy     *uuid.UUID      `gorm:"type:uuid" json:"last_action_by,omitempty"`
-	LastActionAt     *time.Time      `gorm:"type:timestamptz" json:"last_action_at,omitempty"`
+	SettlementBillID *uuid.UUID             `gorm:"type:uuid" json:"settlement_bill_id,omitempty"`
+	NetAmount        *int64                 `gorm:"type:bigint" json:"net_amount,omitempty"`
+	PaymentOutcome   *PaymentOutcome        `gorm:"type:varchar(20)" json:"payment_outcome,omitempty"`
+	PaymentMethod    *domain.PaymentMethod  `gorm:"column:payment_method;type:varchar(20)" json:"payment_method,omitempty"`
+	PaymentNote      string                 `gorm:"type:text;not null;default:''" json:"payment_note"`
+	ClosedAt         *time.Time             `gorm:"type:timestamptz" json:"closed_at,omitempty"`
+	LastActionBy     *uuid.UUID             `gorm:"type:uuid" json:"last_action_by,omitempty"`
+	LastActionAt     *time.Time             `gorm:"type:timestamptz" json:"last_action_at,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -74,6 +77,7 @@ var (
 	ErrCannotRecordSettlement  = errors.New("สร้างบิลได้เฉพาะสถานะรอสร้างบิล")
 	ErrCannotAdvanceToPayment  = errors.New("ยืนยันบิลได้เฉพาะสถานะรอสร้างบิลที่มีบิลแนบแล้ว")
 	ErrCannotRecordPayment     = errors.New("บันทึกชำระได้เฉพาะสถานะรอชำระ")
+	ErrCannotSkipPayment       = errors.New("ข้ามชำระได้เฉพาะสถานะรอชำระ")
 	ErrCannotClose             = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
 	ErrMissingSettlementBill   = errors.New("ต้องมีบิลสรุปก่อนปิด")
 	ErrMissingPaymentOutcome   = errors.New("ต้องระบุผลการชำระก่อนปิด")
@@ -188,9 +192,29 @@ func (m *MoveOutNotice) CanRegenerateDraft() error {
 }
 
 // CanRecordPayment returns nil if payment outcome can be recorded.
+//
+// Phase-1 broadens this to also accept READY_TO_CLOSE so a single endpoint
+// can power three flows:
+//   - first record from PENDING_PAYMENT → READY_TO_CLOSE
+//   - back-fill a previously skipped settlement (READY_TO_CLOSE + nil outcome)
+//   - correct a previously recorded outcome (READY_TO_CLOSE + non-nil outcome)
+//
+// ReopenForCorrection still exists for callers that want the "start over /
+// clear fields" semantic; this guard powers the prefilled-edit path instead.
 func (m *MoveOutNotice) CanRecordPayment() error {
-	if !m.IsPendingPayment() {
+	if !m.IsPendingPayment() && !m.IsReadyToClose() {
 		return ErrCannotRecordPayment
+	}
+	return nil
+}
+
+// CanSkipPayment returns nil if the operator may defer the financial record
+// without setting an outcome. Only legal from PENDING_PAYMENT — once we hit
+// READY_TO_CLOSE we treat skip as a no-op at the service layer to keep the
+// endpoint idempotent without overwriting an existing outcome.
+func (m *MoveOutNotice) CanSkipPayment() error {
+	if !m.IsPendingPayment() {
+		return ErrCannotSkipPayment
 	}
 	return nil
 }
@@ -239,16 +263,52 @@ func (m *MoveOutNotice) AdvanceToPayment() error {
 	return nil
 }
 
-// RecordPayment records payment outcome and moves → READY_TO_CLOSE.
-func (m *MoveOutNotice) RecordPayment(outcome PaymentOutcome, note string) error {
+// RecordPayment records payment outcome and moves PENDING_PAYMENT →
+// READY_TO_CLOSE. When called against an already-READY_TO_CLOSE notice
+// (skipped or previously recorded), it back-fills/corrects the fields and
+// keeps the status — see CanRecordPayment for the broadened guard.
+//
+// Phase-1 overwrite policy (LOCKED): unrestricted. Submit replaces all three
+// payment fields (outcome/method/note); no merge. Direction-flips
+// (PAY_MORE ↔ REFUND) are intentionally permitted — admin correction is the
+// priority. Phase-2 audit log will retroactively trace overwrites.
+func (m *MoveOutNotice) RecordPayment(outcome PaymentOutcome, method *domain.PaymentMethod, note string) error {
 	if err := m.CanRecordPayment(); err != nil {
 		return err
 	}
 	m.PaymentOutcome = &outcome
+	m.PaymentMethod = method
 	m.PaymentNote = note
+	if m.IsPendingPayment() {
+		m.Status = MoveOutStatusReadyToClose
+	}
+	// Already READY_TO_CLOSE → status stays; this is the edit/back-fill path.
+	return nil
+}
+
+// SkipPayment defers the financial record and moves PENDING_PAYMENT →
+// READY_TO_CLOSE without setting an outcome. PaymentOutcome stays nil — this
+// is how we mark the "deferred / UNSETTLED" state.
+//
+// At the domain layer this is strict (PENDING_PAYMENT only). The service
+// layer adds idempotency by short-circuiting on already-READY_TO_CLOSE.
+func (m *MoveOutNotice) SkipPayment() error {
+	if err := m.CanSkipPayment(); err != nil {
+		return err
+	}
 	m.Status = MoveOutStatusReadyToClose
 	return nil
 }
+
+// IsUnsettled / IsSettled — single source of truth for the implicit
+// "skipped" / "settled" derivation. Every caller in BE (and FE-mirrored)
+// MUST go through these — never open-code `PaymentOutcome == nil`.
+//
+// Phase-2 will extend IsUnsettled to also cover COMPLETED + nil outcome
+// (post-close re-entry); every caller gets that for free, but only if they
+// delegate.
+func (m *MoveOutNotice) IsUnsettled() bool { return m.IsReadyToClose() && m.PaymentOutcome == nil }
+func (m *MoveOutNotice) IsSettled() bool   { return m.IsReadyToClose() && m.PaymentOutcome != nil }
 
 // Close transitions READY_TO_CLOSE → COMPLETED.
 func (m *MoveOutNotice) Close(now time.Time) error {

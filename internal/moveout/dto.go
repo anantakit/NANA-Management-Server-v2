@@ -55,8 +55,14 @@ type UpdateExitMeterRequest struct {
 }
 
 // RecordPaymentOutcomeRequest holds the body for POST /:id/record-payment.
+//
+// PaymentMethod is conditionally required: mandatory when outcome is PAID_EXTRA
+// or REFUNDED (real money moves), forbidden/normalized-to-nil for ZERO_BALANCE.
+// The cross-field rule lives in service.RecordPaymentOutcome — DTO validator
+// only enforces the per-field oneof so ZERO_BALANCE without method still parses.
 type RecordPaymentOutcomeRequest struct {
 	PaymentOutcome string `json:"payment_outcome" validate:"required,oneof=PAID_EXTRA REFUNDED ZERO_BALANCE"`
+	PaymentMethod  string `json:"payment_method" validate:"omitempty,oneof=CASH TRANSFER"`
 	PaymentNote    string `json:"payment_note"`
 }
 
@@ -82,6 +88,7 @@ type MoveOutResponse struct {
 	ManualItemCount      *int     `json:"manual_item_count,omitempty"`
 	NetAmount            *float64 `json:"net_amount,omitempty"`
 	PaymentOutcome       string   `json:"payment_outcome,omitempty"`
+	PaymentMethod        string   `json:"payment_method,omitempty"`
 	PaymentNote          string   `json:"payment_note,omitempty"`
 	ClosedAt             string   `json:"closed_at,omitempty"`
 	CreatedAt            string   `json:"created_at"`
@@ -170,6 +177,9 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 	}
 	if m.PaymentOutcome != nil {
 		resp.PaymentOutcome = string(*m.PaymentOutcome)
+	}
+	if m.PaymentMethod != nil {
+		resp.PaymentMethod = string(*m.PaymentMethod)
 	}
 	if m.PaymentNote != "" {
 		resp.PaymentNote = m.PaymentNote

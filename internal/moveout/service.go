@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"nana/internal/domain"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
@@ -29,6 +30,7 @@ type MoveOutService interface {
 	GenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error)
 	FinalizeSettlement(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error)
+	SkipPayment(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 
@@ -372,16 +374,31 @@ func (s *moveOutService) FinalizeSettlement(ctx context.Context, id uuid.UUID) (
 }
 
 // RecordPaymentOutcome records how the settlement was resolved and advances
-// PENDING_PAYMENT → READY_TO_CLOSE.
+// PENDING_PAYMENT → READY_TO_CLOSE. The broadened domain guard also accepts
+// READY_TO_CLOSE so the same call can back-fill a skipped settlement or
+// correct a previously recorded one (Phase-1 overwrite policy: unrestricted).
 func (s *moveOutService) RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error) {
+	outcome := PaymentOutcome(req.PaymentOutcome)
+
+	// ZERO_BALANCE normalization (defensive): force method to nil regardless
+	// of what FE sent. Protects against stale FE state that retains a
+	// previously-picked method when outcome flips to ZERO.
+	var method *domain.PaymentMethod
+	if outcome != PaymentOutcomeZeroBalance {
+		if req.PaymentMethod == "" {
+			return nil, respond.ErrBadRequest.WithMessage("ต้องเลือกวิธีชำระสำหรับผลการชำระแบบนี้")
+		}
+		m := domain.PaymentMethod(req.PaymentMethod)
+		method = &m
+	}
+
 	var noticeID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
 		if err != nil {
 			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
 		}
-		outcome := PaymentOutcome(req.PaymentOutcome)
-		if err := notice.RecordPayment(outcome, req.PaymentNote); err != nil {
+		if err := notice.RecordPayment(outcome, method, req.PaymentNote); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		if err := s.repo.Update(txCtx, notice); err != nil {
@@ -394,6 +411,45 @@ func (s *moveOutService) RecordPaymentOutcome(ctx context.Context, id uuid.UUID,
 			return nil, err
 		}
 		return nil, fmt.Errorf("record payment outcome: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// SkipPayment defers the financial record and moves PENDING_PAYMENT →
+// READY_TO_CLOSE without setting an outcome. Idempotent: if the notice is
+// already past PENDING_PAYMENT (READY_TO_CLOSE / COMPLETED / CANCELLED) the
+// call is a no-op that returns the current state — preventing double-clicks
+// from overwriting a previously-recorded outcome via the domain reject path.
+func (s *moveOutService) SkipPayment(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		// Idempotent short-circuit, narrow scope: ONLY READY_TO_CLOSE is a
+		// legitimate "already-skipped, double-click" case. COMPLETED and
+		// CANCELLED fall through to the domain method which rejects with
+		// ErrCannotSkipPayment — surfacing the error so an admin acting on a
+		// stale notice (e.g. another tab finished closing it) gets a 400 they
+		// can recover from instead of a misleading success toast.
+		if notice.IsReadyToClose() {
+			noticeID = notice.ID
+			return nil
+		}
+		if err := notice.SkipPayment(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("skip payment: %w", err)
 	}
 	return s.repo.FindByID(ctx, noticeID)
 }
