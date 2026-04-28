@@ -883,16 +883,24 @@ func ensureSmokeTenant(db *gorm.DB, t smokeTenant) (*tenant.Tenant, error) {
 
 // createBillWithLines creates a Bill and its line items in two steps to work
 // around GORM cascade behavior that drops nested creates in some cases.
+// createBillWithLines inserts a bill plus its line items atomically.
+// Wrapping in db.Transaction prevents an orphan bill row when line item
+// insert fails midway (worst-case scenario: re-seed cycles leak rows
+// into bills that later cause duplicate-bill conflicts on retry).
 func createBillWithLines(db *gorm.DB, bill *billing.Bill, items []billing.BillLineItem) error {
-	items2 := items
 	bill.LineItems = nil // prevent cascade attempt
-	if err := db.Create(bill).Error; err != nil {
-		return err
-	}
-	for i := range items2 {
-		items2[i].BillID = bill.ID
-	}
-	return db.Create(&items2).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(bill).Error; err != nil {
+			return err
+		}
+		for i := range items {
+			items[i].BillID = bill.ID
+		}
+		if len(items) == 0 {
+			return nil
+		}
+		return tx.Create(&items).Error
+	})
 }
 
 // attachDraftSettlementBill creates a DRAFT settlement bill and links it to the notice.

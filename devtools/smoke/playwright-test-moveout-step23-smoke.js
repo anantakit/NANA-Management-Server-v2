@@ -1,4 +1,4 @@
-// Move-out RoomWorkflowDrawer Step 2/3 — Smoke Test (Scenarios A–C)
+// Move-out RoomWorkflowDrawer Step 2/3 — Smoke Test (Scenarios A–D)
 // ----------------------------------------------------------------------
 // Validates the Step 2 commit boundary fix + Step 3 edit-back affordances
 // on the move-out queue's drawer.
@@ -13,10 +13,17 @@
 //   C  Step 3 "แก้มิเตอร์" → meter edit triggers backend void+regenerate,
 //      reverts notice.status to PENDING_SETTLEMENT, drawer auto-advances
 //      to Step 2 with the recomputed banner; re-confirm finalizes again.
+//   D  Draft rent-mode continuity (ported from the deleted queue smoke):
+//      opening TC23 (PENDING_SETTLEMENT + FULL_MONTH draft) preserves the
+//      rent mode in SettlementMeta. Toggling via "เปลี่ยน" surfaces the
+//      "มีการเปลี่ยนวิธีคำนวณจากแบบร่างเดิม" warning in Step 2.
 //
-// Fixtures: TC3 (PENDING_SETTLEMENT, no draft, room B201) — chosen so we
-// exercise the NO_DRAFT generate+finalize path on Scenario A and the
-// HAS_DRAFT finalize-only path on Scenario C.
+// Fixtures:
+//   - TC3  (PENDING_SETTLEMENT, no draft, B201) — Scenarios A→B→C chained,
+//          exercises NO_DRAFT generate+finalize path then HAS_DRAFT
+//          finalize-only path after meter edit.
+//   - TC23 (PENDING_SETTLEMENT + FULL_MONTH draft, D202) — Scenario D
+//          rent-mode continuity entry point.
 //
 // Safe to run independently: cleanup+seed cycle at the top resets state.
 // Run:  npm run smoke:moveout-step23   (from backend/devtools/smoke/)
@@ -302,6 +309,69 @@ async function main() {
 
     const noticeC = await getNotice(token, tc3.notice_id)
     check('Backend status = PENDING_PAYMENT after re-finalize', noticeC.status === 'PENDING_PAYMENT')
+
+    await closeDrawer(page)
+
+    // ─── Scenario D: rent-mode continuity from existing draft ─────────
+    // Ported from the now-deleted queue smoke. Different fixture (TC23
+    // = FULL_MONTH draft, room D202) so this scenario stands on its own
+    // and doesn't rely on TC3's chained state above.
+    console.log('\n[D] Step 2 rent-mode continuity: open TC23 (FULL_MONTH draft) → toggle → warning')
+
+    const tc23 = fixtures.TC23
+    if (!tc23) throw new Error('TC23 fixture missing')
+
+    await gotoQueue(page, 'settlement')
+    check(
+      'TC23 card visible on "สรุปยอด" tab (PENDING_SETTLEMENT + draft)',
+      await page.locator(`button:has-text("${tc23.room_number}")`).first().isVisible().catch(() => false),
+    )
+
+    await clickQueueCard(page, tc23.room_number)
+    check('Drawer opens at Step 2 for TC23 (PENDING_SETTLEMENT)', (await getSelectedStepIdx(page)) === 1)
+
+    // SettlementMeta should default to the draft's rent mode (FULL_MONTH).
+    // Without this continuity, hitting confirm would silently regenerate
+    // the bill in the wrong mode. The "คิดค่าเช่า:" line is the canonical
+    // surface for rent mode in Step 2.
+    const metaInitial = await page
+      .locator(`${DRAWER} >> text=คิดค่าเช่า:`)
+      .first()
+      .textContent()
+      .catch(() => '')
+    check(
+      'Default rent mode = FULL_MONTH from existing draft',
+      (metaInitial || '').includes('คิดเต็มเดือน'),
+      (metaInitial || '').trim(),
+    )
+
+    const warningSelector = `${DRAWER} >> text=มีการเปลี่ยนวิธีคำนวณจากแบบร่างเดิม`
+    const warningBefore = await page.locator(warningSelector).isVisible().catch(() => false)
+    check('No mode-change warning initially (mode matches draft)', !warningBefore)
+
+    // Toggle FULL_MONTH → PRORATED via SettlementMeta's rent-mode toggle.
+    // Selector pinned via aria-label rather than visible "เปลี่ยน" text so
+    // a future PR adding another "เปลี่ยน" button inside the drawer
+    // (apartment switcher, settlement-detail link, etc.) won't silently
+    // hijack this assertion.
+    const toggleBtn = page.locator(`${DRAWER} button[aria-label="เปลี่ยนวิธีคิดค่าเช่า"]`).first()
+    await toggleBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await toggleBtn.click()
+    await page.waitForTimeout(500) // preview refetch debounce
+
+    const metaAfter = await page
+      .locator(`${DRAWER} >> text=คิดค่าเช่า:`)
+      .first()
+      .textContent()
+      .catch(() => '')
+    check(
+      'Rent mode switched to PRORATED after "เปลี่ยน"',
+      (metaAfter || '').includes('คิดตามวัน'),
+      (metaAfter || '').trim(),
+    )
+
+    const warningAfter = await page.locator(warningSelector).isVisible().catch(() => false)
+    check('"มีการเปลี่ยนวิธีคำนวณจากแบบร่างเดิม" warning shown after toggle', warningAfter)
 
     await closeDrawer(page)
 

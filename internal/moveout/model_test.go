@@ -162,21 +162,151 @@ func TestMoveOutNotice_CanRecordSettlement(t *testing.T) {
 }
 
 func TestMoveOutNotice_CanRecordPayment(t *testing.T) {
+	// Phase-2 broadens further: COMPLETED + nil outcome accepted (post-close
+	// back-fill). COMPLETED + outcome rejected — settled-and-closed is
+	// terminal for payment edits.
+	outcome := PaymentOutcomePaidExtra
 	for _, s := range allStatuses() {
-		t.Run(string(s), func(t *testing.T) {
+		t.Run(string(s)+"_with_nil_outcome", func(t *testing.T) {
 			m := &MoveOutNotice{Status: s}
 			err := m.CanRecordPayment()
-			// Phase-1 broadens this: PENDING_PAYMENT (initial record) AND
-			// READY_TO_CLOSE (back-fill skipped / correct prior record) both pass.
-			wantOK := s == MoveOutStatusPendingPayment || s == MoveOutStatusReadyToClose
+			wantOK := s == MoveOutStatusPendingPayment ||
+				s == MoveOutStatusReadyToClose ||
+				s == MoveOutStatusCompleted
 			if wantOK && err != nil {
-				t.Errorf("CanRecordPayment(%s) unexpected error: %v", s, err)
+				t.Errorf("CanRecordPayment(%s, nil) unexpected error: %v", s, err)
 			}
 			if !wantOK && err == nil {
-				t.Errorf("CanRecordPayment(%s) expected error, got nil", s)
+				t.Errorf("CanRecordPayment(%s, nil) expected error, got nil", s)
+			}
+		})
+		t.Run(string(s)+"_with_set_outcome", func(t *testing.T) {
+			m := &MoveOutNotice{Status: s, PaymentOutcome: &outcome}
+			err := m.CanRecordPayment()
+			// Set outcome: PENDING_PAYMENT and READY_TO_CLOSE accept (correction);
+			// COMPLETED rejects (terminal once settled).
+			wantOK := s == MoveOutStatusPendingPayment || s == MoveOutStatusReadyToClose
+			if wantOK && err != nil {
+				t.Errorf("CanRecordPayment(%s, set) unexpected error: %v", s, err)
+			}
+			if !wantOK && err == nil {
+				t.Errorf("CanRecordPayment(%s, set) expected error, got nil", s)
 			}
 		})
 	}
+}
+
+func TestMoveOutNotice_CanCloseWithUnsettled(t *testing.T) {
+	billID := uuid.New()
+	outcome := PaymentOutcomePaidExtra
+
+	cases := []struct {
+		name    string
+		status  MoveOutStatus
+		billID  *uuid.UUID
+		outcome *PaymentOutcome
+		wantErr error
+	}{
+		// Happy paths
+		{"pending_payment + nil + bill", MoveOutStatusPendingPayment, &billID, nil, nil},
+		{"ready_to_close + nil + bill", MoveOutStatusReadyToClose, &billID, nil, nil},
+		// Idempotent — already completed; bill may or may not be present (not checked)
+		{"completed + nil + bill", MoveOutStatusCompleted, &billID, nil, nil},
+		{"completed + nil + no bill", MoveOutStatusCompleted, nil, nil, nil},
+		// Missing bill — pre-completion only
+		{"pending_payment + nil + no bill", MoveOutStatusPendingPayment, nil, nil, ErrMissingSettlementBill},
+		{"ready_to_close + nil + no bill", MoveOutStatusReadyToClose, nil, nil, ErrMissingSettlementBill},
+		// Settled — must use regular CloseMoveOut path
+		{"ready_to_close + outcome", MoveOutStatusReadyToClose, &billID, &outcome, ErrCannotCloseWithUnsettled},
+		{"completed + outcome", MoveOutStatusCompleted, &billID, &outcome, ErrCannotCloseWithUnsettled},
+		// Wrong status
+		{"pending_meter rejects", MoveOutStatusPendingMeter, &billID, nil, ErrCannotCloseWithUnsettled},
+		{"pending_settlement rejects", MoveOutStatusPendingSettlement, &billID, nil, ErrCannotCloseWithUnsettled},
+		{"cancelled rejects", MoveOutStatusCancelled, &billID, nil, ErrCannotCloseWithUnsettled},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MoveOutNotice{
+				Status:           tc.status,
+				SettlementBillID: tc.billID,
+				PaymentOutcome:   tc.outcome,
+			}
+			err := m.CanCloseWithUnsettled()
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tc.wantErr != nil && err != tc.wantErr {
+				t.Fatalf("expected %v, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_CloseWithUnsettled(t *testing.T) {
+	now := time.Now()
+	billID := uuid.New()
+
+	t.Run("PENDING_PAYMENT → COMPLETED, outcome stays nil", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusPendingPayment, SettlementBillID: &billID}
+		if err := m.CloseWithUnsettled(now); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusCompleted {
+			t.Fatalf("status: got %s, want COMPLETED", m.Status)
+		}
+		if m.PaymentOutcome != nil {
+			t.Fatalf("payment_outcome must stay nil, got %v", *m.PaymentOutcome)
+		}
+		if m.ClosedAt == nil {
+			t.Fatal("closed_at must be set")
+		}
+	})
+
+	t.Run("READY_TO_CLOSE + nil → COMPLETED, outcome stays nil", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusReadyToClose, SettlementBillID: &billID}
+		if err := m.CloseWithUnsettled(now); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusCompleted {
+			t.Fatalf("status: got %s, want COMPLETED", m.Status)
+		}
+		if m.PaymentOutcome != nil {
+			t.Fatal("payment_outcome must stay nil")
+		}
+	})
+
+	// Idempotency: re-call against COMPLETED + nil must NOT mutate ClosedAt
+	// (the original close timestamp is preserved).
+	t.Run("idempotent on COMPLETED + nil — no mutation", func(t *testing.T) {
+		original := time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)
+		m := &MoveOutNotice{
+			Status:   MoveOutStatusCompleted,
+			ClosedAt: &original,
+		}
+		later := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+		if err := m.CloseWithUnsettled(later); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusCompleted {
+			t.Fatalf("status changed: got %s", m.Status)
+		}
+		if m.ClosedAt == nil || !m.ClosedAt.Equal(original) {
+			t.Fatalf("closed_at must stay at %v on idempotent re-call, got %v", original, m.ClosedAt)
+		}
+	})
+
+	t.Run("settled — rejects", func(t *testing.T) {
+		outcome := PaymentOutcomePaidExtra
+		m := &MoveOutNotice{
+			Status:           MoveOutStatusReadyToClose,
+			SettlementBillID: &billID,
+			PaymentOutcome:   &outcome,
+		}
+		if err := m.CloseWithUnsettled(now); err != ErrCannotCloseWithUnsettled {
+			t.Fatalf("expected ErrCannotCloseWithUnsettled, got %v", err)
+		}
+	})
 }
 
 func TestMoveOutNotice_CanSkipPayment(t *testing.T) {
@@ -412,6 +542,28 @@ func TestMoveOutNotice_RecordPayment(t *testing.T) {
 		}
 	})
 
+	// Phase-2 back-fill: a closed-with-unsettled notice (COMPLETED + nil
+	// outcome) accepts a record without reopening the contract — status
+	// stays COMPLETED.
+	t.Run("backfill from COMPLETED + nil sets fields, status stays COMPLETED", func(t *testing.T) {
+		m := &MoveOutNotice{Status: MoveOutStatusCompleted}
+		if err := m.RecordPayment(PaymentOutcomeRefunded, &cash, "บันทึกหลังปิด"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m.Status != MoveOutStatusCompleted {
+			t.Fatalf("status changed unexpectedly: got %s, want COMPLETED", m.Status)
+		}
+		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
+			t.Fatal("outcome not set on COMPLETED back-fill")
+		}
+		if m.PaymentMethod == nil || *m.PaymentMethod != domain.PaymentMethodCash {
+			t.Fatalf("method not set on COMPLETED back-fill: got %v", m.PaymentMethod)
+		}
+		if m.PaymentNote != "บันทึกหลังปิด" {
+			t.Fatalf("note not set: got %q", m.PaymentNote)
+		}
+	})
+
 	// Pin the invariant: removing the `if m.IsPendingPayment() { ... }` guard
 	// in RecordPayment would silently demote READY_TO_CLOSE back to itself
 	// (no symptom) but break correction semantics if a later refactor flipped
@@ -471,7 +623,9 @@ func TestMoveOutNotice_IsUnsettled(t *testing.T) {
 	for _, s := range allStatuses() {
 		t.Run(string(s)+"_with_nil_outcome", func(t *testing.T) {
 			m := &MoveOutNotice{Status: s}
-			want := s == MoveOutStatusReadyToClose
+			// Phase-2: COMPLETED + nil also counts as unsettled (closed-with-
+			// unsettled re-entry path).
+			want := s == MoveOutStatusReadyToClose || s == MoveOutStatusCompleted
 			if got := m.IsUnsettled(); got != want {
 				t.Errorf("IsUnsettled(%s, nil) = %v, want %v", s, got, want)
 			}
@@ -496,7 +650,8 @@ func TestMoveOutNotice_IsSettled(t *testing.T) {
 		})
 		t.Run(string(s)+"_with_set_outcome", func(t *testing.T) {
 			m := &MoveOutNotice{Status: s, PaymentOutcome: &outcome}
-			want := s == MoveOutStatusReadyToClose
+			// Phase-2: COMPLETED + outcome also counts as settled (history).
+			want := s == MoveOutStatusReadyToClose || s == MoveOutStatusCompleted
 			if got := m.IsSettled(); got != want {
 				t.Errorf("IsSettled(%s, set) = %v, want %v", s, got, want)
 			}

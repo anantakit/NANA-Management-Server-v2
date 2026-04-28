@@ -1123,6 +1123,244 @@ func TestRecordExitMeter_MeterFailure_NoStateChange(t *testing.T) {
 	}
 }
 
+// CloseMoveOutWithUnsettled: PENDING_PAYMENT → COMPLETED with payment_outcome
+// untouched. End-contract + mark-vacant fire because we're transitioning to
+// COMPLETED for the first time (not the idempotent path).
+func TestCloseMoveOutWithUnsettled_FromPendingPayment(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	roomID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(150000)
+	scheduledDate := time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ScheduledMoveOutDate: scheduledDate,
+			ActualMoveOutDate:    &scheduledDate,
+			Status:               MoveOutStatusPendingPayment,
+			SettlementBillID:     &billID,
+			NetAmount:            &netAmount,
+			// PaymentOutcome stays nil — this is the unsettled close path
+		}, nil
+	}
+
+	_, err := h.svc.CloseMoveOutWithUnsettled(context.Background(), noticeID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.repo.updatedStatus != MoveOutStatusCompleted {
+		t.Errorf("status: got %q, want COMPLETED", h.repo.updatedStatus)
+	}
+	// CRITICAL invariant: payment_outcome must NOT be modified by this path.
+	if h.repo.updatedNotice.PaymentOutcome != nil {
+		t.Errorf("payment_outcome must stay nil, got %v", *h.repo.updatedNotice.PaymentOutcome)
+	}
+	if h.repo.updatedNotice.ClosedAt == nil {
+		t.Error("closed_at must be set on first close")
+	}
+	if h.contractCmd.endCalls != 1 {
+		t.Errorf("EndContract calls: got %d, want 1", h.contractCmd.endCalls)
+	}
+	if h.roomCmd.vacantCalls != 1 {
+		t.Errorf("MarkVacant calls: got %d, want 1", h.roomCmd.vacantCalls)
+	}
+}
+
+// READY_TO_CLOSE + nil → COMPLETED. The canonical Step 4 entry path
+// (operator hit "ปิดงาน (ยังไม่ชำระ)" from a previously-skipped notice).
+func TestCloseMoveOutWithUnsettled_FromReadyToClose(t *testing.T) {
+	contractID := uuid.New()
+	roomID := uuid.New()
+	billID := uuid.New()
+	netAmount := int64(0)
+	scheduledDate := time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ContractID:           contractID,
+			ScheduledMoveOutDate: scheduledDate,
+			ActualMoveOutDate:    &scheduledDate,
+			Status:               MoveOutStatusReadyToClose,
+			SettlementBillID:     &billID,
+			NetAmount:            &netAmount,
+		}, nil
+	}
+
+	_, err := h.svc.CloseMoveOutWithUnsettled(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.repo.updatedStatus != MoveOutStatusCompleted {
+		t.Errorf("status: got %q, want COMPLETED", h.repo.updatedStatus)
+	}
+	if h.repo.updatedNotice.PaymentOutcome != nil {
+		t.Error("payment_outcome must stay nil")
+	}
+	if h.contractCmd.endCalls != 1 {
+		t.Errorf("EndContract calls: got %d, want 1", h.contractCmd.endCalls)
+	}
+}
+
+// Idempotency: COMPLETED + nil → no-op. The contract is already ended and
+// the room already vacant from the original close, so re-running those side
+// effects against ENDED/VACANT state would be wrong (or error). The service
+// must short-circuit before touching them.
+func TestCloseMoveOutWithUnsettled_IdempotentOnCompleted(t *testing.T) {
+	contractID := uuid.New()
+	roomID := uuid.New()
+	billID := uuid.New()
+	original := time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(roomID, contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			ContractID:       contractID,
+			Status:           MoveOutStatusCompleted,
+			SettlementBillID: &billID,
+			ClosedAt:         &original,
+			// PaymentOutcome nil — closed-with-unsettled
+		}, nil
+	}
+
+	_, err := h.svc.CloseMoveOutWithUnsettled(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error on idempotent re-call: %v", err)
+	}
+	// No mutation should be persisted on the idempotent path
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update calls: got %d, want 0 (idempotent)", h.repo.updateCalls)
+	}
+	if h.contractCmd.endCalls != 0 {
+		t.Errorf("EndContract calls: got %d, want 0 (idempotent — contract already ended)", h.contractCmd.endCalls)
+	}
+	if h.roomCmd.vacantCalls != 0 {
+		t.Errorf("MarkVacant calls: got %d, want 0 (idempotent — room already vacant)", h.roomCmd.vacantCalls)
+	}
+}
+
+// Settled notices must NOT use this path — they should go through CloseMoveOut.
+// Domain guard rejects via CanCloseWithUnsettled; service surfaces as AppError.
+func TestCloseMoveOutWithUnsettled_SettledRejects(t *testing.T) {
+	billID := uuid.New()
+	outcome := PaymentOutcomePaidExtra
+	scheduledDate := time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC)
+
+	h := newTestHarness(uuid.New(), uuid.New())
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:                   id,
+			ScheduledMoveOutDate: scheduledDate,
+			ActualMoveOutDate:    &scheduledDate,
+			Status:               MoveOutStatusReadyToClose,
+			SettlementBillID:     &billID,
+			PaymentOutcome:       &outcome,
+		}, nil
+	}
+
+	_, err := h.svc.CloseMoveOutWithUnsettled(context.Background(), uuid.New())
+	if err == nil {
+		t.Fatal("expected error for settled notice, got nil")
+	}
+	if _, ok := respond.Is(err); !ok {
+		t.Errorf("expected AppError, got %T: %v", err, err)
+	}
+	if h.repo.updateCalls != 0 {
+		t.Errorf("repo.Update should not be called on guard rejection; got %d", h.repo.updateCalls)
+	}
+}
+
+// ZERO_BALANCE invariant must be enforced on the post-close back-fill path
+// too — operator opens a closed-with-unsettled notice with net_amount=0,
+// FE form has stale CASH state from a prior outcome guess, hits submit. The
+// service must force method=nil regardless of the entry status. This pins
+// the invariant for the COMPLETED+nil entry specifically; the PENDING_PAYMENT
+// case is covered by TestRecordPaymentOutcome_NormalizesZeroBalance.
+func TestRecordPaymentOutcome_NormalizesZeroBalanceOnCompletedBackfill(t *testing.T) {
+	billID := uuid.New()
+	zero := int64(0)
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusCompleted,
+			SettlementBillID: &billID,
+			NetAmount:        &zero,
+			// PaymentOutcome nil — closed-with-unsettled
+		}, nil
+	}
+
+	req := RecordPaymentOutcomeRequest{
+		PaymentOutcome: "ZERO_BALANCE",
+		PaymentMethod:  "CASH", // stale — must be normalized away
+	}
+	_, err := h.svc.RecordPaymentOutcome(context.Background(), uuid.New(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.repo.updatedNotice.PaymentMethod != nil {
+		t.Errorf("payment_method must be nil for ZERO_BALANCE on COMPLETED back-fill; got %v", *h.repo.updatedNotice.PaymentMethod)
+	}
+	if h.repo.updatedStatus != MoveOutStatusCompleted {
+		t.Errorf("status must stay COMPLETED on back-fill; got %s", h.repo.updatedStatus)
+	}
+}
+
+// Phase-2 RecordPayment back-fill on COMPLETED + nil: status stays COMPLETED,
+// payment fields are filled. The contract is already ended and the room
+// already vacant from the original close, so RecordPayment must not invoke
+// EndContract / MarkVacant — it touches only the notice row.
+func TestRecordPaymentOutcome_BackfillOnCompleted(t *testing.T) {
+	billID := uuid.New()
+	netAmount := int64(150000)
+	h := newTestHarness(uuid.New(), uuid.New())
+
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return &MoveOutNotice{
+			ID:               id,
+			Status:           MoveOutStatusCompleted,
+			SettlementBillID: &billID,
+			NetAmount:        &netAmount,
+		}, nil
+	}
+
+	req := RecordPaymentOutcomeRequest{
+		PaymentOutcome: "PAID_EXTRA",
+		PaymentMethod:  "TRANSFER",
+		PaymentNote:    "บันทึกหลังปิดงาน",
+	}
+	_, err := h.svc.RecordPaymentOutcome(context.Background(), uuid.New(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Status must stay COMPLETED — we're not reopening anything
+	if h.repo.updatedStatus != MoveOutStatusCompleted {
+		t.Errorf("status: got %q, want COMPLETED (stays)", h.repo.updatedStatus)
+	}
+	if h.repo.updatedNotice.PaymentOutcome == nil || *h.repo.updatedNotice.PaymentOutcome != PaymentOutcomePaidExtra {
+		t.Error("payment_outcome must be set")
+	}
+	if h.repo.updatedNotice.PaymentMethod == nil || *h.repo.updatedNotice.PaymentMethod != domain.PaymentMethodTransfer {
+		t.Errorf("payment_method: got %v, want TRANSFER", h.repo.updatedNotice.PaymentMethod)
+	}
+	// RecordPayment must NOT touch contract/room — those were already handled
+	// by the original close. Re-running them would either error or no-op
+	// silently against ENDED/VACANT state.
+	if h.contractCmd.endCalls != 0 {
+		t.Errorf("EndContract must not be called on COMPLETED back-fill; got %d", h.contractCmd.endCalls)
+	}
+	if h.roomCmd.vacantCalls != 0 {
+		t.Errorf("MarkVacant must not be called on COMPLETED back-fill; got %d", h.roomCmd.vacantCalls)
+	}
+}
+
 // CloseMoveOut does 3 steps in one tx:
 //   1. notice.Close + repo.Update
 //   2. contractCmd.EndContract

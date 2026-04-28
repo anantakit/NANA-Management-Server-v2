@@ -27,7 +27,8 @@ make dev   # postgres + backend + frontend ต้องพร้อมทั้�
 | `make smoke-settlement-legacy` | TC1–TC12 preview interaction smoke (20 assertions) |
 | `make smoke-settlement-all` | legacy แล้วต่อ scenario (45 assertions) |
 | `make smoke-draft` | TC-D01–D12 draft page + regenerate preservation smoke |
-| `make smoke-queue` | Scenarios A–F queue settlement smoke |
+| `make smoke-moveout-step23` | Scenarios A–D drawer Step 2/3 commit boundary + edit-back + rent-mode continuity |
+| `make smoke-moveout-step4` | Scenarios A–D Phase 2 close-with-unsettled + back-fill (~30 assertions) |
 
 หรือรันตรงจาก `backend/devtools/smoke/`:
 
@@ -36,7 +37,8 @@ npm run smoke:settlement
 npm run smoke:settlement:legacy
 npm run smoke:settlement:all
 npm run smoke:draft
-npm run smoke:queue
+npm run smoke:moveout-step23
+npm run smoke:moveout-step4
 ```
 
 ## Test Suites
@@ -89,6 +91,22 @@ npm run smoke:queue
 | TC10 | Missing actual_move_out_date |
 | TC11 | Loading UX ระหว่าง mode switch |
 | TC12 | Create draft + navigate |
+
+### Move-out Phase 2 — Step 4 Close-with-Unsettled (Scenarios A–E)
+
+ไฟล์: `playwright-test-moveout-step4-smoke.js`
+
+ทดสอบ flow ปิดสัญญา Phase 2 + post-close back-fill บน RoomWorkflowDrawer:
+
+| Scenario | เรื่อง |
+|----------|--------|
+| A | PENDING_PAYMENT + null → record settled → close → history (form + edit-back, COMPLETED+settled) |
+| B | PENDING_PAYMENT + null → skip → ปิดงาน (ยังไม่ชำระ) → COMPLETED+nil, drawer **stays open** at Step 4 post-close view, card stays in payment tab. **Section grouping**: payment tab splits into "ยังไม่ปิดสัญญา" + "ปิดแล้ว · ค้างชำระ" headers when both populated |
+| C | COMPLETED + nil re-entry from queue card → form direct (no edit-back) → record → COMPLETED+settled, history. **Pins blank-screen regression** |
+| D | ZERO_BALANCE back-fill — payment_method must stay nil (service-side normalization invariant) |
+| E | Step 4 → "ไปชำระเงิน" → Step 3 → record → Step 4 confirm. **Pins**: drawer NOT auto-dismissed, "ไปชำระเงิน" navigates to Step 3 (NOT Step 2), form not blank, no edit-back, status STAYS COMPLETED |
+
+Fixtures: TC4 (B202), TC22 (D201), TC23 (D202), TC24 (D103). State setup ผ่าน API (finalize / generate / close-with-unsettled) เพื่อโฟกัส UI test ที่ flow ปลายทาง.
 
 ### Scenario — Business Correctness (TC13–TC20)
 

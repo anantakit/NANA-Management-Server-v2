@@ -32,6 +32,7 @@ type MoveOutService interface {
 	RecordPaymentOutcome(ctx context.Context, id uuid.UUID, req RecordPaymentOutcomeRequest) (*MoveOutWithRelations, error)
 	SkipPayment(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	CloseMoveOut(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	CloseMoveOutWithUnsettled(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 	Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
 
 	// Correction commands
@@ -450,6 +451,72 @@ func (s *moveOutService) SkipPayment(ctx context.Context, id uuid.UUID) (*MoveOu
 			return nil, err
 		}
 		return nil, fmt.Errorf("skip payment: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// CloseMoveOutWithUnsettled transitions to COMPLETED without recording a
+// payment outcome. Phase-2 explicit "ปิดงาน (ยังไม่ชำระ)" path:
+//   - PENDING_PAYMENT / READY_TO_CLOSE + nil outcome → COMPLETED (sets
+//     ClosedAt, ends contract, marks room vacant) — all atomic.
+//   - COMPLETED + nil outcome → idempotent no-op (operator double-clicked or
+//     hit the endpoint twice from a stale tab; we return current state
+//     instead of erroring so the FE settles cleanly).
+//
+// Settled notices are rejected — they must use the regular CloseMoveOut path
+// so the two routes never blur. Auditability of "closed without payment" is
+// captured by the persisted nil PaymentOutcome on a COMPLETED row.
+func (s *moveOutService) CloseMoveOutWithUnsettled(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error) {
+	now := s.clock()
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+		// Guard upfront so we surface AppError before any side effect.
+		if err := notice.CanCloseWithUnsettled(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		// Idempotent path: already COMPLETED + nil outcome. The contract is
+		// already ended and the room already vacant from the original close;
+		// re-running EndContract / MarkVacant against an ENDED contract /
+		// VACANT room would either error or no-op depending on impl, and the
+		// operator semantics ("nothing changed") are clearer if we short-
+		// circuit. LastActionAt update is the only mutation we'd want here,
+		// but that's part of the audit-log Phase-2 work which is out of
+		// scope — see backlog_moveout_phase2_step4.md.
+		if notice.IsCompleted() {
+			noticeID = notice.ID
+			return nil
+		}
+		moveOutDate, err := notice.RequireActualDate()
+		if err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
+		if err != nil {
+			return fmt.Errorf("find contract: %w", err)
+		}
+		if err := notice.CloseWithUnsettled(now); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		if err := s.contractCmd.EndContract(txCtx, notice.ContractID, moveOutDate); err != nil {
+			return err
+		}
+		if err := s.roomCmd.MarkVacant(txCtx, c.RoomID); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("close move-out with unsettled: %w", err)
 	}
 	return s.repo.FindByID(ctx, noticeID)
 }

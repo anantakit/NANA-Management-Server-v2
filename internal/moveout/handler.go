@@ -35,6 +35,7 @@ func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	router.Post("/:id/record-payment", h.RecordPaymentOutcome)
 	router.Post("/:id/skip-payment", h.SkipPayment)
 	router.Post("/:id/close", h.CloseMoveOut)
+	router.Post("/:id/close-with-unsettled", h.CloseMoveOutWithUnsettled)
 	router.Post("/:id/cancel", h.Cancel)
 
 	// Correction commands
@@ -256,6 +257,20 @@ func (h *MoveOutHandler) CloseMoveOut(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "ปิดการย้ายออกสำเร็จ", ToMoveOutResponse(*result))
+}
+
+func (h *MoveOutHandler) CloseMoveOutWithUnsettled(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.CloseMoveOutWithUnsettled(c.Context(), id)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "ปิดงานโดยไม่บันทึกการเงินสำเร็จ", ToMoveOutResponse(*result))
 }
 
 func (h *MoveOutHandler) Cancel(c fiber.Ctx) error {

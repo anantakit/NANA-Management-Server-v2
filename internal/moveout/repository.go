@@ -208,11 +208,15 @@ func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, ro
 	return m, nil
 }
 
-// ListActive returns all non-terminal notices with relations, partitioned by
-// status in the service layer. Hard cap at 200.
+// ListActive returns all non-terminal notices PLUS COMPLETED notices that
+// were closed without recording a payment outcome (Phase-2 unsettled
+// backlog). The service layer partitions by status, routing COMPLETED+nil
+// rows into the pending_payment section so the financial backlog stays
+// surfaced. Hard cap at 200.
 func (r *moveOutRepository) ListActive(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 	query := r.baseJoinQuery(ctx).
-		Where("move_out_notices.status NOT IN ?", []MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled})
+		Where("move_out_notices.status != ?", MoveOutStatusCancelled).
+		Where("move_out_notices.status != ? OR move_out_notices.payment_outcome IS NULL", MoveOutStatusCompleted)
 
 	if params.ApartmentID != "" {
 		query = query.Where("rooms.apartment_id = ?", params.ApartmentID)
@@ -238,11 +242,15 @@ func (r *moveOutRepository) ListActive(ctx context.Context, params MoveOutQueueP
 	return out, nil
 }
 
-// ListHistory returns COMPLETED + CANCELLED notices ordered by recency.
+// ListHistory returns terminal notices ordered by recency: CANCELLED, plus
+// COMPLETED notices that have a payment_outcome on file. COMPLETED+nil rows
+// stay in the active queue (financial backlog) and are intentionally
+// excluded here so a notice never appears in both active and history.
 // Capped at 100.
 func (r *moveOutRepository) ListHistory(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 	query := r.baseJoinQuery(ctx).
-		Where("move_out_notices.status IN ?", []MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled})
+		Where("move_out_notices.status = ? OR (move_out_notices.status = ? AND move_out_notices.payment_outcome IS NOT NULL)",
+			MoveOutStatusCancelled, MoveOutStatusCompleted)
 
 	if params.ApartmentID != "" {
 		query = query.Where("rooms.apartment_id = ?", params.ApartmentID)

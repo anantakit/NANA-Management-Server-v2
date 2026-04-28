@@ -79,6 +79,7 @@ var (
 	ErrCannotRecordPayment     = errors.New("บันทึกชำระได้เฉพาะสถานะรอชำระ")
 	ErrCannotSkipPayment       = errors.New("ข้ามชำระได้เฉพาะสถานะรอชำระ")
 	ErrCannotClose             = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
+	ErrCannotCloseWithUnsettled = errors.New("ปิดงาน (ยังไม่ชำระ) ได้เฉพาะสถานะที่ยังไม่บันทึกการเงิน")
 	ErrMissingSettlementBill   = errors.New("ต้องมีบิลสรุปก่อนปิด")
 	ErrMissingPaymentOutcome   = errors.New("ต้องระบุผลการชำระก่อนปิด")
 	ErrNotPendingMeter             = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอจดมิเตอร์")
@@ -199,13 +200,21 @@ func (m *MoveOutNotice) CanRegenerateDraft() error {
 //   - back-fill a previously skipped settlement (READY_TO_CLOSE + nil outcome)
 //   - correct a previously recorded outcome (READY_TO_CLOSE + non-nil outcome)
 //
+// Phase-2 broadens further to accept COMPLETED + nil outcome — operators may
+// re-enter a closed move-out (closed-with-unsettled) and back-fill the
+// financial record without reopening the contract. COMPLETED + non-nil is
+// rejected: a settled-and-closed notice is terminal for payment edits.
+//
 // ReopenForCorrection still exists for callers that want the "start over /
 // clear fields" semantic; this guard powers the prefilled-edit path instead.
 func (m *MoveOutNotice) CanRecordPayment() error {
-	if !m.IsPendingPayment() && !m.IsReadyToClose() {
-		return ErrCannotRecordPayment
+	if m.IsPendingPayment() || m.IsReadyToClose() {
+		return nil
 	}
-	return nil
+	if m.IsCompleted() && m.PaymentOutcome == nil {
+		return nil
+	}
+	return ErrCannotRecordPayment
 }
 
 // CanSkipPayment returns nil if the operator may defer the financial record
@@ -231,6 +240,34 @@ func (m *MoveOutNotice) CanClose() error {
 		return ErrMissingPaymentOutcome
 	}
 	return nil
+}
+
+// CanCloseWithUnsettled returns nil if the notice can be closed via the
+// explicit "close while unsettled" path. Allowed states (Phase-2):
+//   - PENDING_PAYMENT + nil outcome — operator chooses to close in one shot
+//     instead of going through SkipPayment first
+//   - READY_TO_CLOSE + nil outcome — the canonical "skipped, now close" case
+//     (Step 4 entry from a previously-skipped notice)
+//   - COMPLETED + nil outcome — idempotent re-close (no state change)
+//
+// Settlement bill is still required so we never close without a financial
+// record on file. PaymentOutcome must be nil — settled notices must use the
+// regular CanClose / CloseMoveOut path so the two routes don't blur.
+func (m *MoveOutNotice) CanCloseWithUnsettled() error {
+	if m.PaymentOutcome != nil {
+		return ErrCannotCloseWithUnsettled
+	}
+	switch m.Status {
+	case MoveOutStatusPendingPayment, MoveOutStatusReadyToClose:
+		if m.SettlementBillID == nil {
+			return ErrMissingSettlementBill
+		}
+		return nil
+	case MoveOutStatusCompleted:
+		return nil
+	default:
+		return ErrCannotCloseWithUnsettled
+	}
 }
 
 // --- Transition methods ---
@@ -282,7 +319,9 @@ func (m *MoveOutNotice) RecordPayment(outcome PaymentOutcome, method *domain.Pay
 	if m.IsPendingPayment() {
 		m.Status = MoveOutStatusReadyToClose
 	}
-	// Already READY_TO_CLOSE → status stays; this is the edit/back-fill path.
+	// READY_TO_CLOSE + nil → fields set, status stays (back-fill).
+	// READY_TO_CLOSE + outcome → fields replaced, status stays (correction).
+	// COMPLETED + nil → fields set, status stays (post-close back-fill).
 	return nil
 }
 
@@ -304,16 +343,43 @@ func (m *MoveOutNotice) SkipPayment() error {
 // "skipped" / "settled" derivation. Every caller in BE (and FE-mirrored)
 // MUST go through these — never open-code `PaymentOutcome == nil`.
 //
-// Phase-2 will extend IsUnsettled to also cover COMPLETED + nil outcome
-// (post-close re-entry); every caller gets that for free, but only if they
-// delegate.
-func (m *MoveOutNotice) IsUnsettled() bool { return m.IsReadyToClose() && m.PaymentOutcome == nil }
-func (m *MoveOutNotice) IsSettled() bool   { return m.IsReadyToClose() && m.PaymentOutcome != nil }
+// Phase-2: extended to also cover COMPLETED + nil outcome so that closed-
+// with-unsettled notices stay surfaced in the payment backlog. Every caller
+// that delegates to these predicates picks up the new state automatically.
+func (m *MoveOutNotice) IsUnsettled() bool {
+	if m.PaymentOutcome != nil {
+		return false
+	}
+	return m.IsReadyToClose() || m.IsCompleted()
+}
+func (m *MoveOutNotice) IsSettled() bool {
+	if m.PaymentOutcome == nil {
+		return false
+	}
+	return m.IsReadyToClose() || m.IsCompleted()
+}
 
 // Close transitions READY_TO_CLOSE → COMPLETED.
 func (m *MoveOutNotice) Close(now time.Time) error {
 	if err := m.CanClose(); err != nil {
 		return err
+	}
+	m.Status = MoveOutStatusCompleted
+	m.ClosedAt = &now
+	return nil
+}
+
+// CloseWithUnsettled transitions to COMPLETED without touching PaymentOutcome.
+// Idempotent: a re-call against an already-COMPLETED + nil-outcome notice is a
+// no-op (returns nil without mutating state). Callers (service layer) decide
+// whether to skip side effects on the idempotent path by checking IsCompleted
+// before invoking this method.
+func (m *MoveOutNotice) CloseWithUnsettled(now time.Time) error {
+	if err := m.CanCloseWithUnsettled(); err != nil {
+		return err
+	}
+	if m.IsCompleted() {
+		return nil
 	}
 	m.Status = MoveOutStatusCompleted
 	m.ClosedAt = &now

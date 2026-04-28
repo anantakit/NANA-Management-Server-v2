@@ -67,7 +67,7 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | List move-out notices (paginated, filter by status/apartment_id, search tenant/room) |
-| GET | `/queue` | Queue view: 4 sections (pending_meter/settlement/payment/ready_to_close) + summary + history |
+| GET | `/queue` | Queue view: 4 sections (pending_meter/settlement/payment/ready_to_close) + summary + history. COMPLETED+UNSETTLED notices route into `pending_payment` (financial backlog stays surfaced); urgency counts skip COMPLETED rows |
 | GET | `/:id` | Get move-out notice with tenant + room + apartment info (JOIN) |
 | POST | `/` | Create move-out notice (contract must be ACTIVE, one active per contract) → PENDING_METER |
 | PUT | `/:id` | Update move-out notice (PENDING_METER only: scheduled_move_out_date, note) |
@@ -79,10 +79,11 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | POST | `/:id/generate-settlement` | Generate DRAFT settlement bill (PENDING_SETTLEMENT, attaches draft) |
 | POST | `/:id/finalize-settlement` | Finalize settlement DRAFT → FINALIZED (PENDING_SETTLEMENT → PENDING_PAYMENT) |
 | POST | `/:id/regenerate-settlement` | Void old draft + create new (PENDING_SETTLEMENT stays, draft re-attached) |
-| POST | `/:id/record-payment` | Record payment outcome + method (PENDING_PAYMENT → READY_TO_CLOSE; also accepts READY_TO_CLOSE for back-fill / correction — Phase-1 unrestricted overwrite. ZERO_BALANCE normalizes method to nil) |
+| POST | `/:id/record-payment` | Record payment outcome + method (PENDING_PAYMENT → READY_TO_CLOSE; also accepts READY_TO_CLOSE for back-fill / correction; Phase-2 also accepts COMPLETED + nil for post-close back-fill — status stays COMPLETED, no contract reopen. ZERO_BALANCE normalizes method to nil) |
 | POST | `/:id/skip-payment` | Defer payment without outcome (PENDING_PAYMENT → READY_TO_CLOSE; idempotent — no-op if already past PENDING_PAYMENT) |
 | POST | `/:id/reopen` | Reopen for correction (READY_TO_CLOSE → PENDING_PAYMENT, **clears payment_outcome + payment_note**) |
-| POST | `/:id/close` | Close move-out (READY_TO_CLOSE → COMPLETED, tx: contract ENDED + room VACANT; requires `payment_outcome != null` — skipped notices currently can't close, Phase-2 will relax) |
+| POST | `/:id/close` | Close move-out (READY_TO_CLOSE → COMPLETED, tx: contract ENDED + room VACANT; requires `payment_outcome != null`) |
+| POST | `/:id/close-with-unsettled` | Phase-2 explicit "ปิดงาน (ยังไม่ชำระ)" path. Accepts PENDING_PAYMENT / READY_TO_CLOSE / COMPLETED — all with `payment_outcome == null`. Transitions to COMPLETED + tx: contract ENDED + room VACANT (idempotent on COMPLETED — no-op, no side effects). Settled notices rejected (must use `/close`); preserves `payment_outcome = null` for post-close back-fill via `/record-payment` |
 
 ## Billing (`/api/v1/bills`) — Admin only
 | Method | Path | Description |

@@ -29,6 +29,18 @@ var queueSectionKey = map[MoveOutStatus]string{
 	MoveOutStatusReadyToClose:      "ready_to_close",
 }
 
+// queueBucketFor returns the queue section a notice should be partitioned
+// into. COMPLETED + nil PaymentOutcome (closed-with-unsettled) routes into
+// the pending_payment bucket so the financial backlog surfaces alongside
+// the rest of the unsettled work — keeps the operator mental model
+// "everything needing payment lives in one tab".
+func queueBucketFor(n MoveOutNotice) MoveOutStatus {
+	if n.IsCompleted() && n.PaymentOutcome == nil {
+		return MoveOutStatusPendingPayment
+	}
+	return n.Status
+}
+
 // Queue assembles the move-out queue: active notices partitioned by status
 // into 4 sections (pending_meter / pending_settlement / pending_payment /
 // ready_to_close), sorted by urgency then date, plus a summary and an
@@ -72,18 +84,28 @@ func (s *moveOutService) Queue(ctx context.Context, params MoveOutQueueParams) (
 
 		summary := MoveOutQueueSummary{TotalActive: len(active)}
 		for _, n := range active {
-			d := DaysUntil(n.ScheduledMoveOutDate, today)
-			switch {
-			case d < 0:
-				summary.Overdue++
-			case d == 0:
-				summary.Today++
+			// Urgency is a deadline concept (scheduled_move_out_date vs today).
+			// COMPLETED + UNSETTLED items live here because the financial
+			// record is open, NOT because they have a future deadline — they
+			// already moved out. Counting them as OVERDUE would inflate the
+			// urgency chips with bookkeeping backlog that doesn't need a
+			// scheduled response. We still count them in TotalActive so the
+			// payment-tab badge reflects all rows the operator can act on.
+			if !n.IsCompleted() {
+				d := DaysUntil(n.ScheduledMoveOutDate, today)
+				switch {
+				case d < 0:
+					summary.Overdue++
+				case d == 0:
+					summary.Today++
+				}
+				if d >= 0 && d <= 7 {
+					summary.ThisWeek++
+				}
 			}
-			if d >= 0 && d <= 7 {
-				summary.ThisWeek++
-			}
-			if _, ok := buckets[n.Status]; ok {
-				buckets[n.Status] = append(buckets[n.Status], n)
+			bucket := queueBucketFor(n.MoveOutNotice)
+			if _, ok := buckets[bucket]; ok {
+				buckets[bucket] = append(buckets[bucket], n)
 			}
 		}
 
