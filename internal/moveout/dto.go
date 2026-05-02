@@ -91,6 +91,7 @@ type MoveOutResponse struct {
 	PaymentMethod        string   `json:"payment_method,omitempty"`
 	PaymentNote          string   `json:"payment_note,omitempty"`
 	ClosedAt             string   `json:"closed_at,omitempty"`
+	CancelledAt          string   `json:"cancelled_at,omitempty"`
 	CreatedAt            string   `json:"created_at"`
 	UpdatedAt            string   `json:"updated_at"`
 }
@@ -186,6 +187,9 @@ func ToMoveOutResponse(m MoveOutWithRelations) MoveOutResponse {
 	}
 	if m.ClosedAt != nil {
 		resp.ClosedAt = m.ClosedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	if m.CancelledAt != nil {
+		resp.CancelledAt = m.CancelledAt.Format("2006-01-02T15:04:05Z07:00")
 	}
 	return resp
 }

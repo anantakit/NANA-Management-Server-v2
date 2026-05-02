@@ -10,7 +10,8 @@
     "smoke:numeric": "node playwright-test-draft-numeric-smoke.js",
     "smoke:moveout-step23": "node playwright-test-moveout-step23-smoke.js",
     "smoke:moveout-step4": "node playwright-test-moveout-step4-smoke.js",
-    "smoke:all": "npm run smoke:settlement:all && npm run smoke:draft && npm run smoke:numeric && npm run smoke:moveout-step23 && npm run smoke:moveout-step4",
+    "smoke:moveout-detail": "node playwright-test-moveout-detail-smoke.js",
+    "smoke:all": "npm run smoke:settlement:all && npm run smoke:draft && npm run smoke:numeric && npm run smoke:moveout-step23 && npm run smoke:moveout-step4 && npm run smoke:moveout-detail",
     "postinstall": "npx playwright install chromium"
   },
   "dependencies": {

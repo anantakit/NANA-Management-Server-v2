@@ -582,7 +582,12 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 				return fmt.Errorf("void settlement: %w", err)
 			}
 		}
-		notice.Status = MoveOutStatusCancelled
+		// Domain transition stamps both Status + CancelledAt — mirrors
+		// notice.Close(now) for the COMPLETED path so the service stays
+		// thin and the timestamp can't be forgotten.
+		if err := notice.Cancel(time.Now()); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
 		c, err := s.contracts.FindByIDSimple(txCtx, notice.ContractID)
 		if err != nil {
 			return fmt.Errorf("find contract: %w", err)

@@ -694,27 +694,35 @@ func TestMoveOutNotice_Close(t *testing.T) {
 }
 
 func TestMoveOutNotice_Cancel(t *testing.T) {
+	now := time.Date(2026, 5, 2, 9, 0, 0, 0, time.UTC)
+
 	t.Run("PENDING_METER — success", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusPendingMeter}
-		if err := m.Cancel(); err != nil {
+		if err := m.Cancel(now); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if m.Status != MoveOutStatusCancelled {
 			t.Fatalf("expected CANCELLED, got %s", m.Status)
+		}
+		if m.CancelledAt == nil || !m.CancelledAt.Equal(now) {
+			t.Fatalf("expected CancelledAt=%v, got %v", now, m.CancelledAt)
 		}
 	})
 
 	t.Run("PENDING_SETTLEMENT — success", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusPendingSettlement}
-		if err := m.Cancel(); err != nil {
+		if err := m.Cancel(now); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if m.Status != MoveOutStatusCancelled {
 			t.Fatalf("expected CANCELLED, got %s", m.Status)
 		}
+		if m.CancelledAt == nil || !m.CancelledAt.Equal(now) {
+			t.Fatalf("expected CancelledAt=%v, got %v", now, m.CancelledAt)
+		}
 	})
 
-	// All non-cancellable statuses should reject
+	// All non-cancellable statuses should reject AND not stamp CancelledAt.
 	for _, s := range []MoveOutStatus{
 		MoveOutStatusPendingPayment,
 		MoveOutStatusReadyToClose,
@@ -723,8 +731,11 @@ func TestMoveOutNotice_Cancel(t *testing.T) {
 	} {
 		t.Run("cancel "+string(s)+" — error", func(t *testing.T) {
 			m := &MoveOutNotice{Status: s}
-			if err := m.Cancel(); err != ErrCannotCancel {
+			if err := m.Cancel(now); err != ErrCannotCancel {
 				t.Fatalf("expected ErrCannotCancel, got %v", err)
+			}
+			if m.CancelledAt != nil {
+				t.Fatalf("expected CancelledAt to remain nil on rejected cancel, got %v", m.CancelledAt)
 			}
 		})
 	}

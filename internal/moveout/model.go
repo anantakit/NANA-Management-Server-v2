@@ -52,6 +52,7 @@ type MoveOutNotice struct {
 	PaymentMethod    *domain.PaymentMethod  `gorm:"column:payment_method;type:varchar(20)" json:"payment_method,omitempty"`
 	PaymentNote      string                 `gorm:"type:text;not null;default:''" json:"payment_note"`
 	ClosedAt         *time.Time             `gorm:"type:timestamptz" json:"closed_at,omitempty"`
+	CancelledAt      *time.Time             `gorm:"type:timestamptz" json:"cancelled_at,omitempty"`
 	LastActionBy     *uuid.UUID             `gorm:"type:uuid" json:"last_action_by,omitempty"`
 	LastActionAt     *time.Time             `gorm:"type:timestamptz" json:"last_action_at,omitempty"`
 
@@ -386,12 +387,16 @@ func (m *MoveOutNotice) CloseWithUnsettled(now time.Time) error {
 	return nil
 }
 
-// Cancel transitions to CANCELLED.
-func (m *MoveOutNotice) Cancel() error {
+// Cancel transitions to CANCELLED and stamps the cancellation time.
+// Mirrors the Close(now) pattern so the service layer can delegate the
+// full transition (status + timestamp) instead of stamping fields after
+// the fact.
+func (m *MoveOutNotice) Cancel(now time.Time) error {
 	if err := m.CanCancel(); err != nil {
 		return err
 	}
 	m.Status = MoveOutStatusCancelled
+	m.CancelledAt = &now
 	return nil
 }
 
