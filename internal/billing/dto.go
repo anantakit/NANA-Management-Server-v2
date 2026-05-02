@@ -151,6 +151,7 @@ type BillListItemResponse struct {
 	BillingMonth   string    `json:"billing_month"`
 	BillType       string    `json:"bill_type"`
 	Status         string    `json:"status"`
+	VoidReason     *string   `json:"void_reason"`
 	TotalAmount    float64   `json:"total_amount"`
 	DepositAmount  float64   `json:"deposit_amount"`
 	DepositBalance float64   `json:"deposit_balance"`
@@ -552,6 +553,7 @@ func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 		BillingMonth:   b.BillingMonth,
 		BillType:       string(b.BillType),
 		Status:         string(b.Status),
+		VoidReason:     b.VoidReason,
 		TotalAmount:    money.ToBaht(b.TotalAmount),
 		DepositAmount:  money.ToBaht(b.DepositAmount),
 		DepositBalance: money.ToBaht(b.DepositBalance),
