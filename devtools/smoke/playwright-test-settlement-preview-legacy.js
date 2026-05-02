@@ -1,5 +1,10 @@
 // Move-out Settlement Preview — Smoke Test
 // Tests: TC1, TC2, TC3, TC4, TC5, TC6, TC7, TC8, TC9, TC10, TC11, TC12
+//
+// TODO(2026-05-02 redesign):
+// This script relies on the removed "ดูสรุปยอด" button.
+// Flow has moved into drawer steps.
+// Needs migration to new UI. Currently only kept for legacy coverage.
 const { chromium } = require('playwright')
 
 const FRONTEND = 'http://localhost:3001'
@@ -97,6 +102,8 @@ const track = (tc, ok) => {
   const browser = await chromium.launch({ headless: false, slowMo: 80 })
   const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
   const page = await context.newPage()
+
+  let fatal = false
 
   try {
     console.log('🔐 Login')
@@ -249,6 +256,7 @@ const track = (tc, ok) => {
     console.log(`📸 Screenshots in /tmp/smoke-tc*.png`)
     console.log('='.repeat(60))
   } catch (err) {
+    fatal = true
     console.error('\n💥 Fatal error:', err.message)
     console.error(err.stack)
     await page.screenshot({ path: '/tmp/smoke-fatal.png' })
@@ -261,5 +269,5 @@ const track = (tc, ok) => {
   await fetch(`${BACKEND}/api/v1/dev/smoke/cleanup`, { method: 'POST' })
   console.log('  ✅ Done\n')
 
-  process.exit(results.fail > 0 ? 1 : 0)
+  process.exit(fatal || results.fail > 0 ? 1 : 0)
 })()

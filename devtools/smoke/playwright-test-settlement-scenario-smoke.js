@@ -1,5 +1,11 @@
 // Move-out Settlement Scenario Smoke v1 — TC13–TC25
 // ----------------------------------------------------------------------
+//
+// TODO(2026-05-02 redesign):
+// This script relies on the removed "ดูสรุปยอด" button.
+// Flow has moved into drawer steps.
+// Needs migration to new UI. Currently only kept for legacy coverage.
+//
 // Covers business-risk scenarios from senario.md that the legacy preview
 // smoke (TC1–TC12) does NOT exercise:
 //
@@ -527,6 +533,8 @@ async function runTC25(page, fixtures) {
   const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
   const page = await context.newPage()
 
+  let fatal = false
+
   try {
     console.log('🔐 Login')
     await login(page)
@@ -551,6 +559,7 @@ async function runTC25(page, fixtures) {
     console.log(`📸 Screenshots in /tmp/smoke-tc{13-21,24,25}.png`)
     console.log('='.repeat(60))
   } catch (err) {
+    fatal = true
     console.error('\n💥 Fatal error:', err.message)
     console.error(err.stack)
     await page.screenshot({ path: '/tmp/smoke-scenario-fatal.png' })
@@ -562,5 +571,5 @@ async function runTC25(page, fixtures) {
   await fetch(`${BACKEND}/api/v1/dev/smoke/cleanup`, { method: 'POST' })
   console.log('  ✅ Done\n')
 
-  process.exit(results.fail > 0 ? 1 : 0)
+  process.exit(fatal || results.fail > 0 ? 1 : 0)
 })()
