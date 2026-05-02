@@ -103,7 +103,7 @@ npm run smoke:moveout-detail
 | Scenario | เรื่อง |
 |----------|--------|
 | A | PENDING_PAYMENT + null → record settled → close → history (form + edit-back, COMPLETED+settled) |
-| B | PENDING_PAYMENT + null → skip → ปิดงาน (ยังไม่ชำระ) → COMPLETED+nil, drawer **stays open** at Step 4 post-close view, card stays in payment tab. **Section grouping**: payment tab splits into "ยังไม่ปิดสัญญา" + "ปิดแล้ว · ค้างชำระ" headers when both populated |
+| B | PENDING_PAYMENT + null → skip → ปิดงาน (ยังไม่ชำระ) → COMPLETED+nil, drawer **stays open** at Step 4 post-close view, card stays in payment tab. **Section grouping**: payment tab splits into "ยังไม่ปิดสัญญา" + "ปิดแล้ว • ค้างชำระ" headers when both populated |
 | C | COMPLETED + nil re-entry from queue card → form direct (no edit-back) → record → COMPLETED+settled, history. **Pins blank-screen regression** |
 | D | ZERO_BALANCE back-fill — payment_method must stay nil (service-side normalization invariant) |
 | E | Step 4 → "ไปชำระเงิน" → Step 3 → record → Step 4 confirm. **Pins**: drawer NOT auto-dismissed, "ไปชำระเงิน" navigates to Step 3 (NOT Step 2), form not blank, no edit-back, status STAYS COMPLETED |
@@ -120,7 +120,7 @@ Fixtures: TC4 (B202), TC22 (D201), TC23 (D202), TC24 (D103). State setup ผ่�
 |------|--------|
 | T1 | PENDING_PAYMENT — CTA "ดำเนินการต่อ" เปิด drawer ที่ Step 3, ไม่มี cancel/reopen link |
 | T2 | PENDING_SETTLEMENT (no draft + with draft) — แสดง "ยังไม่มีสรุปยอด", **ไม่** render ResultBlock "฿0 hero", CTA เปิด drawer ที่ Step 2 |
-| T3 | READY_TO_CLOSE — CTA = "ปิดการย้ายออก", drawer ที่ Step 4. "กลับไปแก้ไขยอดสรุป" → confirm → /reopen → backend = PENDING_SETTLEMENT |
+| T3 | READY_TO_CLOSE — CTA = "ปิดการย้ายออก", drawer ที่ Step 4. "กลับไปบันทึกการชำระ" → confirm → /reopen → backend = PENDING_PAYMENT (rewinds one step, not back to settlement; payment_outcome cleared) |
 | T4 | Cancel flow — link visible เฉพาะ PENDING_METER/PENDING_SETTLEMENT, confirm → /cancel → CANCELLED |
 | T5 | COMPLETED — terminal read-only, ไม่มี CTA / cancel / reopen / restart |
 | T6 | CANCELLED — CTA = "เริ่มแจ้งย้ายออกใหม่" เปิด MoveOutNoticeModal prefilled (room + tenant) |
