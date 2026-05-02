@@ -36,7 +36,7 @@
 //                              link (CanCancel rule).
 //   T5   COMPLETED+settled   — no primary CTA, no cancel link, no reopen
 //                              link, no restart CTA, no back-fill CTA.
-//                              Green "ย้ายออกสำเร็จ" OutcomeCard visible.
+//                              Green "ปิดสัญญาเรียบร้อย" OutcomeCard visible.
 //   T5b  COMPLETED+nil       — closed-with-unsettled. OutcomeCard renders
 //                              the warning-tone unsettled variant
 //                              ("ปิดสัญญาแล้ว" / "ยังไม่บันทึกการเงิน")
@@ -475,8 +475,8 @@ async function main() {
     console.log('\n[T5] COMPLETED (TC24) — terminal read-only')
 
     await gotoDetail(page, fx.TC24.notice_id)
-    const t5Outcome = page.locator(':text("ย้ายออกสำเร็จ")').first()
-    check('COMPLETED: OutcomeCard "ย้ายออกสำเร็จ" visible',
+    const t5Outcome = page.locator(':text("ปิดสัญญาเรียบร้อย")').first()
+    check('COMPLETED: OutcomeCard "ปิดสัญญาเรียบร้อย" visible',
       await t5Outcome.isVisible().catch(() => false))
     const t5CtaContinue = await page.locator('button:has-text("ดำเนินการต่อ")').first().isVisible().catch(() => false)
     const t5CtaClose = await page.locator('button:has-text("ปิดการย้ายออก")').first().isVisible().catch(() => false)
@@ -499,8 +499,8 @@ async function main() {
 
     await gotoDetail(page, fx.TC3.notice_id)
     // Must NOT show the green success title.
-    const t5bSuccessTitle = await page.locator(':text("ย้ายออกสำเร็จ")').first().isVisible().catch(() => false)
-    check('COMPLETED+nil: NO green "ย้ายออกสำเร็จ" title (regression guard)', !t5bSuccessTitle)
+    const t5bSuccessTitle = await page.locator(':text("ปิดสัญญาเรียบร้อย")').first().isVisible().catch(() => false)
+    check('COMPLETED+nil: NO green "ปิดสัญญาเรียบร้อย" title (regression guard)', !t5bSuccessTitle)
     // Must show the unsettled variant copy.
     const t5bClosedTitle = await page.locator(':text("ปิดสัญญาแล้ว")').first().isVisible().catch(() => false)
     check('COMPLETED+nil: shows "ปิดสัญญาแล้ว" title', t5bClosedTitle)
