@@ -48,7 +48,7 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 
 	h.setRefreshTokenCookie(c, refreshToken)
 
-	return respond.Success(c, "เข้าสู่ระบบสำเร็จ", resp)
+	return respond.Success(c, "เข้าสู่ระบบแล้ว", resp)
 }
 
 func (h *AuthHandler) Refresh(c fiber.Ctx) error {
@@ -65,7 +65,7 @@ func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 
 	h.setRefreshTokenCookie(c, newRefreshToken)
 
-	return respond.Success(c, "รีเฟรชโทเค็นสำเร็จ", resp)
+	return respond.Success(c, "รีเฟรชโทเค็นแล้ว", resp)
 }
 
 func (h *AuthHandler) Logout(c fiber.Ctx) error {
@@ -76,7 +76,7 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 
 	h.clearRefreshTokenCookie(c)
 
-	return respond.Success(c, "ออกจากระบบสำเร็จ", nil)
+	return respond.Success(c, "ออกจากระบบแล้ว", nil)
 }
 
 func (h *AuthHandler) ChangePassword(c fiber.Ctx) error {
@@ -97,7 +97,7 @@ func (h *AuthHandler) ChangePassword(c fiber.Ctx) error {
 
 	h.setRefreshTokenCookie(c, refreshToken)
 
-	return respond.Success(c, "เปลี่ยนรหัสผ่านสำเร็จ", resp)
+	return respond.Success(c, "เปลี่ยนรหัสผ่านแล้ว", resp)
 }
 
 func (h *AuthHandler) setRefreshTokenCookie(c fiber.Ctx, token string) {

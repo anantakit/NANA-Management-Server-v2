@@ -84,7 +84,7 @@ func (h *MeterReadingHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "บันทึกมิเตอร์สำเร็จ", ToMeterReadingResponse(*reading))
+	return respond.Created(c, "บันทึกมิเตอร์แล้ว", ToMeterReadingResponse(*reading))
 }
 
 func (h *MeterReadingHandler) CreateExitReading(c fiber.Ctx) error {
@@ -102,7 +102,7 @@ func (h *MeterReadingHandler) CreateExitReading(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "บันทึกมิเตอร์ย้ายออกสำเร็จ", ToMeterReadingResponse(*reading))
+	return respond.Created(c, "บันทึกมิเตอร์ย้ายออกแล้ว", ToMeterReadingResponse(*reading))
 }
 
 func (h *MeterReadingHandler) BatchCreate(c fiber.Ctx) error {
@@ -125,7 +125,7 @@ func (h *MeterReadingHandler) BatchCreate(c fiber.Ctx) error {
 		Created: len(readings),
 		Items:   ToMeterReadingResponseList(readings),
 	}
-	return respond.Created(c, "บันทึกมิเตอร์สำเร็จ", resp)
+	return respond.Created(c, "บันทึกมิเตอร์แล้ว", resp)
 }
 
 func (h *MeterReadingHandler) Update(c fiber.Ctx) error {
@@ -147,7 +147,7 @@ func (h *MeterReadingHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตมิเตอร์สำเร็จ", ToMeterReadingResponse(*reading))
+	return respond.Success(c, "อัปเดตมิเตอร์แล้ว", ToMeterReadingResponse(*reading))
 }
 
 func (h *MeterReadingHandler) GetBaselines(c fiber.Ctx) error {

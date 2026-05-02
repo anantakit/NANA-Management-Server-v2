@@ -64,7 +64,7 @@ func (h *ContractHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างสัญญาสำเร็จ", ToContractResponse(*contract))
+	return respond.Created(c, "สร้างสัญญาแล้ว", ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Update(c fiber.Ctx) error {
@@ -82,7 +82,7 @@ func (h *ContractHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตสัญญาสำเร็จ", ToContractResponse(*contract))
+	return respond.Success(c, "อัปเดตสัญญาแล้ว", ToContractResponse(*contract))
 }
 
 func (h *ContractHandler) Delete(c fiber.Ctx) error {
@@ -94,5 +94,5 @@ func (h *ContractHandler) Delete(c fiber.Ctx) error {
 	if err := h.svc.Delete(c.Context(), contractID); err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "ลบสัญญาสำเร็จ", nil)
+	return respond.Success(c, "ลบสัญญาแล้ว", nil)
 }

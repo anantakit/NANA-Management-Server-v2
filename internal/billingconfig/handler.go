@@ -53,7 +53,7 @@ func (h *BillingConfigHandler) Create(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Created(c, "สร้างการตั้งค่าสำเร็จ", ToBillingConfigResponse(*config))
+	return respond.Created(c, "สร้างการตั้งค่าแล้ว", ToBillingConfigResponse(*config))
 }
 
 func (h *BillingConfigHandler) Update(c fiber.Ctx) error {
@@ -72,7 +72,7 @@ func (h *BillingConfigHandler) Update(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "อัปเดตการตั้งค่าสำเร็จ", ToBillingConfigResponse(*config))
+	return respond.Success(c, "อัปเดตการตั้งค่าแล้ว", ToBillingConfigResponse(*config))
 }
 
 func (h *BillingConfigHandler) Delete(c fiber.Ctx) error {
@@ -85,5 +85,5 @@ func (h *BillingConfigHandler) Delete(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "ลบการตั้งค่าสำเร็จ", nil)
+	return respond.Success(c, "ลบการตั้งค่าแล้ว", nil)
 }

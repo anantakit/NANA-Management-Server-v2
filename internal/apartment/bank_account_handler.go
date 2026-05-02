@@ -51,7 +51,7 @@ func (h *BankAccountHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "เพิ่มบัญชีธนาคารสำเร็จ", ToBankAccountResponse(*account))
+	return respond.Created(c, "เพิ่มบัญชีธนาคารแล้ว", ToBankAccountResponse(*account))
 }
 
 func (h *BankAccountHandler) Update(c fiber.Ctx) error {
@@ -69,7 +69,7 @@ func (h *BankAccountHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตบัญชีธนาคารสำเร็จ", ToBankAccountResponse(*account))
+	return respond.Success(c, "อัปเดตบัญชีธนาคารแล้ว", ToBankAccountResponse(*account))
 }
 
 func (h *BankAccountHandler) Delete(c fiber.Ctx) error {
@@ -81,5 +81,5 @@ func (h *BankAccountHandler) Delete(c fiber.Ctx) error {
 	if err := h.svc.Delete(c.Context(), accountID); err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "ลบบัญชีธนาคารสำเร็จ", nil)
+	return respond.Success(c, "ลบบัญชีธนาคารแล้ว", nil)
 }

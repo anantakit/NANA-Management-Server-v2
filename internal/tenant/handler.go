@@ -64,7 +64,7 @@ func (h *TenantHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างผู้เช่าสำเร็จ", ToTenantResponse(*tenant))
+	return respond.Created(c, "สร้างผู้เช่าแล้ว", ToTenantResponse(*tenant))
 }
 
 func (h *TenantHandler) Update(c fiber.Ctx) error {
@@ -82,7 +82,7 @@ func (h *TenantHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตผู้เช่าสำเร็จ", ToTenantResponse(*tenant))
+	return respond.Success(c, "อัปเดตผู้เช่าแล้ว", ToTenantResponse(*tenant))
 }
 
 func (h *TenantHandler) Delete(c fiber.Ctx) error {
@@ -94,5 +94,5 @@ func (h *TenantHandler) Delete(c fiber.Ctx) error {
 	if err := h.svc.Delete(c.Context(), tenantID); err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "ลบผู้เช่าสำเร็จ", nil)
+	return respond.Success(c, "ลบผู้เช่าแล้ว", nil)
 }

@@ -54,7 +54,7 @@ func (h *ApartmentHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างอาคารสำเร็จ", ToApartmentResponse(*apt))
+	return respond.Created(c, "สร้างอาคารแล้ว", ToApartmentResponse(*apt))
 }
 
 func (h *ApartmentHandler) Update(c fiber.Ctx) error {
@@ -72,5 +72,5 @@ func (h *ApartmentHandler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "อัปเดตอาคารสำเร็จ", ToApartmentResponse(*apt))
+	return respond.Success(c, "อัปเดตอาคารแล้ว", ToApartmentResponse(*apt))
 }

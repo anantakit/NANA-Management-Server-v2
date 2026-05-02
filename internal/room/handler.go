@@ -81,7 +81,7 @@ func (h *RoomHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Created(c, "สร้างห้องสำเร็จ", ToRoomResponse(*room))
+	return respond.Created(c, "สร้างห้องแล้ว", ToRoomResponse(*room))
 }
 
 func (h *RoomHandler) Update(c fiber.Ctx) error {
@@ -106,7 +106,7 @@ func (h *RoomHandler) Update(c fiber.Ctx) error {
 	if room.ApartmentID != apartmentID {
 		return respond.Error(c, respond.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้"))
 	}
-	return respond.Success(c, "อัปเดตห้องสำเร็จ", ToRoomResponse(*room))
+	return respond.Success(c, "อัปเดตห้องแล้ว", ToRoomResponse(*room))
 }
 
 func (h *RoomHandler) Delete(c fiber.Ctx) error {
@@ -131,5 +131,5 @@ func (h *RoomHandler) Delete(c fiber.Ctx) error {
 	if err := h.svc.Delete(c.Context(), roomID); err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "ลบห้องสำเร็จ", nil)
+	return respond.Success(c, "ลบห้องแล้ว", nil)
 }
