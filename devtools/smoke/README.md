@@ -24,8 +24,8 @@ make dev   # postgres + backend + frontend ต้องพร้อมทั้�
 | Command | รันอะไร |
 |---------|---------|
 | `make smoke-settlement` | TC13–TC21 scenario smoke (28 assertions) |
-| `make smoke-settlement-legacy` | TC1–TC12 preview interaction smoke (20 assertions) |
-| `make smoke-settlement-all` | legacy แล้วต่อ scenario (45 assertions) |
+| `make smoke-settlement-preview` | TC1/2/3/6/7/10/11 SettlementStep preview surface (drawer Step 2) |
+| `make smoke-settlement-all` | preview แล้วต่อ scenario |
 | `make smoke-draft` | TC-D01–D12 draft page + regenerate preservation smoke |
 | `make smoke-moveout-step23` | Scenarios A–D drawer Step 2/3 commit boundary + edit-back + rent-mode continuity |
 | `make smoke-moveout-step4` | Scenarios A–D Phase 2 close-with-unsettled + back-fill (~30 assertions) |
@@ -35,7 +35,7 @@ make dev   # postgres + backend + frontend ต้องพร้อมทั้�
 
 ```bash
 npm run smoke:settlement
-npm run smoke:settlement:legacy
+npm run smoke:settlement-preview
 npm run smoke:settlement:all
 npm run smoke:draft
 npm run smoke:moveout-step23
@@ -74,25 +74,31 @@ npm run smoke:moveout-detail
 | TC-D12 | Multiple regenerations — idempotent (no additive drift) |
 
 
-### Legacy — Preview Interaction (TC1–TC12)
+### Settlement Preview — drawer Step 2 surface (TC1/2/3/6/7/10/11)
 
-ไฟล์: `playwright-test-settlement-preview-legacy.js`
+ไฟล์: `playwright-test-settlement-preview-smoke.js`
 
-ทดสอบ UI interaction ของ settlement preview drawer:
+ทดสอบ surface ของ settlement preview ใน `RoomWorkflowDrawer` Step 2 (`SettlementStep`). Slim port จาก legacy preview-drawer suite — เก็บเฉพาะเคสที่ smoke อื่นไม่ครอบ:
 
-| TC | เรื่อง |
-|----|--------|
-| TC1 | Happy path — drawer เปิด, มี mode/charges/deposit/outcome |
-| TC2 | สลับ rent mode (PRORATED / FULL_MONTH) |
-| TC3 | MinMonths threshold flip |
-| TC4 | มี draft — ปุ่มเปลี่ยนเป็น "ดูสรุปยอดใหม่" |
-| TC5 | Mode change hint เมื่อเลือกต่างจาก draft |
-| TC6 | Rent already paid |
-| TC7 | Absorbed bills section |
-| TC8 | Duplicate guard ไม่บล็อก preview |
-| TC10 | Missing actual_move_out_date |
-| TC11 | Loading UX ระหว่าง mode switch |
-| TC12 | Create draft + navigate |
+| TC | เรื่อง | ล็อกอะไร |
+|----|--------|----------|
+| TC1 | Baseline preview renders ใน SettlementStep | drawer routes PENDING_SETTLEMENT → Step 2; SettlementMeta + OutcomeCard + ChargesSection + SettlementSection ปรากฏ; CTA "ยืนยันยอด" (NO_DRAFT path) |
+| TC2 | Rent-mode toggle | mode label flip + outcome amount เปลี่ยน |
+| TC3 | MinMonths threshold flip | outcome amount ต่างกันระหว่าง 2 mode (PRORATED fail / FULL_MONTH pass) |
+| TC6 | rent_paid=true | ChargesSection ไม่มี rent line (carry-forward path) |
+| TC7 | Absorbed bills | "บิลค้างที่ต้องชำระก่อนย้ายออก" ปรากฏ |
+| TC10 | PENDING_METER routing | drawer เปิดที่ Step 1 (มิเตอร์), ไม่ใช่ Step 2; SettlementMeta + ChargesSection ต้อง **ไม่** ปรากฏ |
+| TC11 | Mode-switch loading UX | charges card ยังเห็นระหว่าง refetch (ไม่ flash skeleton เต็มหน้า) |
+
+ตัด TC4 / TC5 / TC8 / TC9 / TC12 (จาก legacy) — ครอบคลุมโดย `smoke:moveout-step23` Scenario A/B/D และ `smoke:draft` แล้ว.
+
+Fixtures: TC1 (B105), TC3 (B201), TC6 (B203), TC7 (B204), TC10 (B205) ทั้งหมดจาก `seed_dev_smoke.go`.
+
+Stable selectors:
+- `[role="dialog"][aria-label="ดำเนินการย้ายออก"]` — drawer scope
+- `[aria-label="ขั้นตอนที่ N <label>"]` + `aria-current="step"` — step routing
+- `[data-testid="settlement-outcome-amount"]` — outcome amount (added in `OutcomeCard`)
+- `button[aria-label="เปลี่ยนวิธีคิดค่าเช่า"]` — rent-mode toggle
 
 ### Move-out Phase 2 — Step 4 Close-with-Unsettled (Scenarios A–E)
 

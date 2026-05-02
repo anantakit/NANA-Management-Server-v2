@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-legacy smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-all smoke-install
 
 # Development
 dev:
@@ -56,11 +56,11 @@ smoke-install:
 smoke-settlement:
 	cd devtools/smoke && node playwright-test-settlement-scenario-smoke.js
 
-smoke-settlement-legacy:
-	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js
+smoke-settlement-preview:
+	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js
 
 smoke-settlement-all:
-	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js && node playwright-test-settlement-scenario-smoke.js
+	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js
 
 smoke-draft:
 	cd devtools/smoke && node playwright-test-draft-settlement-smoke.js
@@ -75,7 +75,7 @@ smoke-moveout-detail:
 	cd devtools/smoke && node playwright-test-moveout-detail-smoke.js
 
 smoke-all:
-	cd devtools/smoke && node playwright-test-settlement-preview-legacy.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-draft-settlement-smoke.js && node playwright-test-moveout-step23-smoke.js && node playwright-test-moveout-step4-smoke.js && node playwright-test-moveout-detail-smoke.js
+	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-draft-settlement-smoke.js && node playwright-test-draft-numeric-smoke.js && node playwright-test-moveout-step23-smoke.js && node playwright-test-moveout-step4-smoke.js && node playwright-test-moveout-detail-smoke.js
 
 # Clean
 clean:
