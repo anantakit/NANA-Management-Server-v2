@@ -579,6 +579,12 @@ func TestCancel_HappyPath_PendingMeter(t *testing.T) {
 	if h.repo.updatedStatus != MoveOutStatusCancelled {
 		t.Errorf("status: got %q, want CANCELLED", h.repo.updatedStatus)
 	}
+	// CancelledAt must be stamped by the domain method (mirrors closed_at on
+	// Close). FE's CancelledBanner uses this timestamp instead of the
+	// drift-prone updated_at proxy.
+	if h.repo.updatedNotice == nil || h.repo.updatedNotice.CancelledAt == nil {
+		t.Errorf("CancelledAt: not stamped on cancel")
+	}
 	if h.meterCmd.calls != 1 {
 		t.Errorf("DeleteExitByRoomID calls: got %d, want 1", h.meterCmd.calls)
 	}

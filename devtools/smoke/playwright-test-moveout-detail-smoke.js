@@ -541,6 +541,13 @@ async function main() {
     check('TC22 pre-T6a: backend status now CANCELLED', tc22After.status === 'CANCELLED', `status=${tc22After.status}`)
     check('TC22 pre-T6a: settlement_bill_id still set (FE must self-gate)',
       tc22After.settlement_bill_id != null, `bill_id=${tc22After.settlement_bill_id}`)
+    // Pragmatic note: the FE banner copy ("ยกเลิกแจ้งย้ายออกแล้ว") and the
+    // banner's timestamp formatting both render `cancelled_at` from the
+    // notice. We do NOT separately differentiate `cancelled_at` from
+    // `updated_at` in the FE — in smoke runs the two are within ms of each
+    // other so a UI-side check would be flaky for no real coverage gain.
+    // Backend-side, the assertion below pins that `cancelled_at` IS stamped
+    // (which is the regression we actually care about).
     // cancelled_at must be stamped by the service (mirrors closed_at for
     // COMPLETED). FE's CancelledBanner relies on this for the precise
     // "ยกเลิกเมื่อ" timestamp instead of the drift-prone updated_at proxy.
