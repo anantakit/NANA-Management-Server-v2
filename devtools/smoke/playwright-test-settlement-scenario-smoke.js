@@ -1,13 +1,10 @@
 // Move-out Settlement Scenario Smoke v1 — TC13–TC25
 // ----------------------------------------------------------------------
-//
-// TODO(2026-05-02 redesign):
-// This script relies on the removed "ดูสรุปยอด" button.
-// Flow has moved into drawer steps.
-// Needs migration to new UI. Currently only kept for legacy coverage.
-//
-// Covers business-risk scenarios from senario.md that the legacy preview
-// smoke (TC1–TC12) does NOT exercise:
+// Covers business-risk scenarios from senario.md. The settlement-preview
+// surface lives in `SettlementStep` inside `RoomWorkflowDrawer` (Step 2);
+// drawer aria-label = "ดำเนินการย้ายออก". Mechanical port from the
+// pre-2026-05-02 SettlementPreviewDrawer entry — assertions, fixture set,
+// and business-rule coverage are unchanged.
 //
 //   TC13  paid monthly bill carry-forward (no absorbed section)
 //   TC14  unpaid monthly bill absorbed into settlement
@@ -21,15 +18,16 @@
 //   TC24  zero balance (charges = deposit exactly)
 //   TC25  deposit forfeited (short stay, not meeting minMonths)
 //
-// Legacy playwright-test-settlement-preview.js (TC1–TC12) stays intact.
-// This suite is independent — its own fixtures (TC13–TC20) + own login +
-// own cleanup. Safe to run separately or back-to-back with the legacy
-// suite (cleanup wipes all 9999-prefix smoke fixtures).
+// Pairs with `playwright-test-settlement-preview-smoke.js` (UI surface
+// coverage TC1/2/3/6/7/10/11). This suite is independent — its own
+// cleanup+seed wipes all 9999-prefix smoke fixtures.
 //
 // Selectors favor aria-label / role / stable Thai text rendered by
-// SettlementPreviewDrawer.tsx + SettlementPreviewSections.tsx. Per
-// scenario we assert only the one semantic state that matters — this is
-// a smoke suite, not exhaustive acceptance coverage.
+// SettlementPreviewSections.tsx + RoomWorkflowDrawer.tsx. Outcome amount
+// is read via `[data-testid="settlement-outcome-amount"]` (added on
+// `OutcomeCard`). Per scenario we assert only the one semantic state
+// that matters — this is a smoke suite, not exhaustive acceptance
+// coverage.
 
 const { chromium } = require('playwright')
 
@@ -79,13 +77,17 @@ async function fetchFixtures() {
 
 // ─── Drawer helpers ────────────────────────────────────────────────────
 
-const DRAWER = '[role="dialog"][aria-label="สรุปยอดย้ายออก"]'
+const DRAWER = '[role="dialog"][aria-label="ดำเนินการย้ายออก"]'
 
 async function openSettlementPreview(page, noticeId) {
   await page.goto(`${FRONTEND}/move-out/${noticeId}`)
   await page.waitForLoadState('networkidle')
-  const btn = page.locator('button:has-text("ดูสรุปยอด")').first()
-  await btn.click()
+  // h1 selector avoids matching the "ย้ายออก" sidebar entry.
+  await page.locator('h1:has-text("ย้ายออก ห้อง")').first().waitFor({ timeout: 8000 })
+  // PENDING_SETTLEMENT primary CTA = "ดำเนินการต่อ" (MoveOutDetailPage).
+  // Drawer routes via statusToCurrentIdx → Step 2 (Settlement).
+  const cta = page.locator('main button:has-text("ดำเนินการต่อ"), button:has-text("ดำเนินการต่อ")').first()
+  await cta.click()
   await page.waitForSelector(DRAWER, { timeout: 10000 })
   // Wait for either content or error state — both end the skeleton
   await page.waitForSelector(
@@ -95,7 +97,10 @@ async function openSettlementPreview(page, noticeId) {
 }
 
 async function closeDrawer(page) {
-  await page.keyboard.press('Escape')
+  const closeBtn = page.locator(`${DRAWER} button[aria-label="ปิด"]`)
+  if (await closeBtn.isVisible().catch(() => false)) {
+    await closeBtn.click()
+  }
   await page.waitForSelector(DRAWER, { state: 'detached', timeout: 5000 }).catch(() => {})
 }
 
@@ -105,7 +110,7 @@ async function getOutcome(page) {
     'text=/^(ผู้เช่าต้องชำระเพิ่ม|ผู้เช่าต้องชำระเพิ่ม \\(เงินประกันถูกริบ\\)|ต้องคืนเงินให้ผู้เช่า|เคลียร์ครบ ไม่มียอดค้าง)$/',
   ).first()
   const label = await labelEl.textContent().catch(() => null)
-  const amountEl = dialog.locator('p.text-xl, p.text-2xl').first()
+  const amountEl = dialog.locator('[data-testid="settlement-outcome-amount"]').first()
   const amount = await amountEl.textContent().catch(() => null)
   return { label: label?.trim() ?? null, amount: amount?.trim() ?? null }
 }
@@ -147,9 +152,14 @@ async function getChargesSubtotal(page) {
 }
 
 async function getHeaderActualDate(page) {
-  // Drawer header: "วันย้ายออกจริง {formatShortThaiDate(actualMoveOutDate)}"
+  // RoomWorkflowDrawer header: "ย้ายออก {formatThaiDate(actual ?? scheduled)}"
+  // Picks actual_move_out_date when present (display fallback chain in
+  // RoomWorkflowDrawer.tsx). formatThaiDate uses full Thai month + 4-digit
+  // BE year (e.g. "10 เมษายน 2569"); legacy assertion used short format.
   const dialog = page.locator(DRAWER)
-  const el = dialog.locator('text=/วันย้ายออกจริง /').first()
+  // Match the date paragraph specifically (digits after "ย้ายออก ") so the
+  // h2 fallback "ดำเนินการย้ายออก" can't bleed in.
+  const el = dialog.locator('text=/ย้ายออก \\d/').first()
   return (await el.textContent().catch(() => null))?.trim() ?? null
 }
 
@@ -219,8 +229,11 @@ async function runTC14(page, fixtures) {
   const hasCharges = await page.locator(`${DRAWER} >> text=/^ค่าใช้จ่ายรอบย้ายออก$/ >> nth=0`).isVisible()
   track('TC14.2', check('Exit-period charges still separate', hasCharges))
   // Preview/draft creation path must be usable (no hard-error)
-  const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
-  track('TC14.3', check('Create-draft button present', await createBtn.isVisible()))
+  // SettlementStep NO_DRAFT primary CTA = "ยืนยันยอด → ไปชำระเงิน". The
+  // assertion is "main flow not blocked in this scenario" — same intent
+  // as the legacy "สร้างแบบร่าง" check, retargeted at the new CTA.
+  const createBtn = page.locator(`${DRAWER} >> button:has-text("ยืนยันยอด")`)
+  track('TC14.3', check('Confirm CTA "ยืนยันยอด" present', await createBtn.isVisible()))
   await page.screenshot({ path: '/tmp/smoke-tc14.png' })
   await closeDrawer(page)
 }
@@ -247,14 +260,14 @@ async function runTC16(page, fixtures) {
     return track('TC16', check('Fixture has actual_move_out_date', false, 'missing'))
   }
   await openSettlementPreview(page, fx.notice_id)
-  // The header echoes actual_move_out_date (not scheduled). Thai short format
-  // uses abbreviated month + 2-digit BE year (e.g. "10 เม.ย. 69"). Verify
-  // the day AND the last-two-digit BE year appear.
+  // The header echoes actual_move_out_date (not scheduled). RoomWorkflowDrawer
+  // renders via formatThaiDate → full Thai month + 4-digit BE year
+  // (e.g. "10 เมษายน 2569"). Verify the day AND the 4-digit BE year appear.
   const [y, , d] = fx.actual_move_out_date.split('-').map(Number)
-  const beYearShort = String((y + 543) % 100).padStart(2, '0')
+  const beYear = String(y + 543)
   const headerText = await getHeaderActualDate(page)
   const dayOk = headerText?.includes(String(d)) ?? false
-  const beYearOk = headerText?.includes(beYearShort) ?? false
+  const beYearOk = headerText?.includes(beYear) ?? false
   track('TC16.1', check(
     'Header shows actual move-out date (not scheduled)',
     !!headerText && dayOk && beYearOk,
@@ -308,11 +321,12 @@ async function runTC17(page, fixtures) {
     `${fx.actual_move_out_date} (${diffDays}d ago)`,
   ))
   await openSettlementPreview(page, fx.notice_id)
+  // formatThaiDate (RoomWorkflowDrawer header) → 4-digit BE year. See TC16.
   const [y, , d] = fx.actual_move_out_date.split('-').map(Number)
-  const beYearShort = String((y + 543) % 100).padStart(2, '0')
+  const beYear = String(y + 543)
   const headerText = await getHeaderActualDate(page)
   const dayOk = headerText?.includes(String(d)) ?? false
-  const beYearOk = headerText?.includes(beYearShort) ?? false
+  const beYearOk = headerText?.includes(beYear) ?? false
   track('TC17.1', check(
     'Preview header honors backdated actual date',
     !!headerText && dayOk && beYearOk,
@@ -366,8 +380,11 @@ async function runTC19(page, fixtures) {
   const deposit = parseThb(await getValueByLabel(page, 'เงินประกัน'))
   track('TC19.3', check('Charges > deposit (shortfall)', charges > deposit, `charges=${charges} deposit=${deposit}`))
   // Create-draft path must still be usable despite shortfall
-  const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
-  track('TC19.4', check('Create-draft button present', await createBtn.isVisible()))
+  // SettlementStep NO_DRAFT primary CTA = "ยืนยันยอด → ไปชำระเงิน". The
+  // assertion is "main flow not blocked in this scenario" — same intent
+  // as the legacy "สร้างแบบร่าง" check, retargeted at the new CTA.
+  const createBtn = page.locator(`${DRAWER} >> button:has-text("ยืนยันยอด")`)
+  track('TC19.4', check('Confirm CTA "ยืนยันยอด" present', await createBtn.isVisible()))
   await page.screenshot({ path: '/tmp/smoke-tc19.png' })
   await closeDrawer(page)
 }
@@ -377,37 +394,39 @@ async function runTC20(page, fixtures) {
   const fx = fixtures.TC20
   if (!fx) return track('TC20', check('Fixture TC20 present', false, 'missing'))
 
-  // PENDING_METER stage → open the RecordMoveOutDrawer
+  // PENDING_METER → MoveOutDetailPage primary CTA "ดำเนินการต่อ" opens
+  // RoomWorkflowDrawer at Step 1 (MeterStep) via statusToCurrentIdx.
   await page.goto(`${FRONTEND}/move-out/${fx.notice_id}`)
   await page.waitForLoadState('networkidle')
+  await page.locator('h1:has-text("ย้ายออก ห้อง")').first().waitFor({ timeout: 8000 })
 
-  // The detail page renders a <Button>บันทึกมิเตอร์ย้ายออก</Button> that toggles
-  // the drawer open. The same text also appears as an <h2> heading — target
-  // the button role explicitly to avoid the heading.
-  const recordBtn = page.getByRole('button', { name: 'บันทึกมิเตอร์ย้ายออก' }).first()
+  const recordBtn = page.locator('main button:has-text("ดำเนินการต่อ"), button:has-text("ดำเนินการต่อ")').first()
   await recordBtn.waitFor({ state: 'visible', timeout: 10000 })
   await recordBtn.click()
+  await page.waitForSelector(DRAWER, { timeout: 10000 })
 
-  // Wait for the form to be fully ready (data loaded, skeleton gone).
-  // The ready marker only renders once notice + latest reading + baseline
-  // are all loaded and the form phase is active — NOT during skeleton.
-  await page.waitForSelector('[data-testid="exit-meter-ready"]', { timeout: 10000 })
+  // MeterStep form is ready once #rwd_water is visible (initial loading
+  // skeleton replaces the form node entirely; visible input == form phase).
+  await page.locator(`${DRAWER} #rwd_water`).waitFor({ state: 'visible', timeout: 10000 })
 
   // Fixture seeded prior MONTHLY (elec=2500, water=300). Type values well
   // below those and expect the below-previous validation to surface.
-  await page.fill('#drawer_water', '50')
-  await page.fill('#drawer_electricity', '100')
+  // Inputs are scoped to the drawer; #rwd_* IDs are owned by MeterStep.
+  await page.locator(`${DRAWER} #rwd_water`).fill('50')
+  await page.locator(`${DRAWER} #rwd_electricity`).fill('100')
   // Blur electricity so both onChange + blur events have fired
-  await page.locator('#drawer_electricity').blur().catch(() => {})
+  await page.locator(`${DRAWER} #rwd_electricity`).blur().catch(() => {})
   await page.waitForTimeout(150)
 
-  const errorLocator = page.locator('text=เลขมิเตอร์ต้องไม่น้อยกว่าครั้งก่อน').first()
+  const errorLocator = page.locator(`${DRAWER} >> text=เลขมิเตอร์ต้องไม่น้อยกว่าครั้งก่อน`).first()
   const errorShown = await errorLocator.isVisible().catch(() => false)
   track('TC20.1', check('Below-previous error message shown', errorShown))
 
-  // Submit button must be disabled (see ExitMeterDrawer.tsx isComplete guard).
-  // Scope to the dialog to avoid matching "บันทึกมิเตอร์ย้ายออก" on the page behind.
-  const submitBtn = page.locator('[role="dialog"]').getByRole('button', { name: 'บันทึก', exact: true })
+  // Submit button must be disabled (MeterStep.tsx isComplete guard requires
+  // !elecBelowPrev && !waterBelowPrev). Create-mode submit label =
+  // "บันทึกและไปสรุปยอด"; edit-mode would be "บันทึกการแก้ไข" but TC20
+  // is fresh PENDING_METER → create mode.
+  const submitBtn = page.locator(DRAWER).getByRole('button', { name: 'บันทึกและไปสรุปยอด', exact: true })
   const submitDisabled = await submitBtn.isDisabled().catch(() => true)
   track('TC20.2', check('Submit disabled while reading < previous', submitDisabled))
 
@@ -423,7 +442,7 @@ async function runTC20(page, fixtures) {
   ))
 
   // Close the drawer so any subsequent test starts clean
-  await page.keyboard.press('Escape').catch(() => {})
+  await closeDrawer(page)
 }
 
 async function runTC21(page, fixtures) {
@@ -449,8 +468,11 @@ async function runTC21(page, fixtures) {
     `${outcome.label}: ${outcome.amount}`,
   ))
   // 3. Create-draft button works (main flow not blocked)
-  const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
-  track('TC21.3', check('Create-draft button present', await createBtn.isVisible()))
+  // SettlementStep NO_DRAFT primary CTA = "ยืนยันยอด → ไปชำระเงิน". The
+  // assertion is "main flow not blocked in this scenario" — same intent
+  // as the legacy "สร้างแบบร่าง" check, retargeted at the new CTA.
+  const createBtn = page.locator(`${DRAWER} >> button:has-text("ยืนยันยอด")`)
+  track('TC21.3', check('Confirm CTA "ยืนยันยอด" present', await createBtn.isVisible()))
   await page.screenshot({ path: '/tmp/smoke-tc21.png' })
   await closeDrawer(page)
 }
@@ -507,8 +529,11 @@ async function runTC25(page, fixtures) {
     `charges=${charges} net=${net}`,
   ))
   // Create-draft button present
-  const createBtn = page.locator(`${DRAWER} >> button:has-text("สร้างแบบร่าง")`)
-  track('TC25.5', check('Create-draft button present', await createBtn.isVisible()))
+  // SettlementStep NO_DRAFT primary CTA = "ยืนยันยอด → ไปชำระเงิน". The
+  // assertion is "main flow not blocked in this scenario" — same intent
+  // as the legacy "สร้างแบบร่าง" check, retargeted at the new CTA.
+  const createBtn = page.locator(`${DRAWER} >> button:has-text("ยืนยันยอด")`)
+  track('TC25.5', check('Confirm CTA "ยืนยันยอด" present', await createBtn.isVisible()))
   await page.screenshot({ path: '/tmp/smoke-tc25.png' })
   await closeDrawer(page)
 }
