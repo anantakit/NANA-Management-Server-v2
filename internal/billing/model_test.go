@@ -367,6 +367,40 @@ func TestBill_FinalizedAt(t *testing.T) {
 	})
 }
 
+// TestBill_PaidAmount_OutstandingAmount locks the AR-lite formula:
+//   - PAID  → paid = total, outstanding = 0
+//   - DRAFT, FINALIZED → paid = 0, outstanding = total
+//   - VOID  → paid = 0, outstanding = 0 (excluded from AR)
+//
+// These projections assume atomic 1-bill-1-payment. If a future refactor
+// silently changes the rule (e.g. DRAFT becomes "0 outstanding because not
+// finalized yet"), the FE summary cards will diverge from per-row totals.
+func TestBill_PaidAmount_OutstandingAmount(t *testing.T) {
+	cases := []struct {
+		name            string
+		status          BillStatus
+		total           int64
+		wantPaid        int64
+		wantOutstanding int64
+	}{
+		{"DRAFT", BillStatusDraft, 1500, 0, 1500},
+		{"FINALIZED", BillStatusFinalized, 2500, 0, 2500},
+		{"PAID", BillStatusPaid, 3500, 3500, 0},
+		{"VOID", BillStatusVoid, 4500, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &Bill{Status: tc.status, TotalAmount: tc.total}
+			if got := b.PaidAmount(); got != tc.wantPaid {
+				t.Errorf("PaidAmount = %d, want %d", got, tc.wantPaid)
+			}
+			if got := b.OutstandingAmount(); got != tc.wantOutstanding {
+				t.Errorf("OutstandingAmount = %d, want %d", got, tc.wantOutstanding)
+			}
+		})
+	}
+}
+
 // --- Calculations ---
 
 func TestBill_CalculateTotal(t *testing.T) {

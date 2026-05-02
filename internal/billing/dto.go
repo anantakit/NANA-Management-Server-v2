@@ -159,21 +159,30 @@ type BillResponse struct {
 	UpdatedAt     string             `json:"updated_at"`
 }
 
+// BillListItemResponse is the per-row DTO for the bill list endpoint.
+//
+// AR-lite payment fields (paid_amount, outstanding_amount) are status-derived
+// under the current atomic 1-bill-1-payment model — see Bill.PaidAmount /
+// Bill.OutstandingAmount for the contract and the migration path when
+// partial payments arrive.
 type BillListItemResponse struct {
-	ID             uuid.UUID `json:"id"`
-	ContractID     uuid.UUID `json:"contract_id"`
-	BillingMonth   string    `json:"billing_month"`
-	BillType       string    `json:"bill_type"`
-	Status         string    `json:"status"`
-	VoidReason     *string   `json:"void_reason"`
-	TotalAmount    float64   `json:"total_amount"`
-	DepositAmount  float64   `json:"deposit_amount"`
-	DepositBalance float64   `json:"deposit_balance"`
-	TenantName     string    `json:"tenant_name"`
-	RoomNumber     string    `json:"room_number"`
-	ApartmentName  string    `json:"apartment_name"`
-	ApartmentID    uuid.UUID `json:"apartment_id"`
-	CreatedAt      string    `json:"created_at"`
+	ID                uuid.UUID  `json:"id"`
+	ContractID        uuid.UUID  `json:"contract_id"`
+	BillingMonth      string     `json:"billing_month"`
+	BillType          string     `json:"bill_type"`
+	Status            string     `json:"status"`
+	VoidReason        *string    `json:"void_reason"`
+	TotalAmount       float64    `json:"total_amount"`
+	PaidAmount        float64    `json:"paid_amount"`
+	OutstandingAmount float64    `json:"outstanding_amount"`
+	DepositAmount     float64    `json:"deposit_amount"`
+	DepositBalance    float64    `json:"deposit_balance"`
+	TenantName        string     `json:"tenant_name"`
+	RoomNumber        string     `json:"room_number"`
+	ApartmentName     string     `json:"apartment_name"`
+	ApartmentID       uuid.UUID  `json:"apartment_id"`
+	FinalizedAt       *time.Time `json:"finalized_at,omitempty"`
+	CreatedAt         string     `json:"created_at"`
 }
 
 // --- Settlement preview DTOs ---
@@ -563,19 +572,22 @@ func ToSettlementPreviewResponse(p *SettlementPreview) SettlementPreviewResponse
 
 func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 	return BillListItemResponse{
-		ID:             b.ID,
-		ContractID:     b.ContractID,
-		BillingMonth:   b.BillingMonth,
-		BillType:       string(b.BillType),
-		Status:         string(b.Status),
-		VoidReason:     b.VoidReason,
-		TotalAmount:    money.ToBaht(b.TotalAmount),
-		DepositAmount:  money.ToBaht(b.DepositAmount),
-		DepositBalance: money.ToBaht(b.DepositBalance),
-		TenantName:     b.TenantName,
-		RoomNumber:     b.RoomNumber,
-		ApartmentName:  b.ApartmentName,
-		ApartmentID:    b.ApartmentID,
-		CreatedAt:      b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:                b.ID,
+		ContractID:        b.ContractID,
+		BillingMonth:      b.BillingMonth,
+		BillType:          string(b.BillType),
+		Status:            string(b.Status),
+		VoidReason:        b.VoidReason,
+		TotalAmount:       money.ToBaht(b.TotalAmount),
+		PaidAmount:        money.ToBaht(b.PaidAmount()),
+		OutstandingAmount: money.ToBaht(b.OutstandingAmount()),
+		DepositAmount:     money.ToBaht(b.DepositAmount),
+		DepositBalance:    money.ToBaht(b.DepositBalance),
+		TenantName:        b.TenantName,
+		RoomNumber:        b.RoomNumber,
+		ApartmentName:     b.ApartmentName,
+		ApartmentID:       b.ApartmentID,
+		FinalizedAt:       b.FinalizedAt,
+		CreatedAt:         b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }

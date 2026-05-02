@@ -335,6 +335,38 @@ func (b *Bill) MarkPaid() error {
 	return nil
 }
 
+// --- AR-lite amount projections (status-derived) ---
+//
+// IMPORTANT — atomicity assumption:
+// These projections assume "1 bill = 1 payment, atomic" (PAID = 100% paid;
+// no partial payments). The system has NO payments table today (the legacy
+// table was dropped in migration 00014 and never recreated), so this is the
+// only honest reading available.
+//
+// When partial-payment infrastructure ships, both methods MUST be replaced
+// with payments-table aggregations (e.g. SUM(payments.amount) per bill).
+// Any caller that calls PaidAmount/OutstandingAmount today will read the
+// updated value transparently — no API shape change required.
+
+// PaidAmount returns the satang amount considered collected for this bill.
+// Under atomic semantics: PAID = total, otherwise 0.
+func (b *Bill) PaidAmount() int64 {
+	if b.IsPaid() {
+		return b.TotalAmount
+	}
+	return 0
+}
+
+// OutstandingAmount returns the satang amount still owed on this bill.
+// Under atomic semantics: DRAFT or FINALIZED = total (entire bill is
+// outstanding); PAID or VOID = 0 (collected, or excluded from AR).
+func (b *Bill) OutstandingAmount() int64 {
+	if b.IsDraft() || b.IsFinalized() {
+		return b.TotalAmount
+	}
+	return 0
+}
+
 // --- Absorbed-by-settlement lifecycle ---
 
 const voidReasonAbsorbed = "ABSORBED_BY_SETTLEMENT"
