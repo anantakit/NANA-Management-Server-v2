@@ -71,11 +71,14 @@ func (h *BillingHandler) Summary(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "สำเร็จ", BillSummaryResponse{
-		TotalCount:   raw.TotalCount,
-		PendingCount: raw.PendingCount,
-		PaidCount:    raw.PaidCount,
-		VoidedCount:  raw.VoidedCount,
-		TotalAmount:  money.ToBaht(raw.TotalAmount),
+		TotalCount:    raw.TotalCount,
+		PendingCount:  raw.PendingCount,
+		PaidCount:     raw.PaidCount,
+		VoidedCount:   raw.VoidedCount,
+		TotalAmount:   money.ToBaht(raw.TotalAmount),
+		PendingAmount: money.ToBaht(raw.PendingAmount),
+		PaidAmount:    money.ToBaht(raw.PaidAmount),
+		VoidedAmount:  money.ToBaht(raw.VoidedAmount),
 	})
 }
 

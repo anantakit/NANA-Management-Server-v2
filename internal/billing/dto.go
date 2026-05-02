@@ -65,13 +65,26 @@ type BillSummaryParams struct {
 	Month       string `query:"month"`
 }
 
-// BillSummaryResponse returns aggregate counts and total for a filtered bill set.
+// BillSummaryResponse returns aggregate counts and totals for a filtered bill set.
+//
+// Amount semantics (baht):
+//   - total_amount      = sum for non-VOID bills (existing — unchanged for backward compat)
+//   - pending_amount    = sum for DRAFT + FINALIZED (i.e. outstanding receivables under
+//     the current atomic 1-bill-1-payment model)
+//   - paid_amount       = sum for PAID
+//   - voided_amount     = sum for VOID (kept for reconciliation; not part of AR)
+//
+// When partial payments are introduced, pending_amount / paid_amount must be
+// recomputed from a payments table rather than derived from bill.status.
 type BillSummaryResponse struct {
-	TotalCount   int     `json:"total_count"`
-	PendingCount int     `json:"pending_count"`
-	PaidCount    int     `json:"paid_count"`
-	VoidedCount  int     `json:"voided_count"`
-	TotalAmount  float64 `json:"total_amount"` // baht, sum of non-VOID bills
+	TotalCount    int     `json:"total_count"`
+	PendingCount  int     `json:"pending_count"`
+	PaidCount     int     `json:"paid_count"`
+	VoidedCount   int     `json:"voided_count"`
+	TotalAmount   float64 `json:"total_amount"`
+	PendingAmount float64 `json:"pending_amount"`
+	PaidAmount    float64 `json:"paid_amount"`
+	VoidedAmount  float64 `json:"voided_amount"`
 }
 
 // --- Service-level input (not transport) ---

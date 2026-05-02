@@ -553,7 +553,10 @@ func (r *billingRepository) GetSummary(ctx context.Context, params BillSummaryPa
 		COUNT(*) FILTER (WHERE bills.status = 'FINALIZED') AS pending_count,
 		COUNT(*) FILTER (WHERE bills.status = 'PAID') AS paid_count,
 		COUNT(*) FILTER (WHERE bills.status = 'VOID') AS voided_count,
-		COALESCE(SUM(bills.total_amount) FILTER (WHERE bills.status != 'VOID'), 0) AS total_amount
+		COALESCE(SUM(bills.total_amount) FILTER (WHERE bills.status != 'VOID'), 0) AS total_amount,
+		COALESCE(SUM(bills.total_amount) FILTER (WHERE bills.status IN ('DRAFT', 'FINALIZED')), 0) AS pending_amount,
+		COALESCE(SUM(bills.total_amount) FILTER (WHERE bills.status = 'PAID'), 0) AS paid_amount,
+		COALESCE(SUM(bills.total_amount) FILTER (WHERE bills.status = 'VOID'), 0) AS voided_amount
 	`).Scan(&result).Error
 	if err != nil {
 		return nil, err

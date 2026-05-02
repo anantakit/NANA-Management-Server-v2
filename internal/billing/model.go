@@ -881,10 +881,24 @@ type BillWithRelations struct {
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).
+//
+// Amount semantics:
+//   - TotalAmount      = sum of total_amount for non-VOID bills (existing,
+//     unchanged) — represents "billed value in scope".
+//   - PendingAmount    = sum for status IN (DRAFT, FINALIZED). Under the
+//     atomic 1-bill-1-payment model this is also "amount outstanding".
+//   - PaidAmount       = sum for status = PAID. "Amount collected".
+//   - VoidedAmount     = sum for status = VOID. "Amount excluded from AR".
+//
+// When partial-payment infrastructure ships, PendingAmount/PaidAmount must be
+// recomputed from a payments table instead of bill.status.
 type BillSummaryRaw struct {
-	TotalCount   int   `gorm:"column:total_count"`
-	PendingCount int   `gorm:"column:pending_count"`
-	PaidCount    int   `gorm:"column:paid_count"`
-	VoidedCount  int   `gorm:"column:voided_count"`
-	TotalAmount  int64 `gorm:"column:total_amount"` // satang, sum of non-VOID
+	TotalCount    int   `gorm:"column:total_count"`
+	PendingCount  int   `gorm:"column:pending_count"`
+	PaidCount     int   `gorm:"column:paid_count"`
+	VoidedCount   int   `gorm:"column:voided_count"`
+	TotalAmount   int64 `gorm:"column:total_amount"`   // satang, sum of non-VOID
+	PendingAmount int64 `gorm:"column:pending_amount"` // satang, sum of DRAFT+FINALIZED
+	PaidAmount    int64 `gorm:"column:paid_amount"`    // satang, sum of PAID
+	VoidedAmount  int64 `gorm:"column:voided_amount"`  // satang, sum of VOID
 }
