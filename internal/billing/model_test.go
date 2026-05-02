@@ -304,6 +304,69 @@ func TestBill_MarkPaid(t *testing.T) {
 	})
 }
 
+// TestBill_FinalizedAt covers the audit invariant for the finalized_at
+// timestamp: set by Finalize, never cleared by subsequent transitions.
+//
+// This is the kind of invariant that fails silently — a future refactor that
+// resets the timestamp on MarkPaid would still pass status-machine tests but
+// destroy the AR aging signal the FE depends on.
+func TestBill_FinalizedAt(t *testing.T) {
+	t.Run("Finalize sets FinalizedAt to ~now", func(t *testing.T) {
+		b := &Bill{
+			Status:    BillStatusDraft,
+			LineItems: []BillLineItem{{Amount: 100}},
+		}
+		before := time.Now()
+		if err := b.Finalize(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		after := time.Now()
+		if b.FinalizedAt == nil {
+			t.Fatal("FinalizedAt was not set")
+		}
+		if b.FinalizedAt.Before(before) || b.FinalizedAt.After(after) {
+			t.Fatalf("FinalizedAt %v outside [%v, %v]", b.FinalizedAt, before, after)
+		}
+	})
+
+	t.Run("Finalize on invalid bill leaves FinalizedAt nil", func(t *testing.T) {
+		b := &Bill{Status: BillStatusDraft} // no line items
+		_ = b.Finalize()                    // returns ErrNoLineItems
+		if b.FinalizedAt != nil {
+			t.Fatalf("FinalizedAt set despite Finalize() failure: %v", b.FinalizedAt)
+		}
+	})
+
+	t.Run("MarkPaid does not clear FinalizedAt", func(t *testing.T) {
+		stamp := time.Now().Add(-2 * time.Hour)
+		b := &Bill{Status: BillStatusFinalized, FinalizedAt: &stamp}
+		if err := b.MarkPaid(); err != nil {
+			t.Fatalf("MarkPaid: %v", err)
+		}
+		if b.FinalizedAt == nil || !b.FinalizedAt.Equal(stamp) {
+			t.Fatalf("FinalizedAt mutated by MarkPaid: %v (want %v)", b.FinalizedAt, stamp)
+		}
+	})
+
+	t.Run("Void does not clear FinalizedAt", func(t *testing.T) {
+		stamp := time.Now().Add(-2 * time.Hour)
+		b := &Bill{Status: BillStatusFinalized, FinalizedAt: &stamp}
+		if err := b.Void("ทดสอบ"); err != nil {
+			t.Fatalf("Void: %v", err)
+		}
+		if b.FinalizedAt == nil || !b.FinalizedAt.Equal(stamp) {
+			t.Fatalf("FinalizedAt mutated by Void: %v (want %v)", b.FinalizedAt, stamp)
+		}
+	})
+
+	t.Run("DRAFT bill has nil FinalizedAt", func(t *testing.T) {
+		b := &Bill{Status: BillStatusDraft, LineItems: []BillLineItem{{Amount: 100}}}
+		if b.FinalizedAt != nil {
+			t.Fatalf("DRAFT bill should have nil FinalizedAt, got %v", b.FinalizedAt)
+		}
+	})
+}
+
 // --- Calculations ---
 
 func TestBill_CalculateTotal(t *testing.T) {

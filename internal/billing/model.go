@@ -199,9 +199,14 @@ type Bill struct {
 	Overrides            OverrideMap        `gorm:"type:jsonb;not null;default:'{}'::jsonb" json:"overrides,omitempty"`
 	DepositApp           DepositApplication `gorm:"column:deposit_application;type:varchar(10);not null;default:'FULL'" json:"deposit_application"`
 	CustomDepositApplied int64              `gorm:"not null;default:0" json:"custom_deposit_applied"`
-	CreatedAt      time.Time      `gorm:"not null;default:now()" json:"created_at"`
-	UpdatedAt      time.Time      `gorm:"not null;default:now()" json:"updated_at"`
-	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+	// FinalizedAt records the moment the bill transitioned DRAFT → FINALIZED.
+	// Stays set through PAID/VOID transitions (audit of "when did this become
+	// a real receivable"). Nil while the bill is still DRAFT.
+	FinalizedAt *time.Time `gorm:"type:timestamptz" json:"finalized_at,omitempty"`
+
+	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
 	LineItems []BillLineItem `gorm:"foreignKey:BillID" json:"line_items,omitempty"`
 }
@@ -298,6 +303,11 @@ func (b *Bill) Finalize() error {
 		return err
 	}
 	b.Status = BillStatusFinalized
+	// Stamp the moment the bill became a real receivable. Subsequent
+	// MarkPaid/Void transitions intentionally leave this field alone — it
+	// is the audit anchor for the FINALIZED→PAID timeline.
+	now := time.Now()
+	b.FinalizedAt = &now
 	return nil
 }
 
