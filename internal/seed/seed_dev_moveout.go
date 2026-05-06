@@ -40,9 +40,22 @@ import (
 // | 9 | A207 | COMPLETED + settled     | M-1 paid, deposit > utilities → refund (REFUNDED) |
 // |10 | B101 | CANCELLED               | Notice cancelled, tenant still occupying          |
 // |11 | B102 | PENDING_SETTLEMENT      | Scheduled +13, meter captured early               |
-// |12 | B103 | PENDING_PAYMENT         | Settlement bill FINALIZED, awaiting payment       |
+// |12 | A209 | PENDING_PAYMENT         | Settlement bill FINALIZED, awaiting payment       |
 // |13 | B104 | READY_TO_CLOSE          | Payment recorded (ZERO_BALANCE), pre-close        |
 // |14 | A208 | COMPLETED + UNSETTLED   | Closed-with-unsettled (Phase 2 back-fill demo)    |
+//
+// NOTE: scenario rooms must be VACANT in base seed (no contracts yet).
+// Reserved rooms in dev seeds — DO NOT pick these for new scenarios:
+//   - A101-A107          → seedDevContracts (base tenants)
+//   - A108, A109         → seedDevTenantHistory (multi-tenant timeline)
+//   - B103               → seedB103History (VACANT-with-history demo)
+//   - smokeRoomNumbers   → seedDevSmoke (B105, B2xx, Cxx, Dxx, E201)
+// PENDING_PAYMENT used to live on B103 (skipped silently due to history),
+// then A108 (skipped silently due to tenant-history) — both bugs traced
+// to overlapping reservations. A209 is fan-floor-2 and currently the
+// first truly-free A-block room. The per-scenario skip below now logs a
+// warning when the room is already taken so future overlaps surface
+// immediately instead of mysteriously dropping a scenario.
 //
 // Idempotent — skipped entirely if any move-out notice already exists.
 func seedDevMoveOuts(db *gorm.DB) error {
@@ -82,10 +95,12 @@ func seedDevMoveOuts(db *gorm.DB) error {
 	}
 
 	// rooms aligned 1:1 with tenants[] — must be vacant in seed base set.
+	// See header comment for the reserved-rooms list. PENDING_PAYMENT lives
+	// on A209 because B103, A108, A109 are all already taken.
 	roomNumbers := []string{
 		"A110", "A111", "A201", "A202",
 		"A203", "A204", "A205", "A206",
-		"A207", "B101", "B102", "B103", "B104",
+		"A207", "B101", "B102", "A209", "B104",
 		"A208",
 	}
 
@@ -322,8 +337,9 @@ func seedDevMoveOuts(db *gorm.DB) error {
 			withExitMeter:  true,
 		},
 		// 12. PENDING_PAYMENT — bill FINALIZED, awaiting payment record
+		// Uses A209 — see header comment for the reserved-rooms list.
 		{
-			roomNumber: "B103", tenantIDCard: "1100200300012",
+			roomNumber: "A209", tenantIDCard: "1100200300012",
 			noticeOffset: -8, scheduledOffset: -1,
 			minMonths: 6, contractStartMonths: 10,
 			note:           "สร้างบิลสรุปแล้ว รอชำระ",
@@ -396,13 +412,23 @@ func seedDevMoveOuts(db *gorm.DB) error {
 		rm := roomByNumber[sc.roomNumber]
 		tn := tenantByIDCard[sc.tenantIDCard]
 
-		// Skip if room already has any contract (avoid clobbering seed base)
+		// Skip if room already has any contract (avoid clobbering seed base).
+		// Logged at WARN so a misconfigured scenario surfaces immediately
+		// instead of silently producing fewer notices than the table claims —
+		// this is exactly how the original B103/PENDING_PAYMENT bug went
+		// unnoticed (B103 is reserved by seedB103History).
 		var existingContracts int64
 		if err := db.Model(&contract.Contract{}).
 			Where("room_id = ?", rm.ID).Count(&existingContracts).Error; err != nil {
 			return fmt.Errorf("check contracts %s: %w", rm.Number, err)
 		}
 		if existingContracts > 0 {
+			slog.Warn(
+				"move-out seed: scenario skipped — room already has contract(s)",
+				"room", rm.Number,
+				"scenario_status", sc.status,
+				"existing_contracts", existingContracts,
+			)
 			continue
 		}
 
