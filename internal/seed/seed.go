@@ -57,6 +57,9 @@ func Run(db *gorm.DB, env string) error {
 		if err := seedDevMeterReadings(db); err != nil {
 			return fmt.Errorf("seed dev meter readings: %w", err)
 		}
+		if err := seedDevMonthlyBills(db); err != nil {
+			return fmt.Errorf("seed dev monthly bills: %w", err)
+		}
 		if err := seedDevTenantHistory(db); err != nil {
 			return fmt.Errorf("seed dev tenant history: %w", err)
 		}

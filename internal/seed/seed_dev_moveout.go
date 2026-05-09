@@ -40,9 +40,10 @@ import (
 // | 9 | A207 | COMPLETED + settled     | M-1 paid, deposit > utilities → refund (REFUNDED) |
 // |10 | B101 | CANCELLED               | Notice cancelled, tenant still occupying          |
 // |11 | B102 | PENDING_SETTLEMENT      | Scheduled +13, meter captured early               |
-// |12 | A209 | PENDING_PAYMENT         | Settlement bill FINALIZED, awaiting payment       |
+// |12 | A209 | PENDING_PAYMENT         | Settlement bill FINALIZED, awaiting collect       |
 // |13 | B104 | READY_TO_CLOSE          | Payment recorded (ZERO_BALANCE), pre-close        |
 // |14 | A208 | COMPLETED + UNSETTLED   | Closed-with-unsettled (Phase 2 back-fill demo)    |
+// |15 | A210 | PENDING_PAYMENT         | Settlement bill FINALIZED, awaiting refund        |
 //
 // NOTE: scenario rooms must be VACANT in base seed (no contracts yet).
 // Reserved rooms in dev seeds — DO NOT pick these for new scenarios:
@@ -92,6 +93,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 		{"ธนากร วิไลพร", "1100200300012", "0946789012", "67/2 ซ.รัชดาภิเษก 36 แขวงจันทรเกษม เขตจตุจักร กรุงเทพฯ 10900", "ธนาภรณ์ วิไลพร (ภรรยา) 0867890120"},
 		{"ประสิทธิ์ เกษมสุข", "1100200300013", "0837890123", "91 ม.2 ถ.เทพารักษ์ ต.เทพารักษ์ อ.เมือง สมุทรปราการ 10270", "ประภา เกษมสุข (ภรรยา) 0923456780"},
 		{"กิตติ มงคลชัย", "1100200300014", "0871234599", "8/16 ซ.อ่อนนุช 17 แขวงสวนหลวง เขตสวนหลวง กรุงเทพฯ 10250", "กิตติยา มงคลชัย (น้องสาว) 0981234560"},
+		{"วราภรณ์ สิริมงคล", "1100200300015", "0998765432", "112/5 ซ.รามคำแหง 53 แขวงพลับพลา เขตวังทองหลาง กรุงเทพฯ 10310", "วารุณี สิริมงคล (พี่สาว) 0867812345"},
 	}
 
 	// rooms aligned 1:1 with tenants[] — must be vacant in seed base set.
@@ -101,7 +103,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 		"A110", "A111", "A201", "A202",
 		"A203", "A204", "A205", "A206",
 		"A207", "B101", "B102", "A209", "B104",
-		"A208",
+		"A208", "A210",
 	}
 
 	// Create tenants (idempotent per id_card)
@@ -405,6 +407,29 @@ func seedDevMoveOuts(db *gorm.DB) error {
 				// No paymentOutcome — this IS the unsettled invariant.
 			},
 		},
+		// 15. PENDING_PAYMENT — refund awaiting record (counterpart to #12)
+		// M-1 monthly bill paid → settlement has only utilities, well below
+		// deposit → DepositBalance positive → bill list classifies as
+		// "คืนเงิน" (refund) and surfaces a "คืนเงิน" CTA. Pairs with A209
+		// (#12, collect-more) so the FE settlement section demonstrates
+		// both directions side-by-side.
+		{
+			roomNumber: "A210", tenantIDCard: "1100200300015",
+			noticeOffset: -7, scheduledOffset: -2,
+			minMonths: 6, contractStartMonths: 11,
+			note:           "M-1 ชำระแล้ว รอคืนเงินส่วนเกิน",
+			status:         moveout.MoveOutStatusPendingPayment,
+			contractStatus: contract.ContractStatusActive,
+			depositStatus:  contract.DepositStatusCollected,
+			roomStatus:     room.RoomStatusOccupied,
+			withExitMeter:  true,
+			settlement: &devSettlementSpec{
+				rentMode:    billing.RentModeProrated,
+				rentPaid:    true, // M-1 paid → no rent line; charges = utilities only
+				cleaningFee: 0,
+				// No paymentOutcome — operator hasn't recorded the refund yet.
+			},
+		},
 	}
 
 	created := 0
@@ -614,12 +639,26 @@ func attachDevSettlement(
 
 	total := rentAmount + waterAmount + elecAmount + cleaningFee
 
+	// DepositBalance: positive = refund to tenant, negative = tenant owes.
+	// Mirrors `Bill.applyDepositCalculation()` — kept inline so the seed
+	// stays decoupled from the unexported domain helper. The FE bill list
+	// reads `deposit_balance` to classify settlement rows as collect /
+	// refund / zero, so seeding it correctly is required for the
+	// settlement section to render anything other than "จบแล้ว".
+	var depositBalance int64
+	if spec.depositForfeit {
+		depositBalance = -total
+	} else {
+		depositBalance = c.DepositAmount - total
+	}
+
 	bill := billing.Bill{
 		ContractID:         c.ID,
 		BillingMonth:       billingMonth,
 		BillType:           billing.BillTypeSettlement,
 		Status:             billing.BillStatusFinalized,
 		DepositAmount:      c.DepositAmount,
+		DepositBalance:     depositBalance,
 		DepositForfeited:   spec.depositForfeit,
 		TotalAmount:        total,
 		SettlementRentMode: spec.rentMode,
@@ -667,15 +706,10 @@ func attachDevSettlement(
 		return fmt.Errorf("create settlement bill: %w", err)
 	}
 
-	// Net amount: forfeit → tenant pays full charges; otherwise apply
-	// deposit (which may push net negative when deposit > charges =
-	// refund).
-	var netAmount int64
-	if spec.depositForfeit {
-		netAmount = total
-	} else {
-		netAmount = total - c.DepositAmount
-	}
+	// Notice net_amount uses the inverted convention vs DepositBalance:
+	// notice net is "what tenant owes" (positive = owes more, negative =
+	// gets refund). Equivalent to -depositBalance.
+	netAmount := -depositBalance
 
 	updates := map[string]any{
 		"settlement_bill_id": bill.ID,
