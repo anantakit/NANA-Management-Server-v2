@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"regexp"
@@ -748,12 +749,22 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 		}
 	}
 
+	// Resolve apartment ID once — both addRentAdjustment (prorate rate
+	// lookup) and addConfigFees (CLEANING_FEE/KEY_SERVICE lookup) need it.
+	// The contract's room_id is non-nullable + the room must exist if
+	// settlement reached this point, so a not-found here is an invariant
+	// violation.
+	apartmentID, err := s.repo.FindApartmentIDByRoomID(ctx, c.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("find apartment for room %s: %w", c.RoomID, err)
+	}
+
 	// Build line items
 	var items []BillLineItem
 	order := 1
 
 	var rentPaid bool
-	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate, opts.RentMode)
+	items, order, rentPaid, err = s.addRentAdjustment(ctx, items, order, c, moveOutDate, opts.RentMode, apartmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -771,7 +782,7 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 	)
 	order++
 
-	items, order, err = s.addConfigFees(ctx, items, order, c.RoomID)
+	items, order, err = s.addConfigFees(ctx, items, order, apartmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -854,14 +865,18 @@ func (s *billingService) commitSettlementPlan(ctx context.Context, plan *settlem
 // addRentAdjustment implements the settlement rent rule:
 //   - If advance rent for move-out month is PAID → rent = 0 (no refund, no charge)
 //   - If NOT paid:
-//   - PRORATED → prorate rent by actual days used
+//   - PRORATED → prorate rent by actual days used at the apartment's
+//     PRORATE_DAILY_RATE (flat rate × days)
 //   - FULL_MONTH_KEEP_DEPOSIT → charge full-month rent
 //
 // Day counting: move-out April 14 → used_days = 14 (days 1–14 inclusive)
 //
 // Rent coverage detection shortcut: bill M-1 contains advance rent for M.
 // This works because the system bills rent one month in advance.
-func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time, rentMode SettlementRentMode) ([]BillLineItem, int, bool, error) {
+//
+// `apartmentID` is passed in (not looked up from `c.RoomID`) so the
+// caller can share one apartment lookup with addConfigFees.
+func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time, rentMode SettlementRentMode, apartmentID uuid.UUID) ([]BillLineItem, int, bool, error) {
 	billingMonth := toMonth(moveOutDate)
 
 	hasPaid, err := s.repo.HasPaidAdvanceRentForMonth(ctx, c.ID, billingMonth)
@@ -883,7 +898,7 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 		return items, order, false, nil
 	}
 
-	// PRORATED — prorate by used days (inclusive of move-out date)
+	// PRORATED — flat per-day rate × days used (inclusive of move-out date)
 	usedDays := moveOutDate.Day()
 	totalDays := daysInMonth(moveOutDate)
 
@@ -892,16 +907,59 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 		return items, order, false, nil
 	}
 
-	// Settlement always prorates day 1 → moveOutDate.Day() of the billing
-	// month, so the description spells out the calendar range explicitly —
-	// admin can eyeball it against the move-out date without doing math.
-	desc := fmt.Sprintf("วันที่ 1 - %d (%d วัน)", usedDays, usedDays)
-	items = append(items, NewProrateRentLine(usedDays, totalDays, c.MonthlyRent, desc, order))
+	rate, found, err := s.findProrateRate(ctx, apartmentID)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if !found {
+		slog.Error("prorate rate config missing for apartment",
+			"apartment_id", apartmentID, "contract_id", c.ID)
+		return nil, 0, false, respond.ErrBadRequest.WithMessage(
+			"กรุณาตั้งค่าเช่ารายวันก่อนสร้างบิลปิดสัญญา")
+	}
+	if rate <= 0 {
+		slog.Error("prorate rate config invalid (zero or negative)",
+			"apartment_id", apartmentID, "rate", rate)
+		return nil, 0, false, respond.ErrBadRequest.WithMessage(
+			"ค่าเช่ารายวันต้องมากกว่า ฿0 — กรุณาแก้ไขใน apartment settings")
+	}
+
+	desc := fmt.Sprintf("%d วัน × ฿%g/วัน", usedDays, money.ToBaht(rate))
+	items = append(items, NewProrateRentLine(usedDays, rate, desc, order))
 	order++
 	return items, order, false, nil
 }
 
-// addConfigFees adds configurable fees (CLEANING_FEE, KEY_SERVICE) from billing_configs.
+// findProrateRate locates the apartment's PRORATE_DAILY_RATE config
+// row. Returns:
+//
+//	(rate, true,  nil) → active config row found (rate may be 0; caller validates)
+//	(0,    false, nil) → no row of this fee_type, or all candidates inactive
+//	(0,    _,     err) → DB error
+//
+// Splitting "not found" from "found but invalid amount" lets the caller
+// emit a more useful error log (admin error vs missing seed).
+func (s *billingService) findProrateRate(ctx context.Context, apartmentID uuid.UUID) (rate int64, found bool, err error) {
+	configs, err := s.configs.FindByApartmentID(ctx, apartmentID)
+	if err != nil {
+		return 0, false, fmt.Errorf("find billing configs: %w", err)
+	}
+	for _, cfg := range configs {
+		if cfg.FeeType != billingconfig.FeeTypeProrateDailyRate {
+			continue
+		}
+		if !cfg.IsActive {
+			continue
+		}
+		return cfg.DefaultAmount, true, nil
+	}
+	return 0, false, nil
+}
+
+// addConfigFees adds configurable flat fees (CLEANING_FEE, KEY_SERVICE)
+// from billing_configs. PRORATE_DAILY_RATE is intentionally NOT in
+// `feeLineTypes` — it's a per-day rate consumed by addRentAdjustment,
+// not a flat charge that should appear unconditionally.
 //
 // Graceful degradation is scoped to ONE case only:
 //
@@ -909,21 +967,13 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 //     This is the "config is optional, admin may add later" case — the
 //     for-loop below simply iterates zero times.
 //
-// All other failures, INCLUDING room-not-found, are invariant violations
-// (the contract that triggered settlement carries a non-nullable room_id;
-// the room must exist) and propagate as errors. Silent fallback here is
-// what masked the UUID-scan bug that dropped config fees in production.
+// `apartmentID` is passed in (not derived from roomID) so the caller
+// can share one apartment lookup with addRentAdjustment.
 //
 // Fallback policy: ถ้า apartment ยังไม่มี config row → ไม่เพิ่ม fee (ไม่ error)
 // เพราะ config เป็น optional — admin สร้างได้ภายหลัง, บิลออกได้โดยไม่มี fee
-func (s *billingService) addConfigFees(ctx context.Context, items []BillLineItem, order int, roomID uuid.UUID) ([]BillLineItem, int, error) {
-	aptID, err := s.repo.FindApartmentIDByRoomID(ctx, roomID)
-	if err != nil {
-		// Includes ErrRecordNotFound — room MUST exist if we reached here.
-		return nil, 0, fmt.Errorf("find apartment for room %s: %w", roomID, err)
-	}
-
-	configs, err := s.configs.FindByApartmentID(ctx, aptID)
+func (s *billingService) addConfigFees(ctx context.Context, items []BillLineItem, order int, apartmentID uuid.UUID) ([]BillLineItem, int, error) {
+	configs, err := s.configs.FindByApartmentID(ctx, apartmentID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("find billing configs: %w", err)
 	}

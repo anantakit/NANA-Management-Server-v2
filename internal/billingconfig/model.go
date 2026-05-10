@@ -14,12 +14,19 @@ type FeeType string
 const (
 	FeeTypeCleaningFee FeeType = "CLEANING_FEE"
 	FeeTypeKeyService  FeeType = "KEY_SERVICE"
+	// FeeTypeProrateDailyRate stores the per-day rate (in satang) used by
+	// the settlement bill's prorate rent line. Lives alongside flat-fee
+	// configs because the data shape is identical (apartment_id +
+	// default_amount + is_active); the semantic difference (rate vs flat
+	// charge) is handled in the billing service, not the config layer.
+	FeeTypeProrateDailyRate FeeType = "PRORATE_DAILY_RATE"
 )
 
 // ValidFeeTypes lists all allowed fee types for billing configs.
 var ValidFeeTypes = []FeeType{
 	FeeTypeCleaningFee,
 	FeeTypeKeyService,
+	FeeTypeProrateDailyRate,
 }
 
 // --- Model ---

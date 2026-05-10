@@ -610,15 +610,22 @@ func NewWaterLine(units int, ratePerUnit int64, description string, order int) B
 	}
 }
 
-func NewProrateRentLine(daysUsed, daysInMonth int, monthlyRent int64, description string, order int) BillLineItem {
-	amount := monthlyRent * int64(daysUsed) / int64(daysInMonth)
+// NewProrateRentLine builds a prorate-rent line from a flat per-day
+// rate. `Amount = dailyRate × daysUsed` is exact integer math, so the
+// per-day rate displayed in `Description` ("N วัน × ฿X/วัน") always
+// multiplies back to the stored amount — no ±1 satang display drift.
+//
+// The flat-rate model decouples partial-month pricing from monthly_rent;
+// the rate itself is sourced from the apartment's PRORATE_DAILY_RATE
+// billing_config row by the caller.
+func NewProrateRentLine(daysUsed int, dailyRate int64, description string, order int) BillLineItem {
 	return BillLineItem{
 		LineType:    LineItemProrateRent,
 		Source:      LineItemSourceAuto,
 		Description: description,
-		Amount:      amount,
+		Amount:      dailyRate * int64(daysUsed),
 		Quantity:    daysUsed,
-		UnitPrice:   monthlyRent / int64(daysInMonth),
+		UnitPrice:   dailyRate,
 		SortOrder:   order,
 	}
 }

@@ -268,12 +268,22 @@ func (m *mockMeterQuerier) FindMonthlyByRoomsAndMonth(ctx context.Context, roomI
 }
 
 type mockConfigQuerier struct {
+	// configs is the list returned by FindByApartmentID. When nil
+	// (zero value) the mock returns a sensible production default
+	// (PRORATE_DAILY_RATE = ฿100/day) so unrelated tests don't have to
+	// wire up the config to exercise the settlement bill path. Tests
+	// that explicitly want "no config" can set `configs: []billingconfig.BillingConfig{}`.
 	configs []billingconfig.BillingConfig
 }
 
 var _ BillingConfigQuerier = (*mockConfigQuerier)(nil)
 
 func (m *mockConfigQuerier) FindByApartmentID(_ context.Context, _ uuid.UUID) ([]billingconfig.BillingConfig, error) {
+	if m.configs == nil {
+		return []billingconfig.BillingConfig{
+			{FeeType: billingconfig.FeeTypeProrateDailyRate, DefaultAmount: 10000, IsActive: true},
+		}, nil
+	}
 	return m.configs, nil
 }
 
@@ -529,7 +539,14 @@ func newSettlementOpts() *settlementOpts {
 		contract: c,
 		moveOut:  time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC),
 		repo:     &mockBillingRepo{},
-		configs:  &mockConfigQuerier{},
+		// Settlement bills with partial-month proration require a
+		// PRORATE_DAILY_RATE config to exist for the apartment. Mirror
+		// the production default (฿100/day = 10000 satang) here so each
+		// test doesn't have to wire it up; tests that explicitly want to
+		// exercise the missing-config error path can override `configs`.
+		configs: &mockConfigQuerier{configs: []billingconfig.BillingConfig{
+			{FeeType: billingconfig.FeeTypeProrateDailyRate, DefaultAmount: 10000, IsActive: true},
+		}},
 	}
 }
 
@@ -619,8 +636,9 @@ func TestSettlement_DetectRentCoverage(t *testing.T) {
 // ── Rent Adjustment (TC01–04, TC16–17) ──
 
 func TestSettlement_RentAdjustment(t *testing.T) {
-	// monthlyRent = 500000 satang (5,000 baht) from testContract()
-	const rent = int64(500000)
+	// Flat per-day rate from PRORATE_DAILY_RATE config (mock default).
+	// 10000 satang = ฿100/day. Amount is exact: rate × days.
+	const dailyRate = int64(10000)
 
 	tests := []struct {
 		name        string
@@ -632,16 +650,16 @@ func TestSettlement_RentAdjustment(t *testing.T) {
 	}{
 		// TC01+11+12+22 — paid advance rent → 0 (no refund, no charge, no double)
 		{"paid_mid_month", [3]int{2026, 4, 14}, true, false, 0, 0},
-		// TC02+20 — not paid, mid-month → prorate 14/30
-		{"not_paid_mid_month", [3]int{2026, 4, 14}, false, true, rent * 14 / 30, 14},
+		// TC02+20 — not paid, mid-month → 14 days × rate
+		{"not_paid_mid_month", [3]int{2026, 4, 14}, false, true, dailyRate * 14, 14},
 		// TC03 — not paid, last day of 30-day month → rent = full month (day >= daysInMonth)
 		{"not_paid_last_day_30", [3]int{2026, 4, 30}, false, false, 0, 0},
-		// TC04 — not paid, first day (inclusive) → 1/30
-		{"not_paid_first_day", [3]int{2026, 4, 1}, false, true, rent * 1 / 30, 1},
+		// TC04 — not paid, first day (inclusive) → 1 day × rate
+		{"not_paid_first_day", [3]int{2026, 4, 1}, false, true, dailyRate * 1, 1},
 		// TC16 — leap year Feb 29 = last day → rent = full month
 		{"leap_feb_29_full_month", [3]int{2024, 2, 29}, false, false, 0, 0},
-		// TC17 — 31-day month prorate → 15/31
-		{"31day_month_mid", [3]int{2026, 5, 15}, false, true, rent * 15 / 31, 15},
+		// TC17 — 31-day month, mid-month → 15 days × rate
+		{"31day_month_mid", [3]int{2026, 5, 15}, false, true, dailyRate * 15, 15},
 	}
 
 	for _, tt := range tests {
@@ -879,6 +897,9 @@ func TestSettlement_ConfigFees(t *testing.T) {
 		o.configs = &mockConfigQuerier{configs: []billingconfig.BillingConfig{
 			{FeeType: billingconfig.FeeTypeCleaningFee, DefaultAmount: 50000, IsActive: true},
 			{FeeType: billingconfig.FeeTypeKeyService, DefaultAmount: 20000, IsActive: true},
+			// PRORATE_DAILY_RATE required for the partial-month rent line
+			// (default move-out is mid-month).
+			{FeeType: billingconfig.FeeTypeProrateDailyRate, DefaultAmount: 10000, IsActive: true},
 		}}
 	})
 

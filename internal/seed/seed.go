@@ -228,36 +228,52 @@ func rangeRooms(prefix string, start, end int, roomType room.RoomType, floor int
 	return rooms
 }
 
-// seedBillingConfigs ensures every apartment has a CLEANING_FEE config (฿300).
-// This is a production default — ค่าทำความสะอาดเรียกเก็บทุกครั้งที่ย้ายออก.
+// seedBillingConfigs ensures every apartment has the production-default
+// billing configs:
+//   - CLEANING_FEE       = ฿300  (charged on every settlement)
+//   - PRORATE_DAILY_RATE = ฿100  (per-day rate for partial-month settlement)
+//
+// Each row is checked independently and only inserted if missing — safe
+// to re-run on existing DBs and on apartments that were created before
+// new fee types were introduced.
 func seedBillingConfigs(db *gorm.DB) error {
 	var apartments []apartment.Apartment
 	if err := db.Find(&apartments).Error; err != nil {
 		return fmt.Errorf("find apartments: %w", err)
 	}
 
+	defaults := []struct {
+		feeType billingconfig.FeeType
+		amount  int64
+	}{
+		{billingconfig.FeeTypeCleaningFee, 30000},      // ฿300
+		{billingconfig.FeeTypeProrateDailyRate, 10000}, // ฿100/day
+	}
+
 	created := 0
 	for _, apt := range apartments {
-		var count int64
-		if err := db.Model(&billingconfig.BillingConfig{}).
-			Where("apartment_id = ? AND fee_type = ?", apt.ID, billingconfig.FeeTypeCleaningFee).
-			Count(&count).Error; err != nil {
-			return fmt.Errorf("check billing config: %w", err)
-		}
-		if count > 0 {
-			continue
-		}
+		for _, def := range defaults {
+			var count int64
+			if err := db.Model(&billingconfig.BillingConfig{}).
+				Where("apartment_id = ? AND fee_type = ?", apt.ID, def.feeType).
+				Count(&count).Error; err != nil {
+				return fmt.Errorf("check billing config: %w", err)
+			}
+			if count > 0 {
+				continue
+			}
 
-		cfg := billingconfig.BillingConfig{
-			ApartmentID:   apt.ID,
-			FeeType:       billingconfig.FeeTypeCleaningFee,
-			DefaultAmount: 30000, // ฿300
-			IsActive:      true,
+			cfg := billingconfig.BillingConfig{
+				ApartmentID:   apt.ID,
+				FeeType:       def.feeType,
+				DefaultAmount: def.amount,
+				IsActive:      true,
+			}
+			if err := db.Create(&cfg).Error; err != nil {
+				return fmt.Errorf("create %s config for %s: %w", def.feeType, apt.Name, err)
+			}
+			created++
 		}
-		if err := db.Create(&cfg).Error; err != nil {
-			return fmt.Errorf("create billing config for %s: %w", apt.Name, err)
-		}
-		created++
 	}
 
 	if created > 0 {

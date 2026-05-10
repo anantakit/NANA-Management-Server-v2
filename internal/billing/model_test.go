@@ -522,16 +522,20 @@ func TestNewWaterLine(t *testing.T) {
 }
 
 func TestNewProrateRentLine(t *testing.T) {
-	// 15 days in a 30-day month, monthly rent = 6000 baht (600000 satang)
-	line := NewProrateRentLine(15, 30, 600000, "ค่าห้อง 15 วัน", 1)
+	// 15 days at ฿100/day flat rate (10000 satang) → 150000 satang = ฿1500.
+	// Flat rate × days is exact — no rounding ambiguity.
+	line := NewProrateRentLine(15, 10000, "15 วัน × ฿100/วัน", 1)
 	if line.LineType != LineItemProrateRent {
 		t.Fatalf("expected PRORATE_RENT, got %s", line.LineType)
 	}
-	if line.Amount != 300000 {
-		t.Fatalf("expected 300000, got %d", line.Amount)
+	if line.Amount != 150000 {
+		t.Fatalf("expected 150000, got %d", line.Amount)
 	}
 	if line.Quantity != 15 {
 		t.Fatalf("expected qty 15, got %d", line.Quantity)
+	}
+	if line.UnitPrice != 10000 {
+		t.Fatalf("expected unit price 10000 (฿100/day), got %d", line.UnitPrice)
 	}
 }
 

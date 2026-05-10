@@ -909,8 +909,8 @@ func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *co
 	billingMonth := actualMoveOut.Format("2006-01")
 
 	day := actualMoveOut.Day()
-	totalDays := endOfMonth(actualMoveOut).Day()
-	proRateRent := (c.MonthlyRent * int64(day)) / int64(totalDays)
+	const dailyRate int64 = 10000 // ฿100/day — matches PRORATE_DAILY_RATE default
+	proRateRent := dailyRate * int64(day)
 
 	waterAmount := int64(18) * c.WaterRatePerUnit
 	elecAmount := int64(135) * c.ElectricityRatePerUnit
@@ -929,7 +929,7 @@ func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *co
 		RentPaid:           false,
 	}
 	items := []billing.BillLineItem{
-		{LineType: billing.LineItemProrateRent, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("วันที่ 1 - %d (%d วัน)", day, day), Amount: proRateRent, SortOrder: 1},
+		{LineType: billing.LineItemProrateRent, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("%d วัน × ฿100/วัน", day), Amount: proRateRent, Quantity: day, UnitPrice: dailyRate, SortOrder: 1},
 		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
@@ -956,8 +956,8 @@ func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveO
 	billingMonth := actualMoveOut.Format("2006-01")
 
 	day := actualMoveOut.Day()
-	totalDays := endOfMonth(actualMoveOut).Day()
-	proRateRent := (c.MonthlyRent * int64(day)) / int64(totalDays)
+	const dailyRate int64 = 10000 // ฿100/day — matches PRORATE_DAILY_RATE default
+	proRateRent := dailyRate * int64(day)
 
 	waterAmount := int64(18) * c.WaterRatePerUnit
 	elecAmount := int64(135) * c.ElectricityRatePerUnit
@@ -978,7 +978,7 @@ func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveO
 		RentPaid:           false,
 	}
 	items := []billing.BillLineItem{
-		{LineType: billing.LineItemProrateRent, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("วันที่ 1 - %d (%d วัน)", day, day), Amount: proRateRent, SortOrder: 1},
+		{LineType: billing.LineItemProrateRent, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("%d วัน × ฿100/วัน", day), Amount: proRateRent, Quantity: day, UnitPrice: dailyRate, SortOrder: 1},
 		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
