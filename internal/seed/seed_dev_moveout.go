@@ -613,7 +613,7 @@ func attachDevSettlement(
 			rentLine = &billing.BillLineItem{
 				LineType:    billing.LineItemProrateRent,
 				Source:      billing.LineItemSourceAuto,
-				Description: fmt.Sprintf("ค่าเช่า (คิดตามสัดส่วน) %d/%d วัน", day, totalDays),
+				Description: fmt.Sprintf("วันที่ 1 - %d (%d วัน)", day, day),
 				Amount:      rentAmount,
 				SortOrder:   1,
 			}

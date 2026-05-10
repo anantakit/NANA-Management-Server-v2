@@ -892,7 +892,10 @@ func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLine
 		return items, order, false, nil
 	}
 
-	desc := fmt.Sprintf("ค่าห้อง %d วัน", usedDays)
+	// Settlement always prorates day 1 → moveOutDate.Day() of the billing
+	// month, so the description spells out the calendar range explicitly —
+	// admin can eyeball it against the move-out date without doing math.
+	desc := fmt.Sprintf("วันที่ 1 - %d (%d วัน)", usedDays, usedDays)
 	items = append(items, NewProrateRentLine(usedDays, totalDays, c.MonthlyRent, desc, order))
 	order++
 	return items, order, false, nil
