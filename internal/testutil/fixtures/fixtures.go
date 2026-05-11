@@ -175,6 +175,24 @@ func SeedCleaningFeeConfig(t *testing.T, db *gorm.DB, aptID string, amount int64
 	return cfg
 }
 
+// SeedProrateConfig creates a PRORATE_DAILY_RATE billing config for the apartment.
+// Settlement generation requires this row whenever a partial-month rent adjustment
+// is computed (move-out before end-of-month with no PAID advance rent).
+// Default seed/prod rate is ฿100/day (10000 satang).
+func SeedProrateConfig(t *testing.T, db *gorm.DB, aptID string, dailyRate int64) *billingconfig.BillingConfig {
+	t.Helper()
+	cfg := &billingconfig.BillingConfig{
+		ApartmentID:   mustParseUUID(t, aptID),
+		FeeType:       billingconfig.FeeTypeProrateDailyRate,
+		DefaultAmount: dailyRate,
+		IsActive:      true,
+	}
+	if err := db.Create(cfg).Error; err != nil {
+		t.Fatalf("seed prorate config: %v", err)
+	}
+	return cfg
+}
+
 // --- internal helpers ---
 
 func mustParseUUID(t *testing.T, s string) uuid.UUID {

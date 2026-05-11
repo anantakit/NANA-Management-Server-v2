@@ -38,6 +38,7 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 	tn := fixtures.SeedTenant(t, db)
 	c := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 8)
 	fixtures.SeedCleaningFeeConfig(t, db, apt.ID.String(), 30000)
+	fixtures.SeedProrateConfig(t, db, apt.ID.String(), 10000) // ฿100/day — matches seed default
 
 	moveOutDate := truncateToDate(time.Now().UTC()).AddDate(0, 0, -5)
 

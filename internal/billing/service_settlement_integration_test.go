@@ -41,6 +41,7 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	// Contract started 8 months ago — comfortably past minMonths=6.
 	c := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 8)
 	fixtures.SeedCleaningFeeConfig(t, db, apt.ID.String(), 30000)
+	fixtures.SeedProrateConfig(t, db, apt.ID.String(), 10000) // ฿100/day — matches seed default
 
 	moveOutDate := truncateToDate(time.Now().UTC()).AddDate(0, 0, -5)
 
