@@ -288,8 +288,8 @@ func (m *mockConfigQuerier) FindByApartmentID(_ context.Context, _ uuid.UUID) ([
 }
 
 type mockMoveOutQuerier struct {
-	notice                        *moveout.MoveOutNotice
-	findRoomIDsWithPendingNoticeFn func(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	notice                          *moveout.MoveOutNotice
+	findRoomIDsWithMoveOutInMonthFn func(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
 }
 
 var _ MoveOutQuerier = (*mockMoveOutQuerier)(nil)
@@ -300,9 +300,9 @@ func (m *mockMoveOutQuerier) FindActiveByContractID(_ context.Context, _ uuid.UU
 	}
 	return nil, gorm.ErrRecordNotFound
 }
-func (m *mockMoveOutQuerier) FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
-	if m.findRoomIDsWithPendingNoticeFn != nil {
-		return m.findRoomIDsWithPendingNoticeFn(ctx, roomIDs)
+func (m *mockMoveOutQuerier) FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error) {
+	if m.findRoomIDsWithMoveOutInMonthFn != nil {
+		return m.findRoomIDsWithMoveOutInMonthFn(ctx, roomIDs, billingMonth)
 	}
 	return map[uuid.UUID]bool{}, nil
 }
@@ -1528,7 +1528,7 @@ func TestBatchCreateMonthlyBills_MoveOutPending(t *testing.T) {
 	}
 
 	moveOuts := &mockMoveOutQuerier{
-		findRoomIDsWithPendingNoticeFn: func(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+		findRoomIDsWithMoveOutInMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]bool, error) {
 			return map[uuid.UUID]bool{cwr.RoomID: true}, nil
 		},
 	}
@@ -1541,6 +1541,50 @@ func TestBatchCreateMonthlyBills_MoveOutPending(t *testing.T) {
 	}
 	if items[0].ReasonCode != ReasonMoveOutPending {
 		t.Errorf("reason = %s, want MOVE_OUT_PENDING", items[0].ReasonCode)
+	}
+}
+
+// Move-out scheduled NEXT month must not skip the current-month billing.
+// Tenant is still in the room for billing_month and must receive the normal
+// monthly bill; settlement will replace the next-month bill instead.
+func TestBatchCreateMonthlyBills_MoveOutNextMonth_StillBills(t *testing.T) {
+	cwr, c := testContractWithRoom(1, "101")
+	r := testMonthlyReading(c.RoomID, "2026-03")
+
+	repo := &mockBillingRepo{
+		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
+			return []ContractWithRoom{cwr}, nil
+		},
+	}
+
+	// Repo filters by month, so the next-month notice simply doesn't appear
+	// in the map returned for the current billing month — mock that contract.
+	moveOuts := &mockMoveOutQuerier{
+		findRoomIDsWithMoveOutInMonthFn: func(_ context.Context, _ []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error) {
+			if billingMonth == "2026-03" {
+				return map[uuid.UUID]bool{}, nil // not skipped for current month
+			}
+			return map[uuid.UUID]bool{cwr.RoomID: true}, nil
+		},
+	}
+
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: r}, nil
+		},
+	}
+
+	svc := batchSvc(repo, meters, moveOuts)
+	batch, items := runBatch(t, svc, repo, "2026-03")
+
+	if batch.CreatedCount != 1 {
+		t.Fatalf("created = %d, want 1 (next-month move-out must not block this month's bill)", batch.CreatedCount)
+	}
+	if batch.SkippedCount != 0 {
+		t.Errorf("skipped = %d, want 0", batch.SkippedCount)
+	}
+	if items[0].ResultType != ResultCreated {
+		t.Errorf("result = %s, want CREATED", items[0].ResultType)
 	}
 }
 

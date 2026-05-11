@@ -32,7 +32,12 @@ type BillingConfigQuerier interface {
 // MoveOutQuerier looks up move-out notices for settlement and batch billing.
 type MoveOutQuerier interface {
 	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*moveout.MoveOutNotice, error)
-	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	// FindRoomIDsWithMoveOutInMonth returns rooms whose non-terminal move-out
+	// notice has scheduled_move_out_date inside the given billing month
+	// (YYYY-MM). Used by the monthly batch flow to skip ONLY current-month
+	// move-outs (settlement will cover them); rooms with future-month notices
+	// still get a normal monthly bill.
+	FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
 }
 
 // --- Batch billing projections ---

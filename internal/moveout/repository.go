@@ -20,6 +20,7 @@ type MoveOutRepository interface {
 	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*MoveOutNotice, error)
 	HasActiveByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
 	ListActive(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error)
 	ListHistory(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error)
 	Create(ctx context.Context, notice *MoveOutNotice) error
@@ -197,6 +198,35 @@ func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, ro
 		Joins("JOIN contracts ON contracts.id = move_out_notices.contract_id AND contracts.deleted_at IS NULL").
 		Where("move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ?",
 			[]MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled}, roomIDs).
+		Scan(&results).Error
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[uuid.UUID]bool, len(results))
+	for _, row := range results {
+		m[row.RoomID] = true
+	}
+	return m, nil
+}
+
+// FindRoomIDsWithMoveOutInMonth returns rooms whose non-terminal move-out
+// notice is scheduled inside the given billing month (YYYY-MM).
+// Used by the monthly billing batch flow to skip ONLY current-month
+// move-outs (settlement bill will cover them). Rooms with future-month
+// notices still receive a normal monthly bill.
+func (r *moveOutRepository) FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]bool{}, nil
+	}
+	var results []struct {
+		RoomID uuid.UUID `gorm:"column:room_id"`
+	}
+	err := database.DB(ctx, r.db).
+		Table("move_out_notices").
+		Select("DISTINCT contracts.room_id").
+		Joins("JOIN contracts ON contracts.id = move_out_notices.contract_id AND contracts.deleted_at IS NULL").
+		Where("move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ? AND TO_CHAR(move_out_notices.scheduled_move_out_date, 'YYYY-MM') = ?",
+			[]MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled}, roomIDs, billingMonth).
 		Scan(&results).Error
 	if err != nil {
 		return nil, err

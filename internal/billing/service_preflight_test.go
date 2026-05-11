@@ -168,7 +168,7 @@ func TestPreflightMonthly_HappyPath_AllBuckets(t *testing.T) {
 		},
 	}
 	moveOuts := &mockMoveOutQuerier{
-		findRoomIDsWithPendingNoticeFn: func(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
+		findRoomIDsWithMoveOutInMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]bool, error) {
 			return map[uuid.UUID]bool{cwr4.RoomID: true}, nil
 		},
 	}

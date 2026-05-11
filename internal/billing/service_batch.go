@@ -166,7 +166,7 @@ func (s *billingService) loadBatchInputs(ctx context.Context, apartmentID uuid.U
 		contractIDs[i] = c.ContractID
 	}
 
-	pendingMoveOuts, err := s.moveOuts.FindRoomIDsWithPendingNotice(ctx, roomIDs)
+	pendingMoveOuts, err := s.moveOuts.FindRoomIDsWithMoveOutInMonth(ctx, roomIDs, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("check move-outs: %w", err)
 	}

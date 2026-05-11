@@ -60,6 +60,9 @@ func (m *mockMoveOutRepo) HasActiveByContractID(_ context.Context, _ uuid.UUID) 
 func (m *mockMoveOutRepo) FindRoomIDsWithPendingNotice(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
 	return nil, nil
 }
+func (m *mockMoveOutRepo) FindRoomIDsWithMoveOutInMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]bool, error) {
+	return nil, nil
+}
 func (m *mockMoveOutRepo) ListActive(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error) {
 	if m.listActiveFn != nil {
 		return m.listActiveFn(ctx, params)
