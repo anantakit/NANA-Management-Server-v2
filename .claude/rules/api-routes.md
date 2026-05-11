@@ -92,6 +92,7 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | GET | `/:id` | Get bill with tenant/room/apartment relations + line items |
 | POST | `/monthly` | Create single monthly bill (FINALIZED) |
 | POST | `/settlement` | Create settlement bill (DRAFT) |
+| GET | `/preflight` | Readiness counts for monthly batch (read-only; query `apartment_id` + `billing_month`). Returns total_rooms / ready_count / missing_meter_count / already_exists_count / move_out_pending_count / not_billable_count. Powers the Generate page readiness card — no batch persisted |
 | POST | `/batch-monthly` | Trigger batch monthly generation (compute snapshots, no bills yet) |
 | PATCH | `/:id/finalize` | Transition DRAFT → FINALIZED |
 | PATCH | `/:id/void` | Void bill (DRAFT/FINALIZED → VOID, requires reason) |

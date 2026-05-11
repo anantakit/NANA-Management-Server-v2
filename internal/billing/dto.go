@@ -27,6 +27,13 @@ type BatchCreateMonthlyBillsRequest struct {
 	BillingMonth string `json:"billing_month" validate:"required,len=7"` // YYYY-MM
 }
 
+// MonthlyPreflightRequest is the query for GET /bills/preflight.
+// Read-only counts; no batch row created.
+type MonthlyPreflightRequest struct {
+	ApartmentID  string `query:"apartment_id" validate:"required,uuid"`
+	BillingMonth string `query:"billing_month" validate:"required,len=7"` // YYYY-MM
+}
+
 type VoidBillRequest struct {
 	Reason string `json:"reason" validate:"required,min=1,max=100"`
 }
@@ -328,6 +335,28 @@ func ToCommitBatchResponse(r *CommitBatchResult) CommitBatchResponse {
 		SuccessCount: r.SuccessCount,
 		FailCount:    r.FailCount,
 		PendingCount: r.PendingCount,
+	}
+}
+
+// MonthlyPreflightResponse is the readiness summary returned by
+// GET /bills/preflight. Counts only — no per-room detail in P0a.
+type MonthlyPreflightResponse struct {
+	TotalRooms          int `json:"total_rooms"`
+	ReadyCount          int `json:"ready_count"`
+	MissingMeterCount   int `json:"missing_meter_count"`
+	AlreadyExistsCount  int `json:"already_exists_count"`
+	MoveOutPendingCount int `json:"move_out_pending_count"`
+	NotBillableCount    int `json:"not_billable_count"`
+}
+
+func ToMonthlyPreflightResponse(r *MonthlyPreflightResult) MonthlyPreflightResponse {
+	return MonthlyPreflightResponse{
+		TotalRooms:          r.TotalRooms,
+		ReadyCount:          r.ReadyCount,
+		MissingMeterCount:   r.MissingMeterCount,
+		AlreadyExistsCount:  r.AlreadyExistsCount,
+		MoveOutPendingCount: r.MoveOutPendingCount,
+		NotBillableCount:    r.NotBillableCount,
 	}
 }
 

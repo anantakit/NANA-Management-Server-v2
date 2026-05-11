@@ -27,6 +27,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Post("/batches/:id/commit", h.CommitBatch)
 
 	r.Get("/summary", h.Summary)
+	r.Get("/preflight", h.PreflightMonthly)
 	r.Get("/", h.List)
 	r.Get("/:id", h.GetByID)
 	r.Post("/monthly", h.CreateMonthly)
@@ -181,6 +182,20 @@ func (h *BillingHandler) Void(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "ยกเลิกบิลแล้ว", ToBillResponseWithRelations(*bill))
+}
+
+func (h *BillingHandler) PreflightMonthly(c fiber.Ctx) error {
+	var req MonthlyPreflightRequest
+	if err := bind.Query(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.PreflightMonthly(c.Context(), req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สำเร็จ", ToMonthlyPreflightResponse(result))
 }
 
 func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {

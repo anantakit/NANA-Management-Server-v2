@@ -71,23 +71,93 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 	return batch, nil
 }
 
-// buildBatchItems classifies each active contract and computes a snapshot
-// for the CREATED cases. Runs inside the batch transaction so everything is atomic.
-func (s *billingService) buildBatchItems(
-	ctx context.Context,
-	apartmentID uuid.UUID,
-	billingMonth string,
-	batchID uuid.UUID,
-) ([]BillGenerationBatchItem, error) {
+// contractClassification is the verdict on a single contract for a billing
+// month. Pure data — shared by batch (persists + computes snapshots) and
+// preflight (counts only) so the rule has a single source of truth.
+type contractClassification struct {
+	ResultType ResultType
+	ReasonCode string
+	ReasonText string
+	BillID     *uuid.UUID
+}
+
+// classifyContractForBatch decides whether a contract should bill this month.
+// Pure function. Check order matches batch priority — first match wins:
+// move-out → billability window → meter → already-exists → CREATED.
+func classifyContractForBatch(
+	c ContractWithRoom,
+	startOfMonth, endOfMonth time.Time,
+	pendingMoveOuts map[uuid.UUID]bool,
+	meterMap map[uuid.UUID]*meterreading.MeterReading,
+	existingMap map[uuid.UUID]*Bill,
+) contractClassification {
+	if pendingMoveOuts[c.RoomID] {
+		return contractClassification{
+			ResultType: ResultSkipped,
+			ReasonCode: ReasonMoveOutPending,
+			ReasonText: "มีใบแจ้งย้ายออกรอดำเนินการ",
+		}
+	}
+	if c.StartDate.After(endOfMonth) {
+		return contractClassification{
+			ResultType: ResultSkipped,
+			ReasonCode: ReasonNotBillable,
+			ReasonText: "สัญญายังไม่เริ่มในเดือนที่ออกบิล",
+		}
+	}
+	if c.EndDate != nil && c.EndDate.Before(startOfMonth) {
+		return contractClassification{
+			ResultType: ResultSkipped,
+			ReasonCode: ReasonNotBillable,
+			ReasonText: "สัญญาจบแล้วก่อนเดือนที่ออกบิล",
+		}
+	}
+	if _, hasMeter := meterMap[c.RoomID]; !hasMeter {
+		return contractClassification{
+			ResultType: ResultSkipped,
+			ReasonCode: ReasonMissingMeterReading,
+			ReasonText: "ยังไม่มีข้อมูลมิเตอร์สำหรับเดือนนี้",
+		}
+	}
+	if existing, ok := existingMap[c.ContractID]; ok {
+		return contractClassification{
+			ResultType: ResultAlreadyExists,
+			ReasonCode: ReasonAlreadyExists,
+			ReasonText: "มีบิลสำหรับเดือนนี้อยู่แล้ว",
+			BillID:     &existing.ID,
+		}
+	}
+	return contractClassification{ResultType: ResultCreated}
+}
+
+// batchInputs is the data needed to classify a batch of contracts, loaded once.
+type batchInputs struct {
+	contracts       []ContractWithRoom
+	startOfMonth    time.Time
+	endOfMonth      time.Time
+	pendingMoveOuts map[uuid.UUID]bool
+	meterMap        map[uuid.UUID]*meterreading.MeterReading
+	existingMap     map[uuid.UUID]*Bill
+}
+
+// loadBatchInputs reads all data needed to classify contracts. Read-only;
+// shared by BatchCreateMonthlyBills and PreflightMonthly.
+func (s *billingService) loadBatchInputs(ctx context.Context, apartmentID uuid.UUID, billingMonth string) (*batchInputs, error) {
 	contracts, err := s.repo.FindActiveContractsByApartmentID(ctx, apartmentID)
 	if err != nil {
 		return nil, fmt.Errorf("find contracts: %w", err)
 	}
-	if len(contracts) == 0 {
-		return []BillGenerationBatchItem{}, nil
-	}
-
 	startOfMonth, endOfMonth := parseBillingMonthRange(billingMonth)
+	if len(contracts) == 0 {
+		return &batchInputs{
+			contracts:       contracts,
+			startOfMonth:    startOfMonth,
+			endOfMonth:      endOfMonth,
+			pendingMoveOuts: map[uuid.UUID]bool{},
+			meterMap:        map[uuid.UUID]*meterreading.MeterReading{},
+			existingMap:     map[uuid.UUID]*Bill{},
+		}, nil
+	}
 
 	roomIDs := make([]uuid.UUID, len(contracts))
 	contractIDs := make([]uuid.UUID, len(contracts))
@@ -100,82 +170,110 @@ func (s *billingService) buildBatchItems(
 	if err != nil {
 		return nil, fmt.Errorf("check move-outs: %w", err)
 	}
-
 	meterMap, err := s.meters.FindMonthlyByRoomsAndMonth(ctx, roomIDs, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("find meters: %w", err)
 	}
-
 	existingMap, err := s.repo.FindExistingByContractsAndMonth(ctx, contractIDs, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("find existing bills: %w", err)
 	}
 
-	items := make([]BillGenerationBatchItem, 0, len(contracts))
+	return &batchInputs{
+		contracts:       contracts,
+		startOfMonth:    startOfMonth,
+		endOfMonth:      endOfMonth,
+		pendingMoveOuts: pendingMoveOuts,
+		meterMap:        meterMap,
+		existingMap:     existingMap,
+	}, nil
+}
 
-	for _, c := range contracts {
+// buildBatchItems classifies each active contract and computes a snapshot
+// for the CREATED cases. Runs inside the batch transaction so everything is atomic.
+func (s *billingService) buildBatchItems(
+	ctx context.Context,
+	apartmentID uuid.UUID,
+	billingMonth string,
+	batchID uuid.UUID,
+) ([]BillGenerationBatchItem, error) {
+	in, err := s.loadBatchInputs(ctx, apartmentID, billingMonth)
+	if err != nil {
+		return nil, err
+	}
+	if len(in.contracts) == 0 {
+		return []BillGenerationBatchItem{}, nil
+	}
+
+	items := make([]BillGenerationBatchItem, 0, len(in.contracts))
+	for _, c := range in.contracts {
+		cls := classifyContractForBatch(c, in.startOfMonth, in.endOfMonth, in.pendingMoveOuts, in.meterMap, in.existingMap)
 		item := BillGenerationBatchItem{
 			BatchID:    batchID,
 			ContractID: c.ContractID,
 			RoomID:     c.RoomID,
 			RoomNumber: c.RoomNumber,
 			RoomFloor:  c.RoomFloor,
+			ResultType: cls.ResultType,
+			ReasonCode: cls.ReasonCode,
+			ReasonText: cls.ReasonText,
+			BillID:     cls.BillID,
 		}
-
-		// 1. Move-out: skip if pending (settlement flow takes over)
-		if pendingMoveOuts[c.RoomID] {
-			item.ResultType = ResultSkipped
-			item.ReasonCode = ReasonMoveOutPending
-			item.ReasonText = "มีใบแจ้งย้ายออกรอดำเนินการ"
-			items = append(items, item)
-			continue
+		if cls.ResultType == ResultCreated {
+			item.ComputedSnapshot = computeMonthlyBillSnapshot(
+				billingMonth, c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, in.meterMap[c.RoomID],
+			)
 		}
-
-		// 2. Billability window
-		if c.StartDate.After(endOfMonth) {
-			item.ResultType = ResultSkipped
-			item.ReasonCode = ReasonNotBillable
-			item.ReasonText = "สัญญายังไม่เริ่มในเดือนที่ออกบิล"
-			items = append(items, item)
-			continue
-		}
-		if c.EndDate != nil && c.EndDate.Before(startOfMonth) {
-			item.ResultType = ResultSkipped
-			item.ReasonCode = ReasonNotBillable
-			item.ReasonText = "สัญญาจบแล้วก่อนเดือนที่ออกบิล"
-			items = append(items, item)
-			continue
-		}
-
-		// 3. Meter reading required
-		reading, hasMeter := meterMap[c.RoomID]
-		if !hasMeter {
-			item.ResultType = ResultSkipped
-			item.ReasonCode = ReasonMissingMeterReading
-			item.ReasonText = "ยังไม่มีข้อมูลมิเตอร์สำหรับเดือนนี้"
-			items = append(items, item)
-			continue
-		}
-
-		// 4. Already exists (pre-check)
-		if existing, ok := existingMap[c.ContractID]; ok {
-			item.ResultType = ResultAlreadyExists
-			item.ReasonCode = ReasonAlreadyExists
-			item.ReasonText = "มีบิลสำหรับเดือนนี้อยู่แล้ว"
-			item.BillID = &existing.ID
-			items = append(items, item)
-			continue
-		}
-
-		// 5. Compute snapshot (no bill row — will be persisted by commit step)
-		snapshot := computeMonthlyBillSnapshot(billingMonth,
-			c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
-		item.ResultType = ResultCreated
-		item.ComputedSnapshot = snapshot
 		items = append(items, item)
 	}
-
 	return items, nil
+}
+
+// MonthlyPreflightResult is the readiness count summary for the Generate page
+// — same classification a real batch run would produce, read-only.
+type MonthlyPreflightResult struct {
+	TotalRooms          int
+	ReadyCount          int
+	MissingMeterCount   int
+	AlreadyExistsCount  int
+	MoveOutPendingCount int
+	NotBillableCount    int
+}
+
+// PreflightMonthly returns readiness counts without persisting anything.
+// Uses the same loadBatchInputs + classifyContractForBatch pair as the real
+// batch flow, so counts always match what a subsequent batch run would tally.
+func (s *billingService) PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error) {
+	apartmentID, err := uuid.Parse(req.ApartmentID)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("apartment_id ไม่ถูกต้อง")
+	}
+	if !billingMonthRe.MatchString(req.BillingMonth) {
+		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
+	}
+
+	in, err := s.loadBatchInputs(ctx, apartmentID, req.BillingMonth)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &MonthlyPreflightResult{TotalRooms: len(in.contracts)}
+	for _, c := range in.contracts {
+		cls := classifyContractForBatch(c, in.startOfMonth, in.endOfMonth, in.pendingMoveOuts, in.meterMap, in.existingMap)
+		switch {
+		case cls.ResultType == ResultCreated:
+			result.ReadyCount++
+		case cls.ReasonCode == ReasonAlreadyExists:
+			result.AlreadyExistsCount++
+		case cls.ReasonCode == ReasonMissingMeterReading:
+			result.MissingMeterCount++
+		case cls.ReasonCode == ReasonMoveOutPending:
+			result.MoveOutPendingCount++
+		case cls.ReasonCode == ReasonNotBillable:
+			result.NotBillableCount++
+		}
+	}
+	return result, nil
 }
 
 // parseBillingMonthRange converts "YYYY-MM" to start and end of that month.
