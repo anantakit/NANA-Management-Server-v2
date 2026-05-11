@@ -66,6 +66,9 @@ func Run(db *gorm.DB, env string) error {
 		if err := seedDevMoveOuts(db); err != nil {
 			return fmt.Errorf("seed dev move-outs: %w", err)
 		}
+		if err := seedDevNanaPlaceBilling(db); err != nil {
+			return fmt.Errorf("seed dev nana place billing: %w", err)
+		}
 		if err := seedDevSmoke(db); err != nil {
 			return fmt.Errorf("seed dev smoke: %w", err)
 		}
