@@ -3,6 +3,7 @@ package moveout
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
@@ -214,19 +215,30 @@ func (r *moveOutRepository) FindRoomIDsWithPendingNotice(ctx context.Context, ro
 // Used by the monthly billing batch flow to skip ONLY current-month
 // move-outs (settlement bill will cover them). Rooms with future-month
 // notices still receive a normal monthly bill.
+//
+// Uses a half-open date range (`>= start, < start_of_next_month`) instead
+// of `TO_CHAR(date, 'YYYY-MM') = ?` so the b-tree index on
+// scheduled_move_out_date stays usable — wrapping the column in a function
+// kills index access at any scale.
 func (r *moveOutRepository) FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error) {
 	if len(roomIDs) == 0 {
 		return map[uuid.UUID]bool{}, nil
 	}
+	monthStart, err := time.Parse("2006-01", billingMonth)
+	if err != nil {
+		return nil, fmt.Errorf("invalid billing month %q: %w", billingMonth, err)
+	}
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
 	var results []struct {
 		RoomID uuid.UUID `gorm:"column:room_id"`
 	}
-	err := database.DB(ctx, r.db).
+	err = database.DB(ctx, r.db).
 		Table("move_out_notices").
 		Select("DISTINCT contracts.room_id").
 		Joins("JOIN contracts ON contracts.id = move_out_notices.contract_id AND contracts.deleted_at IS NULL").
-		Where("move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ? AND TO_CHAR(move_out_notices.scheduled_move_out_date, 'YYYY-MM') = ?",
-			[]MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled}, roomIDs, billingMonth).
+		Where("move_out_notices.status NOT IN ? AND move_out_notices.deleted_at IS NULL AND contracts.room_id IN ? AND move_out_notices.scheduled_move_out_date >= ? AND move_out_notices.scheduled_move_out_date < ?",
+			[]MoveOutStatus{MoveOutStatusCompleted, MoveOutStatusCancelled}, roomIDs, monthStart, monthEnd).
 		Scan(&results).Error
 	if err != nil {
 		return nil, err
