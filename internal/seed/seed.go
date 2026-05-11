@@ -77,10 +77,10 @@ func Run(db *gorm.DB, env string) error {
 
 func seedApartments(db *gorm.DB) error {
 	apartments := []apartmentSeed{
-		{Name: "นานาคอร์ท", DisplayOrder: 1, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "682 ม.1 Sripatana Rd", TaxID: "0105558123456"},
-		{Name: "นานาเพลส", DisplayOrder: 2, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "123 Sripatana Rd"},
-		{Name: "นานาแมนชั่น", DisplayOrder: 3, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "888", TaxID: "0105559987654"},
-		{Name: "อีซี่เพลส", DisplayOrder: 4, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "888", TaxID: "0105559987654"},
+		{Name: "นานาคอร์ท", DisplayOrder: 1, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "682 หมู่ 1 บ้านหนองกง ต.นอกเมือง อ.เมืองสุรินทร์ จ.สุรินทร์ 32000", TaxID: "0105558123456"},
+		{Name: "นานาเพลส", DisplayOrder: 2, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "75 หมู่ 18 ถนนศรีพัฒนา ต.นอกเมือง อ.เมืองสุรินทร์ จ.สุรินทร์ 32000"},
+		{Name: "นานาแมนชั่น", DisplayOrder: 3, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "361 หมู่ 16 ตรงข้ามโรบินสันสุรินทร์ ถนนสุรินทร์-ศีขรภูมิ ต.สลักได อ.เมืองสุรินทร์ จ.สุรินทร์ 32000", TaxID: "0105559987654"},
+		{Name: "อีซี่เพลส", DisplayOrder: 4, ElectricityRatePerUnit: 800, WaterRatePerUnit: 1800, Address: "777 หมู่ 1 ต.นอกเมือง อ.เมืองสุรินทร์ จ.สุรินทร์ 32000", TaxID: "0105559987654"},
 	}
 
 	for _, a := range apartments {
@@ -231,6 +231,9 @@ func rangeRooms(prefix string, start, end int, roomType room.RoomType, floor int
 // seedBillingConfigs ensures every apartment has the production-default
 // billing configs:
 //   - CLEANING_FEE       = ฿300  (charged on every settlement)
+//   - KEY_SERVICE        = ฿50   (per-incident rate for "ลืมกุญแจ" — applied
+//                                 per monthly bill once incident tracking ships;
+//                                 admin can toggle off per apartment)
 //   - PRORATE_DAILY_RATE = ฿100  (per-day rate for partial-month settlement)
 //
 // Each row is checked independently and only inserted if missing — safe
@@ -246,8 +249,9 @@ func seedBillingConfigs(db *gorm.DB) error {
 		feeType billingconfig.FeeType
 		amount  int64
 	}{
-		{billingconfig.FeeTypeCleaningFee, 30000},      // ฿300
-		{billingconfig.FeeTypeProrateDailyRate, 10000}, // ฿100/day
+		{billingconfig.FeeTypeCleaningFee, 30000},      // ฿300 charged every settlement
+		{billingconfig.FeeTypeKeyService, 5000},        // ฿50 per "ลืมกุญแจ" incident (per-incident rate)
+		{billingconfig.FeeTypeProrateDailyRate, 10000}, // ฿100/day for partial-month settlement
 	}
 
 	created := 0
