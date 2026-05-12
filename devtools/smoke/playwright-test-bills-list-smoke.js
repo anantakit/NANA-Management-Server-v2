@@ -38,7 +38,12 @@ async function login(page) {
 }
 
 ;(async () => {
-  const browser = await chromium.launch()
+  // Headed by default so the developer can watch the run. Set SMOKE_HEADLESS=1
+  // for CI / unattended runs.
+  const browser = await chromium.launch({
+    headless: process.env.SMOKE_HEADLESS === '1',
+    slowMo: process.env.SMOKE_HEADLESS === '1' ? 0 : 150,
+  })
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const page = await ctx.newPage()
   await login(page)
@@ -117,14 +122,19 @@ async function login(page) {
   await page.screenshot({ path: '/tmp/bills-bulk-confirm.png', fullPage: false })
   console.log('bulk confirm modal saved')
 
-  // ── Interaction-model probe: confirm Phase 7 explicit-action model
-  // is wired up correctly (Phase 6's overlay-Link pattern is gone).
+  // ── Interaction-model probe: confirm drawer-based interaction model.
+  //
+  // After the BillDrawer migration the bill list is fully drawer-driven —
+  // no row, CTA, or label navigates to a separate `/bills/:id` page.
   //
   //   1. Row text content is NOT a nav target — hit-test on tenant name
   //      must NOT resolve to an <a href="/bills/..."> ancestor.
-  //   2. "ดูรายละเอียด" link IS a nav target — hit-test on that exact
-  //      link must resolve to <a href="/bills/...">.
-  //   3. "รับชำระ" button is its own action target (not a nav link).
+  //   2. "ดูรายละเอียด" CTA is a <button> that opens the drawer in
+  //      view mode (NOT a nav link).
+  //   3. "รับชำระ" CTA is a <button> that opens the drawer in act mode
+  //      (NOT a nav link).
+  //   4. No <a href="/bills/..."> exists on the page at all — proves
+  //      the legacy detail-page nav has been fully retired.
   await page.goto(`${FRONTEND}/bills`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(1500)
   await page.screenshot({ path: '/tmp/bills-pre-probe.png', fullPage: false })
@@ -134,52 +144,88 @@ async function login(page) {
       const r = el.getBoundingClientRect()
       return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
     }
-    const tenantText = Array.from(document.querySelectorAll('div.truncate.text-sm.font-medium'))
-      .find((el) => el.textContent && el.textContent.includes('SMOKE'))
+    // Anchor on row STRUCTURE, not typography or seed markers. Earlier
+    // revisions of this probe required tenant names with a "SMOKE" seed
+    // suffix, which only exists in SETTLEMENT bills (visible under the
+    // "ปิดสัญญา" chip) — the default monthly view shows plain Thai names.
+    //
+    // What we need: ANY visible leaf element inside a bill section row
+    // that carries Thai text and is NOT a header label / chip / CTA.
+    // If clicking that text resolves to an <a href="/bills/...">, the
+    // row-not-nav contract is broken.
+    const HEADER_OR_CTA = /^(ห้อง|ผู้เช่า|การชำระ|ยอดเงิน|รับชำระ|ดูรายละเอียด|ชำระแล้ว|เหลือ|ค้าง|ปิดสัญญา|คืนเงิน|เก็บเพิ่ม|จบแล้ว|บิล|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)/
+    const tenantText = Array.from(
+      document.querySelectorAll('section[aria-label*="บิล"] *'),
+    ).find((el) => {
+      if (el.children.length > 0) return false
+      const txt = (el.textContent || '').trim()
+      // Must contain Thai text + not a header/CTA label.
+      if (!/[฀-๿]/.test(txt)) return false
+      if (HEADER_OR_CTA.test(txt)) return false
+      const r = el.getBoundingClientRect()
+      return r.width > 0 && r.height > 0
+    })
     if (!tenantText) return { ok: false, reason: 'no tenant row text found' }
     const tenantHit = hitAt(tenantText)
     if (tenantHit && tenantHit.closest('a[href^="/bills/"]')) {
       return { ok: false, reason: 'row text content is a nav target — Phase 7 expects row NOT clickable' }
     }
 
+    // Drawer-model probe: no CTA on the bill list is a nav target.
     // Mobile + desktop layouts both render in DOM (toggled via Tailwind
-    // `sm:hidden` / `sm:grid`). Filter to the visible one — the hidden
-    // mobile copy has rect = 0×0 at desktop viewport.
+    // `sm:hidden` / `sm:grid`). Filter to the visible variant — the hidden
+    // copy has rect = 0×0 at the current viewport.
     //
-    // Match by aria-label so we catch BOTH variants: the compact
-    // icon-only secondary on FINALIZED rows (no text) and the full
-    // "ดูรายละเอียด" text link on terminal rows.
-    const detailLink = Array.from(document.querySelectorAll('a[href^="/bills/"]'))
-      .filter((a) => (a.getAttribute('aria-label') || '').includes('ดูรายละเอียด'))
-      .find((a) => {
-        const rr = a.getBoundingClientRect()
-        return rr.width > 0 && rr.height > 0
+    // Match by aria-label which encodes BOTH variants on a single
+    // <button>: e.g. "รับชำระ บิลห้อง A102", "ดูรายละเอียด บิลห้อง A101".
+    const ctaButtons = Array.from(document.querySelectorAll('button'))
+      .filter((b) => {
+        const al = b.getAttribute('aria-label') || ''
+        return /^(รับชำระ|ดูรายละเอียด|คืนเงิน) บิลห้อง /.test(al)
       })
-    if (!detailLink) return { ok: false, reason: 'ดูรายละเอียด link not visible at viewport' }
-    const detailHit = hitAt(detailLink)
-    if (!detailHit) {
-      return { ok: false, reason: 'ดูรายละเอียด hit target is null' }
-    }
-    if (!detailHit.closest('a[href^="/bills/"]')) {
-      return {
-        ok: false,
-        reason: `ดูรายละเอียด click resolved to <${detailHit.tagName.toLowerCase()}>; parent has no /bills/ link`,
-      }
-    }
-
-    const recordBtn = Array.from(document.querySelectorAll('button'))
-      .filter((b) => (b.textContent || '').trim() === 'รับชำระ')
-      .find((b) => {
+      .filter((b) => {
         const rr = b.getBoundingClientRect()
         return rr.width > 0 && rr.height > 0
       })
-    if (!recordBtn) return { ok: false, reason: 'รับชำระ button not visible at viewport' }
-    const btnHit = hitAt(recordBtn)
-    if (!btnHit || btnHit.tagName.toLowerCase() !== 'button') {
-      return { ok: false, reason: `รับชำระ click target is <${btnHit?.tagName.toLowerCase() ?? 'null'}>` }
+    if (ctaButtons.length === 0) {
+      return { ok: false, reason: 'no row CTA button visible at viewport' }
     }
 
-    return { ok: true, reason: 'row=informational, ดูรายละเอียด=link, รับชำระ=button' }
+    // Verify EVERY visible row CTA is a <button> (not an <a>) and
+    // hit-tests to itself — i.e. nothing overlays it as a link.
+    for (const btn of ctaButtons) {
+      const al = btn.getAttribute('aria-label') || ''
+      if (btn.tagName.toLowerCase() !== 'button') {
+        return { ok: false, reason: `${al} is <${btn.tagName.toLowerCase()}> not <button>` }
+      }
+      const hit = hitAt(btn)
+      if (!hit) {
+        return { ok: false, reason: `${al} hit target null` }
+      }
+      if (hit.closest('a[href^="/bills/"]')) {
+        return { ok: false, reason: `${al} resolves under an <a href="/bills/..."> — drawer model broken` }
+      }
+      // Walk up — the hit-tested element should itself be (or be inside)
+      // the same <button>, not a different actionable ancestor.
+      if (!hit.closest('button')) {
+        return { ok: false, reason: `${al} hit resolved to <${hit.tagName.toLowerCase()}> outside a <button>` }
+      }
+    }
+
+    // No <a href="/bills/..."> on the page at all — legacy detail nav
+    // has been fully retired in favor of the drawer.
+    const stragglerNav = document.querySelector('a[href^="/bills/"]')
+    if (stragglerNav) {
+      return {
+        ok: false,
+        reason: `stale <a href="${stragglerNav.getAttribute('href')}"> on bill list — drawer model expects none`,
+      }
+    }
+
+    return {
+      ok: true,
+      reason: `row=informational, ${ctaButtons.length} row CTA(s) all <button>, no /bills/ anchor`,
+    }
   })
   if (!probe.ok) {
     console.error('  ❌ interaction-model probe FAILED:', probe.reason)
