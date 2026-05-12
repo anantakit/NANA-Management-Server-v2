@@ -608,19 +608,13 @@ func attachDevSettlement(
 			}
 		} else {
 			day := actualMoveOut.Day()
-			// Flat per-day rate matches the production billing service
-			// (PRORATE_DAILY_RATE config; default ฿100/day = 10000 satang).
-			// Hardcoded here because seed runs before/independently of the
-			// service path; both stay in lockstep via the same constant.
-			const dailyRate int64 = 10000
-			rentAmount = dailyRate * int64(day)
+			totalDays := endOfMonth(actualMoveOut).Day()
+			rentAmount = (c.MonthlyRent * int64(day)) / int64(totalDays)
 			rentLine = &billing.BillLineItem{
 				LineType:    billing.LineItemProrateRent,
 				Source:      billing.LineItemSourceAuto,
-				Description: fmt.Sprintf("%d วัน × ฿100/วัน", day),
+				Description: fmt.Sprintf("วันที่ 1 - %d (%d วัน)", day, day),
 				Amount:      rentAmount,
-				Quantity:    day,
-				UnitPrice:   dailyRate,
 				SortOrder:   1,
 			}
 		}
@@ -658,6 +652,11 @@ func attachDevSettlement(
 		depositBalance = c.DepositAmount - total
 	}
 
+	// Settlement bills are FINALIZED at move-out finalization — use the
+	// scenario's actualMoveOut so the row carries a real timestamp
+	// (matches production Bill.Finalize() invariant; FE reads
+	// `finalized_at` to render per-row aging copy).
+	settlementFinalizedAt := actualMoveOut
 	bill := billing.Bill{
 		ContractID:         c.ID,
 		BillingMonth:       billingMonth,
@@ -669,6 +668,7 @@ func attachDevSettlement(
 		TotalAmount:        total,
 		SettlementRentMode: spec.rentMode,
 		RentPaid:           spec.rentPaid,
+		FinalizedAt:        &settlementFinalizedAt,
 	}
 	if spec.depositForfeit {
 		bill.DepositApp = billing.DepositAppNone

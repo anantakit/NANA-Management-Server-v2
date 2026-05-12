@@ -1087,12 +1087,24 @@ func createFinalizedMonthlyBill(db *gorm.DB, c *contract.Contract, billingMonth 
 	elecAmount := int64(140) * c.ElectricityRatePerUnit
 	total := c.MonthlyRent + waterAmount + elecAmount
 
+	// Stamp FinalizedAt at the billing-month start (matches production
+	// invariant — FINALIZED bills always have a finalize timestamp).
+	billMonthStart, err := time.Parse("2006-01", billingMonth)
+	if err != nil {
+		return fmt.Errorf("parse billing month %q: %w", billingMonth, err)
+	}
+	finalizedAt := time.Date(
+		billMonthStart.Year(), billMonthStart.Month(), 1,
+		9, 0, 0, 0, time.UTC,
+	)
+
 	bill := billing.Bill{
 		ContractID:   c.ID,
 		BillingMonth: billingMonth,
 		BillType:     billing.BillTypeMonthly,
 		Status:       billing.BillStatusFinalized,
 		TotalAmount:  total,
+		FinalizedAt:  &finalizedAt,
 	}
 	items := []billing.BillLineItem{
 		{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: c.MonthlyRent, SortOrder: 1},

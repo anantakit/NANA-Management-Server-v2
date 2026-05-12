@@ -86,6 +86,20 @@ func seedDevMonthlyBills(db *gorm.DB) error {
 		"A107": {elecUnits: 100, waterUnits: 50, status: billing.BillStatusFinalized},
 	}
 
+	// All bills in a monthly batch share the same FinalizedAt — production
+	// reality (admin runs the generation flow once at start of month). The
+	// per-row variance in the list view comes from PAID/DRAFT/VOID state
+	// transitions, NOT a synthetic finalized-date stagger.
+	// See feedback_operational_column_reality.
+	billMonthStart, monthParseErr := time.Parse("2006-01", billingMonth)
+	if monthParseErr != nil {
+		return fmt.Errorf("parse billing month %q: %w", billingMonth, monthParseErr)
+	}
+	batchFinalizedAt := time.Date(
+		billMonthStart.Year(), billMonthStart.Month(), 1,
+		9, 0, 0, 0, time.UTC,
+	)
+
 	created := 0
 	for _, c := range contracts {
 		rm, ok := roomByID[c.RoomID.String()]
@@ -118,6 +132,7 @@ func seedDevMonthlyBills(db *gorm.DB) error {
 			BillType:     billing.BillTypeMonthly,
 			Status:       u.status,
 			TotalAmount:  total,
+			FinalizedAt:  &batchFinalizedAt,
 		}
 		items := []billing.BillLineItem{
 			{
