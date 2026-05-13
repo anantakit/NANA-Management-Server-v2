@@ -7,10 +7,13 @@
 //   3. Bulk-select toggle + checkbox column + dark action bar appear
 //      in the right order
 //   4. Bulk confirm modal opens with verb-differentiated CTAs
-//   5. Interaction model (Phase 7 — explicit actions, no row click):
-//        - row text content is NOT a nav target
-//        - "ดูรายละเอียด" link IS a nav target (<a> to /bills/:id)
-//        - "รับชำระ" is a button (action target, not navigation)
+//   5. Interaction model (Pattern B — Gmail-mobile selection):
+//        - row body opens BillDrawer in `view` mode (breakdown auto-open)
+//        - "ดูรายละเอียด" / "รับชำระ" / "คืนเงิน" are all <button>s that
+//          open BillDrawer in `act` mode (breakdown closed) and
+//          stopPropagation from the row body
+//        - in selectionMode, row body toggles the checkbox instead of
+//          opening the drawer (Gmail pattern)
 //
 // Screenshots are saved to /tmp/bills-*.png for eyeballed visual review.
 // Failure of the interaction-model probe `process.exit(1)`s.
