@@ -13,7 +13,9 @@
     "smoke:moveout-detail": "node playwright-test-moveout-detail-smoke.js",
     "smoke:bills-list": "node playwright-test-bills-list-smoke.js",
     "smoke:rooms-list": "node playwright-test-rooms-list-smoke.js",
-    "smoke:all": "npm run smoke:settlement:all && npm run smoke:draft && npm run smoke:numeric && npm run smoke:moveout-step23 && npm run smoke:moveout-step4 && npm run smoke:moveout-detail && npm run smoke:bills-list && npm run smoke:rooms-list",
+    "smoke:meter-scope": "node playwright-test-meter-scope-smoke.js",
+    "smoke:tool-chrome": "node playwright-test-tool-chrome-smoke.js",
+    "smoke:all": "npm run smoke:settlement:all && npm run smoke:draft && npm run smoke:numeric && npm run smoke:moveout-step23 && npm run smoke:moveout-step4 && npm run smoke:moveout-detail && npm run smoke:bills-list && npm run smoke:rooms-list && npm run smoke:meter-scope && npm run smoke:tool-chrome",
     "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
