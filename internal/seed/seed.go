@@ -238,6 +238,10 @@ func rangeRooms(prefix string, start, end int, roomType room.RoomType, floor int
 //                                 per monthly bill once incident tracking ships;
 //                                 admin can toggle off per apartment)
 //   - PRORATE_DAILY_RATE = ฿100  (per-day rate for partial-month settlement)
+//   - LATE_PENALTY       = ฿100  (flat suggested fee surfaced in the bill drawer
+//                                 when an overdue bill is opened for collection;
+//                                 display-time only, never mutates the bill —
+//                                 see backlog_late_payment_penalty.md)
 //
 // Each row is checked independently and only inserted if missing — safe
 // to re-run on existing DBs and on apartments that were created before
@@ -255,6 +259,7 @@ func seedBillingConfigs(db *gorm.DB) error {
 		{billingconfig.FeeTypeCleaningFee, 30000},      // ฿300 charged every settlement
 		{billingconfig.FeeTypeKeyService, 5000},        // ฿50 per "ลืมกุญแจ" incident (per-incident rate)
 		{billingconfig.FeeTypeProrateDailyRate, 10000}, // ฿100/day for partial-month settlement
+		{billingconfig.FeeTypeLatePenalty, 10000},      // ฿100 suggested at collection-time for overdue bills
 	}
 
 	created := 0

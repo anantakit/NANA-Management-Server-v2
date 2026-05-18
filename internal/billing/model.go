@@ -266,6 +266,42 @@ func (b *Bill) IsVoid() bool      { return b.Status == BillStatusVoid }
 func (b *Bill) IsMonthly() bool    { return b.BillType == BillTypeMonthly }
 func (b *Bill) IsSettlement() bool { return b.BillType == BillTypeSettlement }
 
+// OverdueDays returns the number of full calendar days the bill is past
+// its day-5 due date. Returns 0 when the bill is not eligible for overdue
+// counting:
+//   - not FINALIZED (DRAFT, PAID, VOID all return 0)
+//   - not MONTHLY (settlement bills follow the move-out workflow, not the
+//     monthly cadence — see backlog_late_payment_penalty.md hard rule)
+//   - billing_month is malformed
+//   - today is on or before the due day (calendar comparison)
+//
+// Calendar-day arithmetic: compares date components only (year/month/day),
+// independent of time-of-day. So "เลยกำหนด 1 วัน" surfaces on day-6
+// regardless of whether admin opens the drawer at 8am or 11pm.
+func (b *Bill) OverdueDays(today time.Time) int {
+	if !b.IsFinalized() || !b.IsMonthly() {
+		return 0
+	}
+	due, ok := BillDueDate(b.BillingMonth)
+	if !ok {
+		return 0
+	}
+	dueDay := time.Date(due.Year(), due.Month(), due.Day(), 0, 0, 0, 0, time.UTC)
+	todayDay := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	days := int(todayDay.Sub(dueDay).Hours() / 24)
+	if days <= 0 {
+		return 0
+	}
+	return days
+}
+
+// IsOverdue is a convenience boolean derived from OverdueDays. Returns
+// true iff the bill is past its due day by at least 1 calendar day —
+// inherits the FINALIZED + MONTHLY gate from OverdueDays.
+func (b *Bill) IsOverdue(today time.Time) bool {
+	return b.OverdueDays(today) > 0
+}
+
 // --- State transitions ---
 
 func (b *Bill) CanFinalize() error {
@@ -927,6 +963,20 @@ type BillWithRelations struct {
 	RoomNumber    string    `json:"room_number"`
 	ApartmentName string    `json:"apartment_name"`
 	ApartmentID   uuid.UUID `json:"apartment_id"`
+
+	// OverdueDays is a compute-on-demand factual context surfaced only
+	// by the detail endpoint (GET /bills/:id) for the BillDrawer hint.
+	// Calendar-day count past day-5 due (MONTHLY bills only); 0 when
+	// not overdue. Never persisted, never affects the bill total.
+	// See backlog_late_payment_penalty.md.
+	OverdueDays int `gorm:"-" json:"-"`
+
+	// LatePenaltyReferenceAmount is the apartment's configured LATE_PENALTY
+	// rate (satang), surfaced as a muted secondary "policy reference"
+	// hint beneath the primary overdue-days line. 0 when no active config
+	// or bill not overdue. Reference only — never a recommendation, never
+	// persisted, never mutates the bill.
+	LatePenaltyReferenceAmount int64 `gorm:"-" json:"-"`
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).

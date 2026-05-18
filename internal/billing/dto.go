@@ -164,6 +164,18 @@ type BillResponse struct {
 	FinalizedAt   *time.Time         `json:"finalized_at,omitempty"`
 	CreatedAt     string             `json:"created_at"`
 	UpdatedAt     string             `json:"updated_at"`
+
+	// OverdueDays is the calendar-day count past day-5 due (MONTHLY bills
+	// only). Populated by the bill detail endpoint as factual context for
+	// the "เลยกำหนด N วัน" primary hint. Omitted when 0 (not overdue).
+	// See backlog_late_payment_penalty.md for the v1 invariant lock.
+	OverdueDays *int `json:"overdue_days,omitempty"`
+	// LatePenaltyReferenceAmount is the apartment's LATE_PENALTY policy
+	// rate in baht — surfaced as a muted secondary reference, never as
+	// a recommendation. Populated only when OverdueDays > 0 AND the
+	// apartment has an active LATE_PENALTY config. Omitted otherwise.
+	// Display-only; never mutates the bill, never represents a decision.
+	LatePenaltyReferenceAmount *float64 `json:"late_penalty_reference_amount,omitempty"`
 }
 
 // BillListItemResponse is the per-row DTO for the bill list endpoint.
@@ -535,6 +547,14 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 	resp.RoomNumber = b.RoomNumber
 	resp.ApartmentName = b.ApartmentName
 	resp.ApartmentID = b.ApartmentID
+	if b.OverdueDays > 0 {
+		d := b.OverdueDays
+		resp.OverdueDays = &d
+	}
+	if b.LatePenaltyReferenceAmount > 0 {
+		v := money.ToBaht(b.LatePenaltyReferenceAmount)
+		resp.LatePenaltyReferenceAmount = &v
+	}
 	return resp
 }
 

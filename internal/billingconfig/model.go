@@ -20,6 +20,11 @@ const (
 	// default_amount + is_active); the semantic difference (rate vs flat
 	// charge) is handled in the billing service, not the config layer.
 	FeeTypeProrateDailyRate FeeType = "PRORATE_DAILY_RATE"
+	// FeeTypeLatePenalty stores the flat-fee rate (in satang) shown as a
+	// compute-on-demand suggestion when an overdue bill is opened for
+	// collection. Display-time hint only — never mutates an issued bill.
+	// See backlog_late_payment_penalty.md for the v1 invariant lock.
+	FeeTypeLatePenalty FeeType = "LATE_PENALTY"
 )
 
 // ValidFeeTypes lists all allowed fee types for billing configs.
@@ -27,6 +32,7 @@ var ValidFeeTypes = []FeeType{
 	FeeTypeCleaningFee,
 	FeeTypeKeyService,
 	FeeTypeProrateDailyRate,
+	FeeTypeLatePenalty,
 }
 
 // --- Model ---

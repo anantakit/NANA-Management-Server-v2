@@ -7,6 +7,7 @@ import (
 
 	"regexp"
 
+	"nana/internal/billingconfig"
 	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
@@ -93,7 +94,47 @@ func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRe
 		}
 		return nil, fmt.Errorf("get bill: %w", err)
 	}
+	// Overdue context + policy-reference hint are computed only on detail
+	// fetch — both are UI hints for the BillDrawer, never persisted, never
+	// affect the bill total. See backlog_late_payment_penalty.md.
+	//
+	// The embedded `Bill.OverdueDays(today)` method is shadowed by the
+	// `BillWithRelations.OverdueDays` int field — disambiguate via the
+	// explicit Bill selector.
+	now := time.Now()
+	b.OverdueDays = b.Bill.OverdueDays(now)
+	b.LatePenaltyReferenceAmount = s.lookupLatePenaltyReference(ctx, b, now)
 	return b, nil
+}
+
+// lookupLatePenaltyReference resolves the apartment's active LATE_PENALTY
+// rate and feeds it into ComputeLatePenaltyReference. Returns 0 for every
+// "not applicable" branch (non-FINALIZED, not MONTHLY, not overdue, no
+// active config, config-lookup error). Best-effort by design — this is a
+// reference value, never a hard requirement.
+func (s *billingService) lookupLatePenaltyReference(ctx context.Context, b *BillWithRelations, today time.Time) int64 {
+	if b == nil || !b.IsOverdue(today) {
+		return 0
+	}
+	if b.ApartmentID == uuid.Nil {
+		return 0
+	}
+	configs, err := s.configs.FindByApartmentID(ctx, b.ApartmentID)
+	if err != nil {
+		return 0
+	}
+	var rate int64
+	for _, cfg := range configs {
+		if cfg.FeeType != billingconfig.FeeTypeLatePenalty {
+			continue
+		}
+		if !cfg.IsActive {
+			continue
+		}
+		rate = cfg.DefaultAmount
+		break
+	}
+	return ComputeLatePenaltyReference(&b.Bill, rate, today)
 }
 
 // CreateMonthlyBill generates a FINALIZED monthly bill.

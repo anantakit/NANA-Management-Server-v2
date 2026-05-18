@@ -20,6 +20,7 @@ import (
 
 type mockBillingRepo struct {
 	findByIDFn                          func(ctx context.Context, id uuid.UUID) (*Bill, error)
+	findByIDWithRelationsFn             func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	findByContractAndMonthFn            func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
 	findNonVoidedByContractMonthFn      func(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error)
 	findActiveContractsByApartmentIDFn  func(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
@@ -65,8 +66,13 @@ func (m *mockBillingRepo) FindByID(ctx context.Context, id uuid.UUID) (*Bill, er
 	return nil, gorm.ErrRecordNotFound
 }
 // FindByIDWithRelations mock จำลอง "latest persisted state by bill ID":
-// match จาก updatedBills ย้อนหลังก่อน (post-mutation state) แล้วค่อย fallback ไป FindByID
+// match จาก updatedBills ย้อนหลังก่อน (post-mutation state) แล้วค่อย fallback ไป FindByID.
+// Tests that need control over the relation fields (ApartmentID, names) can
+// set `findByIDWithRelationsFn` explicitly.
 func (m *mockBillingRepo) FindByIDWithRelations(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
+	if m.findByIDWithRelationsFn != nil {
+		return m.findByIDWithRelationsFn(ctx, id)
+	}
 	for i := len(m.updatedBills) - 1; i >= 0; i-- {
 		if m.updatedBills[i].ID == id {
 			return &BillWithRelations{Bill: *m.updatedBills[i]}, nil
