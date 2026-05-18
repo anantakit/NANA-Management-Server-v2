@@ -19,7 +19,12 @@ const { chromium } = require('playwright')
 const FRONTEND = 'http://localhost:3001'
 const BACKEND = 'http://localhost:8080'
 
-// ─── Seed constants (must match backend/internal/seed/) ──────────────
+// ─── Seed constants (must mirror canonical planner output) ────────────
+//
+// These constants describe what `prepareSettlementPlan` + `addConfigFees`
+// would produce for a smoke-seeded contract. See
+// `smoke_formula_contract.md` — any future refactor of settlement billing
+// must update both planner + this file together.
 
 const MONTHLY_RENT  = 250000  // satang (฿2,500)
 const DEPOSIT       = 200000  // satang (฿2,000)
@@ -27,7 +32,9 @@ const ELEC_RATE     = 800     // satang/unit (฿8)
 const WATER_RATE    = 1800    // satang/unit (฿18)
 const ELEC_UNITS    = 135
 const WATER_UNITS   = 18
-const CLEANING_FEE  = 30000   // satang (฿300)
+const CLEANING_FEE  = 30000   // satang (฿300) — CLEANING_FEE config default
+const KEY_SERVICE   = 5000    // satang (฿50)  — KEY_SERVICE config default
+const PRORATE_RATE  = 10000   // satang/day (฿100) — PRORATE_DAILY_RATE default
 const MANUAL_1      = 50000   // satang (฿500) — ค่าซ่อมแซมห้อง
 const MANUAL_2      = 30000   // satang (฿300) — ค่าเคลื่อนย้ายของ
 const TC4_OFFSET    = -4      // actualMoveOutDate = today - 4
@@ -47,14 +54,17 @@ function computeExpected(offset, { withManual = false } = {}) {
   const day = actual.getDate()
   const dim = daysInMonth(actual)
 
-  // Go integer division: Math.trunc for positive values
-  const proRateRent = Math.trunc((MONTHLY_RENT * day) / dim)
+  // Settlement planner uses flat per-day rate × days (PRORATE_DAILY_RATE
+  // config), NOT MONTHLY_RENT × day / dim — refactor 2026-05-10.
+  const proRateRent = PRORATE_RATE * day
   const waterAmount = WATER_UNITS * WATER_RATE
   const elecAmount  = ELEC_UNITS * ELEC_RATE
-  const autoTotal   = proRateRent + waterAmount + elecAmount + CLEANING_FEE
+  const autoTotal   = proRateRent + waterAmount + elecAmount + CLEANING_FEE + KEY_SERVICE
   const manualTotal = withManual ? MANUAL_1 + MANUAL_2 : 0
   const total       = autoTotal + manualTotal
   const net         = total - DEPOSIT
+
+  const fullMonthAuto = MONTHLY_RENT + waterAmount + elecAmount + CLEANING_FEE + KEY_SERVICE
 
   return {
     day, dim, proRateRent,
@@ -62,14 +72,15 @@ function computeExpected(offset, { withManual = false } = {}) {
     waterBaht:       waterAmount / 100,
     elecBaht:        elecAmount / 100,
     cleaningBaht:    CLEANING_FEE / 100,
+    keyServiceBaht:  KEY_SERVICE / 100,
     manual1Baht:     MANUAL_1 / 100,
     manual2Baht:     MANUAL_2 / 100,
     totalBaht:       total / 100,
     depositBaht:     DEPOSIT / 100,
     netBaht:         net / 100,
     fullMonthRentBaht: MONTHLY_RENT / 100,
-    fullMonthTotalBaht: (MONTHLY_RENT + waterAmount + elecAmount + CLEANING_FEE + manualTotal) / 100,
-    fullMonthNetBaht: (MONTHLY_RENT + waterAmount + elecAmount + CLEANING_FEE + manualTotal - DEPOSIT) / 100,
+    fullMonthTotalBaht: (fullMonthAuto + manualTotal) / 100,
+    fullMonthNetBaht: (fullMonthAuto + manualTotal - DEPOSIT) / 100,
   }
 }
 
@@ -145,7 +156,11 @@ async function runTCD13(page, fixtures) {
   await goToSettlement(page, fx.notice_id)
 
   // Rent line
-  const rentAmount = await getLineAmount(page, 'ค่าเช่า (')
+  // Draft rent row: SettlementChargesCard renders BE description as label
+  // (not LINE_TYPE_LABEL). For PRORATE_RENT, description = "N วัน × ฿100/วัน"
+  // so we match on the unique fragment "วัน × ฿". Other line descriptions
+  // use "หน่วย × N บาท" pattern, no collision.
+  const rentAmount = await getLineAmount(page, 'วัน × ฿')
   track('D13.1', check(`Rent = ฿${exp.proRateRentBaht}`,
     Math.abs(rentAmount - exp.proRateRentBaht) < 0.01,
     `got ${rentAmount}`,
@@ -292,7 +307,7 @@ async function runTCD16(page, fixtures) {
   const exp = computeExpected(TC4_OFFSET)
 
   // Capture PRORATED values
-  const prorateRent = await getLineAmount(page, 'ค่าเช่า (')
+  const prorateRent = await getLineAmount(page, 'วัน × ฿')
   const prorateTotal = await getChargesSubtotal(page)
   const prorateNet = await getNetAmount(page)
 

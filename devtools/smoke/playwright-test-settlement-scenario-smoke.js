@@ -284,14 +284,16 @@ async function runTC16(page, fixtures) {
   // C204 fan room: monthly rent ฿2,500. actualOffset=-6, scheduledOffset=-2.
   // If backend used actual date → smaller prorate (fewer days).
   // If backend used scheduled date → larger prorate (more days).
-  // Compute expected subtotals dynamically from today.
+  // Compute expected subtotals dynamically from today using canonical formula
+  // (see smoke_formula_contract.md):
+  //   prorate = PRORATE_DAILY_RATE (฿100/day) × usedDays — refactor 2026-05-10
+  //   fixed   = water + elec + cleaning + key_service (config fees)
   const now = new Date()
   const actualDate = new Date(now); actualDate.setDate(now.getDate() - 6)
   const scheduledDate = new Date(now); scheduledDate.setDate(now.getDate() - 2)
-  const dim = new Date(actualDate.getFullYear(), actualDate.getMonth() + 1, 0).getDate()
-  const actualRent = Math.trunc((250000 * actualDate.getDate()) / dim) / 100
-  const scheduledRent = Math.trunc((250000 * scheduledDate.getDate()) / dim) / 100
-  const fixedCharges = 324 + 1080 + 300 // water + elec + cleaning
+  const actualRent = 100 * actualDate.getDate()       // ฿100/day flat
+  const scheduledRent = 100 * scheduledDate.getDate() // ฿100/day flat
+  const fixedCharges = 324 + 1080 + 300 + 50 // water + elec + cleaning + key_service
   const expectedActual = actualRent + fixedCharges
   const expectedScheduled = scheduledRent + fixedCharges
   const subtotal = await getChargesSubtotal(page)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"nana/internal/billingconfig"
 	"nana/internal/contract"
 
 	"github.com/google/uuid"
@@ -880,5 +881,122 @@ func TestRegenerateSettlement_PreservesRentMode(t *testing.T) {
 	roomRent := findLineByType(createdBill.LineItems, LineItemRoomRent)
 	if roomRent.Amount != c.MonthlyRent {
 		t.Errorf("regenerated ROOM_RENT = %d, want %d (full month preserved)", roomRent.Amount, c.MonthlyRent)
+	}
+}
+
+// TestRegenerateSettlement_IsIdempotent locks in the property that running
+// regenerate twice on the same inputs produces byte-equivalent line items +
+// totals. The smoke suite (`smoke:numeric` D17) surfaces drift between a
+// handcrafted seed baseline and the canonical regen output (e.g. seed misses
+// KEY_SERVICE from the config-fee injector). That drift is seed-side, not a
+// regen bug — this test pins the contract from inside the planner so a future
+// regression can't hide behind a stale seed.
+//
+// Setup uses the full production-default fee configs (PRORATE_DAILY_RATE +
+// CLEANING_FEE + KEY_SERVICE) so every fee-injection path runs.
+func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
+	c := normalExitContract()
+	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
+	exitReading := testExitReading(c.RoomID, moveOut)
+
+	configs := []billingconfig.BillingConfig{
+		{FeeType: billingconfig.FeeTypeProrateDailyRate, DefaultAmount: 10000, IsActive: true},
+		{FeeType: billingconfig.FeeTypeCleaningFee, DefaultAmount: 30000, IsActive: true},
+		{FeeType: billingconfig.FeeTypeKeyService, DefaultAmount: 5000, IsActive: true},
+	}
+
+	// Initial draft intentionally handcrafted without KEY_SERVICE to mirror
+	// the smoke-seed shape that caused the original drift report.
+	initialBill := &Bill{
+		ID:                 uuid.New(),
+		ContractID:         c.ID,
+		BillingMonth:       "2026-04",
+		BillType:           BillTypeSettlement,
+		Status:             BillStatusDraft,
+		SettlementRentMode: RentModeProrated,
+		DepositAmount:      c.DepositAmount,
+		LineItems:          []BillLineItem{{LineType: LineItemProrateRent, Source: LineItemSourceAuto, Amount: 100000, SortOrder: 1}},
+	}
+	initialBill.CalculateTotal()
+
+	currentBill := initialBill
+	repo := &mockBillingRepo{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*Bill, error) {
+			if id == currentBill.ID {
+				return currentBill, nil
+			}
+			return initialBill, nil
+		},
+		createFn: func(_ context.Context, bill *Bill) error {
+			if bill.ID == uuid.Nil {
+				bill.ID = uuid.New()
+			}
+			currentBill = bill
+			return nil
+		},
+	}
+	svc := newSvc(repo,
+		&mockContractQuerier{contract: c},
+		&mockMeterQuerier{reading: exitReading},
+		&mockConfigQuerier{configs: configs},
+		&mockMoveOutQuerier{},
+	)
+
+	// Regen 1 — runs canonical planner, should include KEY_SERVICE.
+	if _, err := svc.RegenerateSettlement(context.Background(), initialBill.ID, c.ID, moveOut, ""); err != nil {
+		t.Fatalf("regen 1: %v", err)
+	}
+	regen1Total := currentBill.TotalAmount
+	regen1Items := append([]BillLineItem(nil), currentBill.LineItems...)
+	regen1ID := currentBill.ID
+
+	// Regen 2 — feeds regen1's bill ID, must produce same output.
+	if _, err := svc.RegenerateSettlement(context.Background(), regen1ID, c.ID, moveOut, ""); err != nil {
+		t.Fatalf("regen 2: %v", err)
+	}
+
+	if currentBill.TotalAmount != regen1Total {
+		t.Errorf("regen idempotency broken: regen1.TotalAmount=%d, regen2.TotalAmount=%d (delta=%d)",
+			regen1Total, currentBill.TotalAmount, currentBill.TotalAmount-regen1Total)
+	}
+
+	if len(currentBill.LineItems) != len(regen1Items) {
+		t.Fatalf("line-item count drift: regen1=%d, regen2=%d", len(regen1Items), len(currentBill.LineItems))
+	}
+	// Match by line_type + amount (ignore IDs / SortOrder shuffle).
+	byType := make(map[LineItemType]int64, len(regen1Items))
+	for _, li := range regen1Items {
+		byType[li.LineType] += li.Amount
+	}
+	for _, li := range currentBill.LineItems {
+		want, ok := byType[li.LineType]
+		if !ok {
+			t.Errorf("regen2 has unexpected line type %q", li.LineType)
+			continue
+		}
+		byType[li.LineType] -= li.Amount
+		if byType[li.LineType] == 0 {
+			delete(byType, li.LineType)
+		}
+		_ = want
+	}
+	for lt, leftover := range byType {
+		t.Errorf("line type %q amount drift between regens (delta=%d)", lt, leftover)
+	}
+
+	// Sanity: the canonical regen output must include KEY_SERVICE — proves
+	// the planner ran the config-fee injector. If this disappears the test
+	// stops asserting the property the smoke drift was about.
+	var foundKey bool
+	for _, li := range currentBill.LineItems {
+		if li.LineType == LineItemKeyService {
+			foundKey = true
+			if li.Amount != 5000 {
+				t.Errorf("KEY_SERVICE amount = %d, want 5000", li.Amount)
+			}
+		}
+	}
+	if !foundKey {
+		t.Error("expected KEY_SERVICE line from addConfigFees")
 	}
 }

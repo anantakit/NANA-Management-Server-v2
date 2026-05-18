@@ -507,11 +507,14 @@ func seedDevSmoke(db *gorm.DB) error {
 
 	// --- TC24: Zero balance (charges = deposit exactly) ---
 	// FAN room (deposit=฿2,000), rent_paid=true via PAID M-1 bill.
-	// Exit meter tuned so utilities + cleaning = deposit exactly:
-	//   electricity 190 units × ฿8 = ฿1,520
-	//   water 10 units × ฿18 = ฿180
+	// Exit meter tuned so utilities + cleaning + key_service = deposit exactly:
+	//   electricity 150 units × ฿8 = ฿1,200
+	//   water 25 units × ฿18 = ฿450
 	//   cleaning fee = ฿300
+	//   key service = ฿50  (config fee, added 2026-05-11)
 	//   total = ฿2,000 = deposit → ZERO_BALANCE
+	// Whenever config fees change (CLEANING_FEE / KEY_SERVICE / future fees),
+	// retune the meter to keep charges == deposit. See smoke_formula_contract.md.
 	tc24Notice, tc24Contract, _, err := createSmokeScenarioReturn(db, apt, roomByNumber["D103"], smokeTenant{
 		idCard: "9999999999024",
 		name:   "TC24_SMOKE ประกันพอดี",
@@ -528,16 +531,16 @@ func seedDevSmoke(db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-	// Custom exit meter: 190 units electricity, 10 units water
+	// Custom exit meter: 150 units electricity, 25 units water
 	tc24ReadingDate := today.AddDate(0, 0, -2)
 	tc24Exit := meterreading.MeterReading{
 		RoomID:              roomByNumber["D103"].ID,
 		ReadingType:         meterreading.ReadingTypeExit,
 		ReadingDateActual:   &tc24ReadingDate,
 		ElectricityPrevious: 1000,
-		ElectricityCurrent:  1190, // 190 units
+		ElectricityCurrent:  1150, // 150 units
 		WaterPrevious:       100,
-		WaterCurrent:        110, // 10 units
+		WaterCurrent:        125, // 25 units
 	}
 	if err := db.Create(&tc24Exit).Error; err != nil {
 		return fmt.Errorf("create exit reading for TC24: %w", err)
@@ -905,6 +908,10 @@ func createBillWithLines(db *gorm.DB, bill *billing.Bill, items []billing.BillLi
 
 // attachDraftSettlementBill creates a DRAFT settlement bill and links it to the notice.
 // Used by TC4 to simulate a previously-generated draft.
+//
+// Canonicalization: mirrors `prepareSettlementPlan` + `addConfigFees` output —
+// PRORATE_RENT, WATER, ELECTRICITY, CLEANING_FEE, KEY_SERVICE. See
+// `smoke_formula_contract.md`.
 func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *contract.Contract, _ *room.Room, actualMoveOut time.Time) error {
 	billingMonth := actualMoveOut.Format("2006-01")
 
@@ -914,9 +921,10 @@ func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *co
 
 	waterAmount := int64(18) * c.WaterRatePerUnit
 	elecAmount := int64(135) * c.ElectricityRatePerUnit
-	cleaningFee := int64(30000) // ฿300
+	cleaningFee := int64(30000)  // ฿300 — CLEANING_FEE config default
+	keyServiceFee := int64(5000) // ฿50 — KEY_SERVICE config default
 
-	total := proRateRent + waterAmount + elecAmount + cleaningFee
+	total := proRateRent + waterAmount + elecAmount + cleaningFee + keyServiceFee
 
 	bill := billing.Bill{
 		ContractID:         c.ID,
@@ -933,6 +941,7 @@ func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *co
 		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
+		{LineType: billing.LineItemKeyService, Source: billing.LineItemSourceAuto, Description: "ค่าบริการกุญแจ", Amount: keyServiceFee, SortOrder: 5},
 	}
 	if err := createBillWithLines(db, &bill, items); err != nil {
 		return fmt.Errorf("create draft bill: %w", err)
@@ -952,6 +961,13 @@ func attachDraftSettlementBill(db *gorm.DB, notice *moveout.MoveOutNotice, c *co
 // attachDraftSettlementBillWithManualItems creates a DRAFT settlement bill with
 // MANUAL line items and links it to the notice. Used by TC22 for the queue
 // drawer confirm-modal scenario.
+//
+// Canonicalization: the AUTO line items here MUST mirror what
+// `prepareSettlementPlan` → `addConfigFees` would emit for the same contract +
+// move-out date (PRORATE_RENT, WATER, ELECTRICITY, CLEANING_FEE, KEY_SERVICE).
+// Otherwise smoke regen will surface drift that looks like a regen bug but is
+// just a stale baseline. See `smoke_formula_contract.md` + memory entry
+// `feedback_seed_canonicalization`.
 func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveOutNotice, c *contract.Contract, _ *room.Room, actualMoveOut time.Time) error {
 	billingMonth := actualMoveOut.Format("2006-01")
 
@@ -961,11 +977,12 @@ func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveO
 
 	waterAmount := int64(18) * c.WaterRatePerUnit
 	elecAmount := int64(135) * c.ElectricityRatePerUnit
-	cleaningFee := int64(30000) // ฿300
+	cleaningFee := int64(30000)   // ฿300 — CLEANING_FEE config default
+	keyServiceFee := int64(5000)  // ฿50 — KEY_SERVICE config default
 	manualCharge1 := int64(50000) // ฿500 — ค่าซ่อมแซม
 	manualCharge2 := int64(30000) // ฿300 — ค่าอื่น ๆ
 
-	total := proRateRent + waterAmount + elecAmount + cleaningFee + manualCharge1 + manualCharge2
+	total := proRateRent + waterAmount + elecAmount + cleaningFee + keyServiceFee + manualCharge1 + manualCharge2
 
 	bill := billing.Bill{
 		ContractID:         c.ID,
@@ -982,8 +999,9 @@ func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveO
 		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
-		{LineType: billing.LineItemOther, Source: billing.LineItemSourceManual, Description: "ค่าซ่อมแซมห้อง", Amount: manualCharge1, SortOrder: 5},
-		{LineType: billing.LineItemOther, Source: billing.LineItemSourceManual, Description: "ค่าเคลื่อนย้ายของ", Amount: manualCharge2, SortOrder: 6},
+		{LineType: billing.LineItemKeyService, Source: billing.LineItemSourceAuto, Description: "ค่าบริการกุญแจ", Amount: keyServiceFee, SortOrder: 5},
+		{LineType: billing.LineItemOther, Source: billing.LineItemSourceManual, Description: "ค่าซ่อมแซมห้อง", Amount: manualCharge1, SortOrder: 6},
+		{LineType: billing.LineItemOther, Source: billing.LineItemSourceManual, Description: "ค่าเคลื่อนย้ายของ", Amount: manualCharge2, SortOrder: 7},
 	}
 	if err := createBillWithLines(db, &bill, items); err != nil {
 		return fmt.Errorf("create draft bill with manual: %w", err)
@@ -1003,14 +1021,20 @@ func attachDraftSettlementBillWithManualItems(db *gorm.DB, notice *moveout.MoveO
 // attachDraftSettlementBillFullMonth creates a DRAFT settlement bill with
 // FULL_MONTH rent mode and links it to the notice. Used by TC23 for rent
 // mode continuity testing.
+//
+// Canonicalization: mirrors `prepareSettlementPlan` FULL_MONTH output —
+// description `"ค่าห้องเดือน YYYY-MM"` (not legacy `"ค่าเช่า (เต็มเดือน)"`) +
+// KEY_SERVICE injected. Stay in sync with `addRentAdjustment` +
+// `addConfigFees`. See `smoke_formula_contract.md`.
 func attachDraftSettlementBillFullMonth(db *gorm.DB, notice *moveout.MoveOutNotice, c *contract.Contract, _ *room.Room, actualMoveOut time.Time) error {
 	billingMonth := actualMoveOut.Format("2006-01")
 
 	waterAmount := int64(18) * c.WaterRatePerUnit
 	elecAmount := int64(135) * c.ElectricityRatePerUnit
-	cleaningFee := int64(30000) // ฿300
+	cleaningFee := int64(30000)  // ฿300 — CLEANING_FEE config default
+	keyServiceFee := int64(5000) // ฿50 — KEY_SERVICE config default
 
-	total := c.MonthlyRent + waterAmount + elecAmount + cleaningFee
+	total := c.MonthlyRent + waterAmount + elecAmount + cleaningFee + keyServiceFee
 
 	bill := billing.Bill{
 		ContractID:         c.ID,
@@ -1023,10 +1047,11 @@ func attachDraftSettlementBillFullMonth(db *gorm.DB, notice *moveout.MoveOutNoti
 		RentPaid:           false,
 	}
 	items := []billing.BillLineItem{
-		{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า (เต็มเดือน)", Amount: c.MonthlyRent, SortOrder: 1},
+		{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("ค่าห้องเดือน %s", billingMonth), Amount: c.MonthlyRent, SortOrder: 1},
 		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 18 หน่วย", Amount: waterAmount, Quantity: 18, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 135 หน่วย", Amount: elecAmount, Quantity: 135, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 		{LineType: billing.LineItemCleaningFee, Source: billing.LineItemSourceAuto, Description: "ค่าทำความสะอาด", Amount: cleaningFee, SortOrder: 4},
+		{LineType: billing.LineItemKeyService, Source: billing.LineItemSourceAuto, Description: "ค่าบริการกุญแจ", Amount: keyServiceFee, SortOrder: 5},
 	}
 	if err := createBillWithLines(db, &bill, items); err != nil {
 		return fmt.Errorf("create full-month draft bill: %w", err)
