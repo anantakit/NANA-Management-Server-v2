@@ -50,6 +50,7 @@ type BillingService interface {
 
 type billingService struct {
 	repo      BillingRepository
+	audit     BillAuditRepository
 	contracts ContractQuerier
 	meters    MeterReadingQuerier
 	configs   BillingConfigQuerier
@@ -61,6 +62,7 @@ var _ BillingService = (*billingService)(nil)
 
 func NewBillingService(
 	repo BillingRepository,
+	audit BillAuditRepository,
 	contracts ContractQuerier,
 	meters MeterReadingQuerier,
 	configs BillingConfigQuerier,
@@ -69,6 +71,7 @@ func NewBillingService(
 ) BillingService {
 	return &billingService{
 		repo:      repo,
+		audit:     audit,
 		contracts: contracts,
 		meters:    meters,
 		configs:   configs,

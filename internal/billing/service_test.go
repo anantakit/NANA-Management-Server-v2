@@ -319,6 +319,41 @@ func (m *mockTxManager) RunInTx(_ context.Context, fn func(ctx context.Context) 
 	return fn(context.Background())
 }
 
+// mockBillAuditRepo records every audit event in-memory so tests can assert
+// on action / actor / payload without touching the DB. createErr lets tests
+// simulate audit failure (which must roll back the parent TX).
+type mockBillAuditRepo struct {
+	createErr error
+	logs      []BillAuditLog
+}
+
+var _ BillAuditRepository = (*mockBillAuditRepo)(nil)
+
+func (m *mockBillAuditRepo) Create(_ context.Context, log *BillAuditLog) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.logs = append(m.logs, *log)
+	return nil
+}
+
+func (m *mockBillAuditRepo) EditedBillIDs(_ context.Context, billIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	result := make(map[uuid.UUID]bool, len(billIDs))
+	want := make(map[uuid.UUID]bool, len(billIDs))
+	for _, id := range billIDs {
+		want[id] = true
+	}
+	for _, log := range m.logs {
+		if !log.Action.IsEditEvent() {
+			continue
+		}
+		if want[log.BillID] {
+			result[log.BillID] = true
+		}
+	}
+	return result, nil
+}
+
 // --- Test helpers ---
 
 func testContract() *contract.Contract {
@@ -372,7 +407,7 @@ func completedNotice(contractID uuid.UUID, moveOutDate time.Time) *moveout.MoveO
 }
 
 func newSvc(repo *mockBillingRepo, contracts *mockContractQuerier, meters *mockMeterQuerier, configs *mockConfigQuerier, moveOuts *mockMoveOutQuerier) BillingService {
-	return NewBillingService(repo, contracts, meters, configs, moveOuts, &mockTxManager{})
+	return NewBillingService(repo, &mockBillAuditRepo{}, contracts, meters, configs, moveOuts, &mockTxManager{})
 }
 
 // ============================================================
@@ -1396,7 +1431,7 @@ func testContractWithRoom(floor int, roomNum string) (ContractWithRoom, *contrac
 }
 
 func batchSvc(repo *mockBillingRepo, meters *mockMeterQuerier, moveOuts *mockMoveOutQuerier) BillingService {
-	return NewBillingService(repo, &mockContractQuerier{}, meters, &mockConfigQuerier{}, moveOuts, &mockTxManager{})
+	return NewBillingService(repo, &mockBillAuditRepo{}, &mockContractQuerier{}, meters, &mockConfigQuerier{}, moveOuts, &mockTxManager{})
 }
 
 // runBatch invokes the service and returns (batch header, items captured by the mock repo).

@@ -176,11 +176,12 @@ func buildRealBillingService(t *testing.T, db *gorm.DB) BillingService {
 	t.Helper()
 	txMgr := database.NewTxManager(db)
 	billRepo := NewBillingRepository(db)
+	billAuditRepo := NewBillAuditRepository(db)
 	contractRepo := contract.NewContractRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	bcRepo := billingconfig.NewBillingConfigRepository(db)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
-	return NewBillingService(billRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txMgr)
+	return NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txMgr)
 }
 
 func truncateToDate(t time.Time) time.Time {

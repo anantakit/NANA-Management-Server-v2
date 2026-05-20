@@ -119,7 +119,8 @@ func main() {
 
 	// Wire dependencies — Billing
 	billRepo := billing.NewBillingRepository(db)
-	billService := billing.NewBillingService(billRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txManager)
+	billAuditRepo := billing.NewBillAuditRepository(db)
+	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txManager)
 	billHandler := billing.NewBillingHandler(billService)
 
 	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier)

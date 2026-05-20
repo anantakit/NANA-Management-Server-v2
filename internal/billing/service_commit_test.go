@@ -54,6 +54,7 @@ func newTestBatch(itemCount int) (*BillGenerationBatch, []BillGenerationBatchIte
 func newCommitService(repo *mockBillingRepo) BillingService {
 	return NewBillingService(
 		repo,
+		&mockBillAuditRepo{},
 		&mockContractQuerier{},
 		&mockMeterQuerier{},
 		&mockConfigQuerier{},
