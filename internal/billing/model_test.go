@@ -1097,3 +1097,36 @@ func TestComputeDepositSettlementFromBill_Invariant_AvailableEqualsDepositMinusF
 		})
 	}
 }
+
+// Lock invariant: lifecycle events (CREATE_DRAFT / FINALIZE / VOID) must NOT
+// count toward is_edited. Only true user curation actions do. Future actions
+// (e.g. SUPERSEDE in Phase 2) MUST be classified explicitly — the default
+// (unknown action → false) ensures forgetting to classify fails closed.
+func TestBillAuditAction_IsEditEvent(t *testing.T) {
+	cases := []struct {
+		action BillAuditAction
+		want   bool
+	}{
+		// Edit events
+		{AuditApplyOverride, true},
+		{AuditAddManual, true},
+		{AuditRemoveManual, true},
+		{AuditEditNote, true},
+
+		// Lifecycle events — must not count
+		{AuditCreateDraft, false},
+		{AuditFinalize, false},
+		{AuditVoid, false},
+
+		// Unknown / future action — must default to false (fail-closed)
+		{BillAuditAction("SUPERSEDE"), false},
+		{BillAuditAction(""), false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.action), func(t *testing.T) {
+			if got := tc.action.IsEditEvent(); got != tc.want {
+				t.Errorf("IsEditEvent(%q) = %v, want %v", tc.action, got, tc.want)
+			}
+		})
+	}
+}

@@ -1001,3 +1001,177 @@ type BillSummaryRaw struct {
 	PaidAmount    int64 `gorm:"column:paid_amount"`    // satang, sum of PAID
 	VoidedAmount  int64 `gorm:"column:voided_amount"`  // satang, sum of VOID
 }
+
+// --- Bill audit log (event-sourced edit history) ---
+//
+// Separate aggregate from Bill: bills holds current state (overrides map,
+// line items, totals), bill_audit_log holds the event timeline of how that
+// state was reached. Two columns intentionally NOT collapsed because:
+//   - current state is queried hot, event log is read cold
+//   - event log is append-only forever; bill state mutates
+//   - one bill → many audit rows naturally relational
+//
+// Audit recorder writes inside the same TX as the state mutation. On audit
+// failure the parent TX rolls back — correctness > availability for billing
+// forensics (see project_billing_editable_monthly_arch_lock.md).
+//
+// Payload shape is structured per action (not freeform blob): each action
+// has a typed Go struct below that marshals into the jsonb column. Action
+// itself is the discriminator — payload does NOT repeat the field name.
+
+type BillAuditAction string
+
+const (
+	// Lifecycle events — do NOT count toward is_edited.
+	AuditCreateDraft BillAuditAction = "CREATE_DRAFT"
+	AuditFinalize    BillAuditAction = "FINALIZE"
+	AuditVoid        BillAuditAction = "VOID"
+
+	// Edit events — count toward is_edited.
+	AuditApplyOverride BillAuditAction = "APPLY_OVERRIDE"
+	AuditAddManual     BillAuditAction = "ADD_MANUAL"
+	AuditRemoveManual  BillAuditAction = "REMOVE_MANUAL"
+	AuditEditNote      BillAuditAction = "EDIT_NOTE"
+)
+
+// IsEditEvent reports whether this action contributes to the is_edited flag
+// on the bill. Lifecycle events (CREATE_DRAFT, FINALIZE, VOID) do not.
+func (a BillAuditAction) IsEditEvent() bool {
+	switch a {
+	case AuditApplyOverride, AuditAddManual, AuditRemoveManual, AuditEditNote:
+		return true
+	}
+	return false
+}
+
+// BillAuditLog is one append-only event in a bill's edit timeline.
+//
+// ActorID is nullable because some events are system-triggered (e.g. settlement
+// regenerate from move-out service has no user actor) — DB enforces
+// ON DELETE SET NULL so audit survives user removal.
+type BillAuditLog struct {
+	ID        uuid.UUID       `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	BillID    uuid.UUID       `gorm:"type:uuid;not null" json:"bill_id"`
+	Action    BillAuditAction `gorm:"type:varchar(30);not null" json:"action"`
+	ActorID   *uuid.UUID      `gorm:"type:uuid" json:"actor_id,omitempty"`
+	Payload   AuditPayload    `gorm:"type:jsonb;not null;default:'{}'::jsonb" json:"payload"`
+	CreatedAt time.Time       `gorm:"not null;default:now()" json:"created_at"`
+}
+
+func (BillAuditLog) TableName() string { return "bill_audit_log" }
+
+func (l *BillAuditLog) BeforeCreate(tx *gorm.DB) error {
+	if l.ID == uuid.Nil {
+		l.ID = uuid.New()
+	}
+	return nil
+}
+
+// AuditPayload is a raw jsonb cell that wraps any of the typed payload structs
+// below. Caller marshals the action-specific struct via MarshalAuditPayload;
+// reader unmarshals via the typed accessors.
+type AuditPayload json.RawMessage
+
+func (p *AuditPayload) Scan(value any) error {
+	if value == nil {
+		*p = AuditPayload("{}")
+		return nil
+	}
+	var data []byte
+	switch v := value.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return fmt.Errorf("audit payload: unsupported scan type %T", value)
+	}
+	if len(data) == 0 {
+		*p = AuditPayload("{}")
+		return nil
+	}
+	*p = AuditPayload(data)
+	return nil
+}
+
+func (p AuditPayload) Value() (driver.Value, error) {
+	if len(p) == 0 {
+		return []byte("{}"), nil
+	}
+	return []byte(p), nil
+}
+
+// MarshalAuditPayload is the single entry point for building an AuditPayload
+// from a typed payload struct. Returns the raw json bytes for storage.
+func MarshalAuditPayload(v any) (AuditPayload, error) {
+	if v == nil {
+		return AuditPayload("{}"), nil
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshal audit payload: %w", err)
+	}
+	return AuditPayload(data), nil
+}
+
+// --- Typed payload structs (one per BillAuditAction) ---
+//
+// Money fields are stored as int64 satang in the jsonb payload (matches
+// the rest of the billing domain — never baht at this layer).
+
+// AuditCreateDraftPayload captures the shape of a bill at creation time.
+// LineItemCount + TotalAmount are snapshot values, not pointers to bill state.
+type AuditCreateDraftPayload struct {
+	LineItemCount int   `json:"line_item_count"`
+	TotalAmount   int64 `json:"total_amount"` // satang
+}
+
+// AuditOverridePayload records one override key transition. When admin edits
+// multiple overrides in a single API call, the recorder emits multiple
+// audit rows (one per key) so the timeline reads naturally.
+//
+// Before/After are pointers because absent ≠ zero — a missing key in the
+// override map is semantically distinct from an explicit ฿0 override.
+type AuditOverridePayload struct {
+	Key    string `json:"key"`              // LineItemType as string (e.g. "ELECTRICITY")
+	Before *int64 `json:"before,omitempty"` // satang, nil if previously absent
+	After  *int64 `json:"after,omitempty"`  // satang, nil if removed
+}
+
+// AuditAddManualPayload records a single MANUAL line item insertion.
+// Quantity + UnitPrice are optional (quantity-mode entries); flat-amount
+// entries omit them.
+type AuditAddManualPayload struct {
+	LineType    string `json:"line_type"`
+	Description string `json:"description"`
+	Amount      int64  `json:"amount"` // satang
+	Quantity    *int   `json:"quantity,omitempty"`
+	UnitPrice   *int64 `json:"unit_price,omitempty"` // satang
+}
+
+// AuditRemoveManualPayload records a MANUAL line item removal.
+type AuditRemoveManualPayload struct {
+	LineType    string `json:"line_type"`
+	Description string `json:"description"`
+	Amount      int64  `json:"amount"` // satang
+}
+
+// AuditEditNotePayload records a note text change.
+type AuditEditNotePayload struct {
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+// AuditFinalizePayload snapshots the bill total at the moment of FINALIZE.
+// Useful when later comparing against the on-the-wire total (e.g. did the
+// total drift after finalize? It shouldn't — this anchors the answer).
+type AuditFinalizePayload struct {
+	TotalAmount int64 `json:"total_amount"` // satang at time of finalize
+}
+
+// AuditVoidPayload records the void reason + the status the bill was in
+// before being voided (DRAFT or FINALIZED).
+type AuditVoidPayload struct {
+	PreviousStatus string `json:"previous_status"`
+	Reason         string `json:"reason"`
+}
