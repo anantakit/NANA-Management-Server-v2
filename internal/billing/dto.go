@@ -384,6 +384,12 @@ type BatchItemResponse struct {
 	ReasonText       string                 `json:"reason_text,omitempty"`
 	BillID           *uuid.UUID             `json:"bill_id,omitempty"`
 	ComputedSnapshot *SnapshotPreview       `json:"computed_snapshot,omitempty"`
+	// BillStatus is the linked bill's current status (DRAFT / FINALIZED /
+	// PAID / VOID), populated via JOIN. Nil/omitted for items without a
+	// committed bill yet. Lets the FE BillBatchReview derive draftCount /
+	// editedCount directly from items[] for the "ออกบิลทั้งหมด" CTA without
+	// a second API call.
+	BillStatus *string `json:"bill_status,omitempty"`
 	// IsEdited mirrors BillResponse.IsEdited — true iff the linked DRAFT bill
 	// has at least one edit-class audit event. Surfaced so BillBatchReview can
 	// render the "แก้ไขแล้ว" badge per row without forcing admin to open every
@@ -501,6 +507,10 @@ func ToBatchItemResponse(i BatchItemWithTenant) BatchItemResponse {
 		ReasonText: i.ReasonText,
 		BillID:     i.BillID,
 		IsEdited:   i.IsEdited,
+	}
+	if i.BillStatus != nil {
+		s := string(*i.BillStatus)
+		resp.BillStatus = &s
 	}
 	if i.ResultType == ResultCreated && len(i.ComputedSnapshot.LineItems) > 0 {
 		resp.ComputedSnapshot = toSnapshotPreview(i.ComputedSnapshot)

@@ -45,8 +45,9 @@ type mockBillingRepo struct {
 	deletedSourcesByBillID map[uuid.UUID][]LineItemSource
 	createdLineItems       []BillLineItem
 
-	createdBatch      *BillGenerationBatch
-	createdBatchItems []BillGenerationBatchItem
+	createdBatch         *BillGenerationBatch
+	createdBatchItems    []BillGenerationBatchItem
+	batchItemBillStatuses map[uuid.UUID]BillStatus // bill_id → status, stamped onto BatchItemWithTenant
 }
 
 // defaultMockApartmentID is returned by FindApartmentIDByRoomID when neither
@@ -204,7 +205,17 @@ func (m *mockBillingRepo) FindBatchByID(_ context.Context, _ uuid.UUID) (*BillGe
 func (m *mockBillingRepo) FindBatchItemsByBatchID(_ context.Context, _ uuid.UUID) ([]BatchItemWithTenant, error) {
 	result := make([]BatchItemWithTenant, len(m.createdBatchItems))
 	for i, it := range m.createdBatchItems {
-		result[i] = BatchItemWithTenant{BillGenerationBatchItem: it}
+		wrapped := BatchItemWithTenant{BillGenerationBatchItem: it}
+		// Tests can opt into per-item bill_status via batchItemBillStatuses
+		// without needing a custom mock override. Keyed by bill_id so items
+		// with BillID == nil naturally have BillStatus = nil (uncommitted).
+		if it.BillID != nil {
+			if s, ok := m.batchItemBillStatuses[*it.BillID]; ok {
+				bs := s
+				wrapped.BillStatus = &bs
+			}
+		}
+		result[i] = wrapped
 	}
 	return result, nil
 }

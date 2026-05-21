@@ -950,16 +950,25 @@ type CommitBatchResult struct {
 
 // --- Projections ---
 
-// BatchItemWithTenant is a projection for batch item API responses (JOIN tenant).
+// BatchItemWithTenant is a projection for batch item API responses (JOIN tenant + bill).
 type BatchItemWithTenant struct {
 	BillGenerationBatchItem
 	TenantName string `json:"tenant_name"`
 
+	// BillStatus is the current status of the linked bill, populated via
+	// LEFT JOIN bills in FindBatchItemsByBatchID. Nil for items without a
+	// committed bill (BillID == nil pre-commit, or failed commit). Lets
+	// BillBatchReview compute draftCount / editedCount client-side without
+	// an extra round-trip — primary consumer is the post-commit
+	// "ออกบิลทั้งหมด" CTA which only renders when at least one item still
+	// has BillStatus = DRAFT.
+	BillStatus *BillStatus `gorm:"column:bill_status" json:"-"`
+
 	// IsEdited mirrors BillWithRelations.IsEdited — true iff the linked bill
 	// has at least one edit-class audit event. Populated by GetBatchItems
 	// via batched EditedBillIDs lookup, false for items without a committed
-	// bill (BillID == nil pre-commit, or failed commit). gorm:"-" because
-	// it's compute-on-demand like the BillWithRelations projection fields.
+	// bill. gorm:"-" because it's compute-on-demand (separate audit query),
+	// not column-derived like BillStatus.
 	IsEdited bool `gorm:"-" json:"-"`
 }
 

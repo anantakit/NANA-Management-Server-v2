@@ -339,14 +339,16 @@ func (r *billingRepository) FindBatchByID(ctx context.Context, id uuid.UUID) (*B
 func (r *billingRepository) FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BatchItemWithTenant, error) {
 	type joinRow struct {
 		BillGenerationBatchItem
-		TenantName string `gorm:"column:tenant_name"`
+		TenantName string      `gorm:"column:tenant_name"`
+		BillStatus *BillStatus `gorm:"column:bill_status"`
 	}
 	var rows []joinRow
 	err := database.DB(ctx, r.db).
 		Table("bill_generation_batch_items AS bi").
-		Select("bi.*, t.full_name AS tenant_name").
+		Select("bi.*, t.full_name AS tenant_name, b.status AS bill_status").
 		Joins("LEFT JOIN contracts c ON c.id = bi.contract_id AND c.deleted_at IS NULL").
 		Joins("LEFT JOIN tenants t ON t.id = c.tenant_id AND t.deleted_at IS NULL").
+		Joins("LEFT JOIN bills b ON b.id = bi.bill_id AND b.deleted_at IS NULL").
 		Where("bi.batch_id = ?", batchID).
 		Order("bi.room_floor ASC, bi.room_number ASC").
 		Scan(&rows).Error
@@ -357,7 +359,8 @@ func (r *billingRepository) FindBatchItemsByBatchID(ctx context.Context, batchID
 	for i, row := range rows {
 		result[i] = BatchItemWithTenant{
 			BillGenerationBatchItem: row.BillGenerationBatchItem,
-			TenantName:             row.TenantName,
+			TenantName:              row.TenantName,
+			BillStatus:              row.BillStatus,
 		}
 	}
 	return result, nil

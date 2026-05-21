@@ -108,3 +108,81 @@ var errBatchEditedAuditDown = &simpleErr{msg: "audit store unreachable"}
 type simpleErr struct{ msg string }
 
 func (e *simpleErr) Error() string { return e.msg }
+
+// GetBatchItems must pass bill_status through from the repo so the FE can
+// derive draftCount / editedCount / finalizedCount from items[] alone (no
+// extra query). Mirrors the is_edited population pattern but column-derived
+// (LEFT JOIN bills) instead of audit-derived. Uncommitted items keep
+// BillStatus = nil regardless of map presence (BillID == nil short-circuit).
+func TestGetBatchItems_PropagatesBillStatus(t *testing.T) {
+	batchID := uuid.New()
+	billDraft, billFinalized := uuid.New(), uuid.New()
+	items := []BillGenerationBatchItem{
+		{ID: uuid.New(), BatchID: batchID, BillID: &billDraft, ResultType: ResultCreated},
+		{ID: uuid.New(), BatchID: batchID, BillID: &billFinalized, ResultType: ResultCreated},
+		// Uncommitted — no bill_id, no bill_status mapping should reach the response.
+		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: ResultSkipped},
+	}
+	repo := &mockBillingRepo{
+		createdBatchItems: items,
+		batchItemBillStatuses: map[uuid.UUID]BillStatus{
+			billDraft:     BillStatusDraft,
+			billFinalized: BillStatusFinalized,
+		},
+	}
+	audit := &mockBillAuditRepo{}
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+
+	got, err := svc.GetBatchItems(context.Background(), batchID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(items) = %d, want 3", len(got))
+	}
+
+	expect := map[uuid.UUID]BillStatus{
+		billDraft:     BillStatusDraft,
+		billFinalized: BillStatusFinalized,
+	}
+	for _, it := range got {
+		if it.BillID == nil {
+			if it.BillStatus != nil {
+				t.Errorf("uncommitted item leaked BillStatus = %s, want nil", *it.BillStatus)
+			}
+			continue
+		}
+		if it.BillStatus == nil {
+			t.Errorf("bill %s missing BillStatus on response", *it.BillID)
+			continue
+		}
+		if got, want := *it.BillStatus, expect[*it.BillID]; got != want {
+			t.Errorf("bill %s BillStatus = %s, want %s", *it.BillID, got, want)
+		}
+	}
+}
+
+// DTO mapper test — BatchItemResponse.bill_status string mirrors the
+// BillStatus pointer one-for-one. Uncommitted item produces nil → JSON
+// omitempty drops the field entirely.
+func TestToBatchItemResponse_BillStatusMapping(t *testing.T) {
+	draft := BillStatusDraft
+	committed := BatchItemWithTenant{
+		BillGenerationBatchItem: BillGenerationBatchItem{ID: uuid.New(), BillID: &[]uuid.UUID{uuid.New()}[0]},
+		BillStatus:              &draft,
+	}
+	uncommitted := BatchItemWithTenant{
+		BillGenerationBatchItem: BillGenerationBatchItem{ID: uuid.New(), BillID: nil},
+		BillStatus:              nil,
+	}
+
+	r1 := ToBatchItemResponse(committed)
+	if r1.BillStatus == nil || *r1.BillStatus != string(BillStatusDraft) {
+		t.Errorf("committed.BillStatus = %v, want pointer to DRAFT", r1.BillStatus)
+	}
+
+	r2 := ToBatchItemResponse(uncommitted)
+	if r2.BillStatus != nil {
+		t.Errorf("uncommitted.BillStatus = %v, want nil", r2.BillStatus)
+	}
+}
