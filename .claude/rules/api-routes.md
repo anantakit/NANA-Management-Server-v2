@@ -101,6 +101,6 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | PATCH | `/:id/monthly-draft` | Edit DRAFT monthly bill (manual items + AUTO overrides + note). Replaces all MANUAL items with the request; AUTO items immutable except `.amount` via overrides. Rejects FINALIZED/PAID/VOID and SETTLEMENT bills. |
 | GET | `/batches` | List batch runs (paginated, filter by apartment_id/billing_month/status) |
 | GET | `/batches/:id` | Get batch header with summary counts |
-| GET | `/batches/:id/items` | Get batch items with computed snapshots |
+| GET | `/batches/:id/items` | Get batch items with computed snapshots + `is_edited` per item (batched audit lookup, no N+1). Uncommitted items default `is_edited=false`. |
 | POST | `/batches/:id/commit` | Commit batch: create DRAFT bills from snapshots (idempotent, per-item tx). Admin then edits + finalizes per bill via `PATCH /:id/monthly-draft` and `PATCH /:id/finalize` |
 | POST | `/batches/:id/finalize-all` | Bulk finalize every DRAFT monthly bill in the batch (per-item tx, continue-on-error). Already-FINALIZED bills are silently skipped (idempotent rerun). Returns `{success_count, fail_count, failures[]}` with per-row code (`NO_LINE_ITEMS` / `NOT_DRAFT` / `INFRA_ERROR`). Settlement bills excluded by query + service guard |

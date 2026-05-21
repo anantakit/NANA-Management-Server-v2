@@ -384,6 +384,11 @@ type BatchItemResponse struct {
 	ReasonText       string                 `json:"reason_text,omitempty"`
 	BillID           *uuid.UUID             `json:"bill_id,omitempty"`
 	ComputedSnapshot *SnapshotPreview       `json:"computed_snapshot,omitempty"`
+	// IsEdited mirrors BillResponse.IsEdited — true iff the linked DRAFT bill
+	// has at least one edit-class audit event. Surfaced so BillBatchReview can
+	// render the "แก้ไขแล้ว" badge per row without forcing admin to open every
+	// drawer. Always false for items without a committed bill yet.
+	IsEdited bool `json:"is_edited"`
 }
 
 // SnapshotPreview is the API-facing version of ComputedSnapshot.
@@ -495,6 +500,7 @@ func ToBatchItemResponse(i BatchItemWithTenant) BatchItemResponse {
 		ReasonCode: i.ReasonCode,
 		ReasonText: i.ReasonText,
 		BillID:     i.BillID,
+		IsEdited:   i.IsEdited,
 	}
 	if i.ResultType == ResultCreated && len(i.ComputedSnapshot.LineItems) > 0 {
 		resp.ComputedSnapshot = toSnapshotPreview(i.ComputedSnapshot)

@@ -954,6 +954,13 @@ type CommitBatchResult struct {
 type BatchItemWithTenant struct {
 	BillGenerationBatchItem
 	TenantName string `json:"tenant_name"`
+
+	// IsEdited mirrors BillWithRelations.IsEdited — true iff the linked bill
+	// has at least one edit-class audit event. Populated by GetBatchItems
+	// via batched EditedBillIDs lookup, false for items without a committed
+	// bill (BillID == nil pre-commit, or failed commit). gorm:"-" because
+	// it's compute-on-demand like the BillWithRelations projection fields.
+	IsEdited bool `gorm:"-" json:"-"`
 }
 
 // BillWithRelations is a projection for list/detail API responses.

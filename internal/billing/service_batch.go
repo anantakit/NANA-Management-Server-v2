@@ -416,8 +416,42 @@ func (s *billingService) GetBatchByID(ctx context.Context, id uuid.UUID) (*BillG
 	return b, nil
 }
 
+// GetBatchItems returns every batch item with its tenant + edit history flag.
+// Issues ONE batched EditedBillIDs query for all committed bills in the
+// response (items where BillID != nil) so the Edited badge can render
+// directly on BillBatchReview without forcing the admin to open every
+// drawer. Pre-commit items (BillID == nil) keep IsEdited=false trivially.
+//
+// On audit-store failure the call returns the wrapped error per the locked
+// is_edited contract — never silently hide edited state.
 func (s *billingService) GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error) {
-	return s.repo.FindBatchItemsByBatchID(ctx, id)
+	items, err := s.repo.FindBatchItemsByBatchID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect bill IDs from committed items only — uncommitted items have
+	// no bill row and therefore no audit history to query.
+	var billIDs []uuid.UUID
+	for _, it := range items {
+		if it.BillID != nil {
+			billIDs = append(billIDs, *it.BillID)
+		}
+	}
+	if len(billIDs) == 0 {
+		return items, nil
+	}
+
+	editedSet, err := s.audit.EditedBillIDs(ctx, billIDs)
+	if err != nil {
+		return nil, fmt.Errorf("populate batch item is_edited: %w", err)
+	}
+	for i := range items {
+		if items[i].BillID != nil && editedSet[*items[i].BillID] {
+			items[i].IsEdited = true
+		}
+	}
+	return items, nil
 }
 
 func (s *billingService) ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error) {
