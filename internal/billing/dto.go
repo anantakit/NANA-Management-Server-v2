@@ -195,6 +195,13 @@ type BillResponse struct {
 	// apartment has an active LATE_PENALTY config. Omitted otherwise.
 	// Display-only; never mutates the bill, never represents a decision.
 	LatePenaltyReferenceAmount *float64 `json:"late_penalty_reference_amount,omitempty"`
+
+	// IsEdited is true iff the bill has at least one edit-class audit
+	// event (override change, manual item add/remove, note change).
+	// Always present on the response (no omitempty) so the FE can render
+	// the Edited badge state directly off this field without inferring
+	// from missing-vs-false. FE never sees audit action names.
+	IsEdited bool `json:"is_edited"`
 }
 
 // BillListItemResponse is the per-row DTO for the bill list endpoint.
@@ -221,6 +228,9 @@ type BillListItemResponse struct {
 	ApartmentID       uuid.UUID  `json:"apartment_id"`
 	FinalizedAt       *time.Time `json:"finalized_at,omitempty"`
 	CreatedAt         string     `json:"created_at"`
+	// IsEdited mirrors BillResponse.IsEdited — see that field's doc.
+	// Populated by the list endpoint via a single batched audit query.
+	IsEdited bool `json:"is_edited"`
 }
 
 // --- Settlement preview DTOs ---
@@ -566,6 +576,7 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 	resp.RoomNumber = b.RoomNumber
 	resp.ApartmentName = b.ApartmentName
 	resp.ApartmentID = b.ApartmentID
+	resp.IsEdited = b.IsEdited
 	if b.OverdueDays > 0 {
 		d := b.OverdueDays
 		resp.OverdueDays = &d
@@ -657,5 +668,6 @@ func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 		ApartmentID:       b.ApartmentID,
 		FinalizedAt:       b.FinalizedAt,
 		CreatedAt:         b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		IsEdited:          b.IsEdited,
 	}
 }

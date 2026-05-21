@@ -85,7 +85,41 @@ func NewBillingService(
 
 func (s *billingService) List(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error) {
 	params.Normalize()
-	return s.repo.FindAll(ctx, params)
+	bills, total, err := s.repo.FindAll(ctx, params)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := s.populateIsEdited(ctx, bills); err != nil {
+		return nil, 0, err
+	}
+	return bills, total, nil
+}
+
+// populateIsEdited issues ONE batched audit query for the entire page and
+// stamps each BillWithRelations.IsEdited in place. Avoids N+1.
+//
+// On audit-store failure this returns the wrapped error rather than silently
+// hiding edited state — a list response without is_edited would mislead the
+// FE Edited badge and erode the forensic guarantee. Per the lock,
+// EditedBillIDs failure propagates.
+func (s *billingService) populateIsEdited(ctx context.Context, bills []BillWithRelations) error {
+	if len(bills) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, len(bills))
+	for i, b := range bills {
+		ids[i] = b.ID
+	}
+	editedSet, err := s.audit.EditedBillIDs(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("populate is_edited: %w", err)
+	}
+	for i := range bills {
+		if editedSet[bills[i].ID] {
+			bills[i].IsEdited = true
+		}
+	}
+	return nil
 }
 
 func (s *billingService) GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error) {
@@ -110,6 +144,16 @@ func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRe
 	now := time.Now()
 	b.OverdueDays = b.Bill.OverdueDays(now)
 	b.LatePenaltyReferenceAmount = s.lookupLatePenaltyReference(ctx, b, now)
+
+	// is_edited reflects user curation history — true iff the audit log
+	// has at least one edit event for this bill. Single-bill EditedBillIDs
+	// lookup reuses the same repo path as the list endpoint. Per the lock,
+	// audit-store failure propagates rather than silently hiding state.
+	editedSet, err := s.audit.EditedBillIDs(ctx, []uuid.UUID{b.ID})
+	if err != nil {
+		return nil, fmt.Errorf("populate is_edited: %w", err)
+	}
+	b.IsEdited = editedSet[b.ID]
 	return b, nil
 }
 

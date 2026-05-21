@@ -977,6 +977,15 @@ type BillWithRelations struct {
 	// or bill not overdue. Reference only — never a recommendation, never
 	// persisted, never mutates the bill.
 	LatePenaltyReferenceAmount int64 `gorm:"-" json:"-"`
+
+	// IsEdited reports whether the admin has curated this bill — true iff
+	// the audit log carries at least one edit event (UPDATE_OVERRIDE /
+	// ADD_MANUAL_ITEM / REMOVE_MANUAL_ITEM / UPDATE_NOTE). Lifecycle events
+	// (CREATE_DRAFT / FINALIZE / VOID) do NOT count. Single source of truth
+	// lives in BillAuditAction.IsEditEvent — FE never sees audit semantics,
+	// only this derived boolean. Populated by service.GetByID (single-bill)
+	// and service.List (batched per page, no N+1).
+	IsEdited bool `gorm:"-" json:"-"`
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).

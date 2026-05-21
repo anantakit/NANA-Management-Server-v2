@@ -19,6 +19,7 @@ import (
 // --- Hand-written mocks ---
 
 type mockBillingRepo struct {
+	findAllFn                           func(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
 	findByIDFn                          func(ctx context.Context, id uuid.UUID) (*Bill, error)
 	findByIDWithRelationsFn             func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	findByContractAndMonthFn            func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
@@ -55,7 +56,10 @@ var defaultMockApartmentID = uuid.MustParse("00000000-0000-0000-0000-000000000aa
 
 var _ BillingRepository = (*mockBillingRepo)(nil)
 
-func (m *mockBillingRepo) FindAll(_ context.Context, _ BillListParams) ([]BillWithRelations, int64, error) {
+func (m *mockBillingRepo) FindAll(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error) {
+	if m.findAllFn != nil {
+		return m.findAllFn(ctx, params)
+	}
 	return nil, 0, nil
 }
 func (m *mockBillingRepo) GetSummary(_ context.Context, _ BillSummaryParams) (*BillSummaryRaw, error) {
@@ -332,10 +336,17 @@ func (m *mockTxManager) RunInTx(_ context.Context, fn func(ctx context.Context) 
 
 // mockBillAuditRepo records every audit event in-memory so tests can assert
 // on action / actor / payload without touching the DB. createErr lets tests
-// simulate audit failure (which must roll back the parent TX).
+// simulate audit failure (which must roll back the parent TX). editedErr
+// lets tests simulate audit-query failure on the is_edited read path —
+// must propagate, never be silently swallowed.
+//
+// editedQueryCalls counts how many times EditedBillIDs is invoked so list
+// tests can prove batching (one call per page, no N+1).
 type mockBillAuditRepo struct {
-	createErr error
-	logs      []BillAuditLog
+	createErr        error
+	editedErr        error
+	logs             []BillAuditLog
+	editedQueryCalls int
 }
 
 var _ BillAuditRepository = (*mockBillAuditRepo)(nil)
@@ -349,6 +360,10 @@ func (m *mockBillAuditRepo) Create(_ context.Context, log *BillAuditLog) error {
 }
 
 func (m *mockBillAuditRepo) EditedBillIDs(_ context.Context, billIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	m.editedQueryCalls++
+	if m.editedErr != nil {
+		return nil, m.editedErr
+	}
 	result := make(map[uuid.UUID]bool, len(billIDs))
 	want := make(map[uuid.UUID]bool, len(billIDs))
 	for _, id := range billIDs {
