@@ -18,6 +18,8 @@ import (
 //
 // Delegates to prepareSettlementPlan (read-only computation) then
 // commitSettlementPlan (persistence). Same path as CreateSettlementBill.
+// Emits CREATE_DRAFT audit with actor=nil because the cross-feature port
+// does not currently thread admin userID through.
 func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error) {
 	opts := DefaultSettlementOptions()
 	if rentMode != "" {
@@ -27,13 +29,24 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	if err != nil {
 		return nil, err
 	}
-	return s.commitSettlementPlan(ctx, plan)
+	result, err := s.commitSettlementPlan(ctx, plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recordAudit(ctx, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+		LineItemCount: len(plan.Bill.LineItems),
+		TotalAmount:   plan.Bill.TotalAmount,
+	}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // VoidSettlement marks a settlement bill as VOIDED with the given reason.
 // Also restores any monthly bills that were absorbed by this settlement,
 // so they can be re-absorbed by a new settlement or collected normally.
 // Called by the move-out service within its transaction context.
+// Emits VOID audit with actor=nil (cross-feature port).
 func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error {
 	b, err := s.repo.FindByID(ctx, billID)
 	if err != nil {
@@ -42,11 +55,18 @@ func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, r
 		}
 		return fmt.Errorf("find bill for void: %w", err)
 	}
+	previousStatus := string(b.Status)
 	if err := b.Void(reason); err != nil {
 		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
 	if err := s.repo.Update(ctx, b); err != nil {
 		return fmt.Errorf("void settlement: %w", err)
+	}
+	if err := s.recordAudit(ctx, b.ID, AuditVoid, nil, AuditVoidPayload{
+		PreviousStatus: previousStatus,
+		Reason:         reason,
+	}); err != nil {
+		return err
 	}
 	// Restore absorbed bills so they can be re-collected or re-absorbed
 	return s.restoreAbsorbedBills(ctx, b.ContractID)

@@ -109,6 +109,7 @@ func Truncate(t *testing.T, db *gorm.DB, tables ...string) {
 func TruncateAll(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	Truncate(t, db,
+		"bill_audit_log",
 		"bill_line_items",
 		"bills",
 		"move_out_notices",

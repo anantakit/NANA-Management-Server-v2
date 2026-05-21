@@ -261,6 +261,11 @@ func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*C
 // add MANUAL items, set note) before explicit Finalize. The ComputedSnapshot
 // is the immutable system-computed source; the DRAFT row is the curation
 // surface admin operates on. See project_billing_editable_monthly_arch_lock.md.
+//
+// Audit: emits CREATE_DRAFT with actor=nil (batch commit is system-triggered,
+// admin clicks "commit batch" but per-bill creation is not a per-bill admin
+// action). Payload includes batch_id / room_id / billing_month so the audit
+// timeline can link back to the batch run without joining batch_items.
 func (s *billingService) commitOneItem(ctx context.Context, batch *BillGenerationBatch, item BillGenerationBatchItem) error {
 	return s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		snapshot := item.ComputedSnapshot
@@ -283,6 +288,16 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 		bill.CalculateTotal()
 
 		if err := s.repo.Create(txCtx, bill); err != nil {
+			return err
+		}
+
+		if err := s.recordAudit(txCtx, bill.ID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+			LineItemCount: len(bill.LineItems),
+			TotalAmount:   bill.TotalAmount,
+			BatchID:       &item.BatchID,
+			RoomID:        &item.RoomID,
+			BillingMonth:  batch.BillingMonth,
+		}); err != nil {
 			return err
 		}
 

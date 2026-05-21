@@ -435,15 +435,15 @@ func TestCreateMonthlyBill_HappyPath(t *testing.T) {
 
 	bill, err := svc.CreateMonthlyBill(context.Background(), CreateMonthlyBillRequest{
 		ContractID: c.ID.String(), BillingMonth: "2026-03", MeterReadingID: reading.ID.String(),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if bill.BillType != BillTypeMonthly {
 		t.Fatalf("expected MONTHLY, got %s", bill.BillType)
 	}
-	if bill.Status != BillStatusFinalized {
-		t.Fatalf("expected FINALIZED, got %s", bill.Status)
+	if bill.Status != BillStatusDraft {
+		t.Fatalf("expected DRAFT, got %s (CreateMonthlyBill lands DRAFT-first per 2026-05-21 alignment with batch path)", bill.Status)
 	}
 
 	created := repo.createdBill
@@ -473,7 +473,7 @@ func TestCreateMonthlyBill_ContractNotActive(t *testing.T) {
 
 	_, err := svc.CreateMonthlyBill(context.Background(), CreateMonthlyBillRequest{
 		ContractID: c.ID.String(), BillingMonth: "2026-03", MeterReadingID: uuid.New().String(),
-	})
+	}, nil)
 	if err != ErrContractNotActive {
 		t.Fatalf("expected ErrContractNotActive, got %v", err)
 	}
@@ -491,7 +491,7 @@ func TestCreateMonthlyBill_DuplicateBill(t *testing.T) {
 
 	_, err := svc.CreateMonthlyBill(context.Background(), CreateMonthlyBillRequest{
 		ContractID: c.ID.String(), BillingMonth: "2026-03", MeterReadingID: uuid.New().String(),
-	})
+	}, nil)
 	if err != ErrBillAlreadyExists {
 		t.Fatalf("expected ErrBillAlreadyExists, got %v", err)
 	}
@@ -506,7 +506,7 @@ func TestCreateMonthlyBill_MeterTypeMismatch(t *testing.T) {
 
 	_, err := svc.CreateMonthlyBill(context.Background(), CreateMonthlyBillRequest{
 		ContractID: c.ID.String(), BillingMonth: "2026-03", MeterReadingID: exitReading.ID.String(),
-	})
+	}, nil)
 	if err != ErrMeterTypeMismatch {
 		t.Fatalf("expected ErrMeterTypeMismatch, got %v", err)
 	}
@@ -521,7 +521,7 @@ func TestCreateMonthlyBill_MeterRoomMismatch(t *testing.T) {
 
 	_, err := svc.CreateMonthlyBill(context.Background(), CreateMonthlyBillRequest{
 		ContractID: c.ID.String(), BillingMonth: "2026-03", MeterReadingID: reading.ID.String(),
-	})
+	}, nil)
 	if err != ErrMeterRoomMismatch {
 		t.Fatalf("expected ErrMeterRoomMismatch, got %v", err)
 	}
@@ -536,7 +536,7 @@ func TestCreateMonthlyBill_MeterMonthMismatch(t *testing.T) {
 
 	_, err := svc.CreateMonthlyBill(context.Background(), CreateMonthlyBillRequest{
 		ContractID: c.ID.String(), BillingMonth: "2026-03", MeterReadingID: reading.ID.String(),
-	})
+	}, nil)
 	if err != ErrMeterMonthMismatch {
 		t.Fatalf("expected ErrMeterMonthMismatch, got %v", err)
 	}
@@ -565,7 +565,7 @@ func runSettlement(t *testing.T, opts ...func(*settlementOpts)) *Bill {
 
 	_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
 		ContractID: o.contract.ID.String(),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestSettlement_DetectRentCoverage(t *testing.T) {
 
 			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
 				ContractID: o.contract.ID.String(),
-			})
+			}, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -806,7 +806,7 @@ func TestSettlement_VoidMonthlyBills(t *testing.T) {
 
 			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
 				ContractID: o.contract.ID.String(),
-			})
+			}, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -992,7 +992,7 @@ func TestSettlement_UsesActualMoveOutDate(t *testing.T) {
 
 			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
 				ContractID: o.contract.ID.String(),
-			})
+			}, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1185,7 +1185,7 @@ func TestSettlement_Errors(t *testing.T) {
 			svc := tt.setup()
 			_, err := svc.CreateSettlementBill(context.Background(), CreateSettlementBillRequest{
 				ContractID: uuid.New().String(),
-			})
+			}, nil)
 			if err != tt.wantErr {
 				t.Fatalf("got %v, want %v", err, tt.wantErr)
 			}
@@ -1206,7 +1206,7 @@ func TestFinalizeBill_HappyPath(t *testing.T) {
 		&mockContractQuerier{}, &mockMeterQuerier{},
 		&mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	bill, err := svc.FinalizeBill(context.Background(), billID)
+	bill, err := svc.FinalizeBill(context.Background(), billID, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1243,7 +1243,7 @@ func TestVoidBill_HappyPath(t *testing.T) {
 		&mockContractQuerier{}, &mockMeterQuerier{},
 		&mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	bill, err := svc.VoidBill(context.Background(), billID, VoidBillRequest{Reason: "ข้อมูลผิด"})
+	bill, err := svc.VoidBill(context.Background(), billID, VoidBillRequest{Reason: "ข้อมูลผิด"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1261,7 +1261,7 @@ func TestVoidBill_PaidToVoidRejected(t *testing.T) {
 		&mockContractQuerier{}, &mockMeterQuerier{},
 		&mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	_, err := svc.VoidBill(context.Background(), billID, VoidBillRequest{Reason: "test"})
+	_, err := svc.VoidBill(context.Background(), billID, VoidBillRequest{Reason: "test"}, nil)
 	if err == nil {
 		t.Fatal("expected error when voiding PAID bill")
 	}

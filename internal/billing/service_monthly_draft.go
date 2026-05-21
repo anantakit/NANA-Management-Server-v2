@@ -32,8 +32,6 @@ import (
 // threaded in the next commit without re-touching every callsite. Today it
 // is intentionally unused — the underscore assignment documents that.
 func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, req UpdateMonthlyDraftRequest, actor *uuid.UUID) (*BillWithRelations, error) {
-	_ = actor // threaded in next commit when recordAudit lands on mutators
-
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		b, err := s.repo.FindByID(txCtx, id)
 		if err != nil {
@@ -56,6 +54,16 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 				return respond.ErrBadRequest.WithMessage(
 					fmt.Sprintf("ประเภทรายการ %q ไม่สามารถเพิ่มเองได้", item.LineType))
 			}
+		}
+
+		// Capture BEFORE snapshots for diff-based audit. Clone Overrides since
+		// `b` and the reloaded bill share the same pointer in the repo and
+		// the mutation below replaces the map reference in place.
+		oldManuals := b.ManualItems()
+		oldNote := b.Note
+		oldOverrides := make(OverrideMap, len(b.Overrides))
+		for k, v := range b.Overrides {
+			oldOverrides[k] = v
 		}
 
 		// Wipe existing MANUAL items — request is the new source of truth.
@@ -126,7 +134,10 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 		if req.Note != nil {
 			reloaded.Note = *req.Note
 		}
-		return s.repo.Update(txCtx, reloaded)
+		if err := s.repo.Update(txCtx, reloaded); err != nil {
+			return err
+		}
+		return s.emitDraftEditAudit(txCtx, id, actor, oldManuals, manualItems, oldOverrides, reloaded.Overrides, oldNote, reloaded.Note)
 	}); err != nil {
 		if _, ok := respond.Is(err); ok {
 			return nil, err

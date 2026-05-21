@@ -57,10 +57,10 @@ func (r *billAuditRepository) EditedBillIDs(ctx context.Context, billIDs []uuid.
 	}
 
 	editActions := []BillAuditAction{
-		AuditApplyOverride,
-		AuditAddManual,
-		AuditRemoveManual,
-		AuditEditNote,
+		AuditUpdateOverride,
+		AuditAddManualItem,
+		AuditRemoveManualItem,
+		AuditUpdateNote,
 	}
 
 	var rows []uuid.UUID

@@ -55,7 +55,8 @@ func (s *billingService) PreviewSettlement(ctx context.Context, input PreviewSet
 // the shared prepareSettlementPlan → commitSettlementPlan path.
 //
 // Same settlement semantics as GenerateSettlement (absorption, deposit, duplicate guard).
-func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error) {
+// Emits CREATE_DRAFT audit inside the same TX as the bill insert.
+func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest, actor *uuid.UUID) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง")
@@ -90,7 +91,10 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 			return cErr
 		}
 		billID = result.BillID
-		return nil
+		return s.recordAudit(txCtx, billID, AuditCreateDraft, actor, AuditCreateDraftPayload{
+			LineItemCount: len(plan.Bill.LineItems),
+			TotalAmount:   plan.Bill.TotalAmount,
+		})
 	}); err != nil {
 		if _, ok := respond.Is(err); ok {
 			return nil, err
@@ -103,7 +107,11 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 
 // UpdateSettlementDraft replaces all MANUAL line items and updates the note
 // on a DRAFT settlement bill. AUTO items are untouched.
-func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest) (*BillWithRelations, error) {
+//
+// Emits diff-based audit events (UPDATE_OVERRIDE per key changed, REMOVE/
+// ADD_MANUAL_ITEM per item, UPDATE_NOTE if changed) inside the same TX as
+// the state mutation — audit failure rolls back the edit.
+func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest, actor *uuid.UUID) (*BillWithRelations, error) {
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		b, err := s.repo.FindByID(txCtx, id)
 		if err != nil {
@@ -119,18 +127,30 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 			return respond.ErrBadRequest.WithMessage("แก้ไขได้เฉพาะบิลสรุปยอด")
 		}
 
-		// Delete existing MANUAL items
-		if err := s.repo.DeleteLineItemsBySource(txCtx, id, LineItemSourceManual); err != nil {
-			return fmt.Errorf("delete manual items: %w", err)
+		// Capture BEFORE snapshots for diff-based audit. Clone the override
+		// map since `b` and the reloaded bill share the same pointer in the
+		// repo and we mutate Overrides in place below.
+		oldManuals := b.ManualItems()
+		oldNote := b.Note
+		oldOverrides := make(OverrideMap, len(b.Overrides))
+		for k, v := range b.Overrides {
+			oldOverrides[k] = v
 		}
 
-		// Validate + build new MANUAL items (sort after AUTO)
+		// Validate manual line types BEFORE any DB write so the bill is never
+		// left half-edited inside the TX on invalid input.
 		for _, item := range req.ManualItems {
 			if !IsValidManualLineType(LineItemType(item.LineType)) {
 				return respond.ErrBadRequest.WithMessage(
 					fmt.Sprintf("ประเภทรายการ %q ไม่สามารถเพิ่มเองได้", item.LineType))
 			}
 		}
+
+		// Delete existing MANUAL items
+		if err := s.repo.DeleteLineItemsBySource(txCtx, id, LineItemSourceManual); err != nil {
+			return fmt.Errorf("delete manual items: %w", err)
+		}
+
 		autoCount := 0
 		for _, li := range b.LineItems {
 			if li.IsAuto() {
@@ -197,7 +217,10 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 		if req.Note != nil {
 			reloaded.Note = *req.Note
 		}
-		return s.repo.Update(txCtx, reloaded)
+		if err := s.repo.Update(txCtx, reloaded); err != nil {
+			return err
+		}
+		return s.emitDraftEditAudit(txCtx, id, actor, oldManuals, manualItems, oldOverrides, reloaded.Overrides, oldNote, reloaded.Note)
 	}); err != nil {
 		if _, ok := respond.Is(err); ok {
 			return nil, err
@@ -210,6 +233,12 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 
 // FinalizeSettlement recomputes totals from line items and marks the DRAFT
 // settlement bill as FINALIZED. Called by the move-out service via port.
+//
+// Move-out service owns the parent transaction (per service_moveout_ports.go
+// header convention), so this method uses the inherited ctx directly. Audit
+// row is emitted on the same ctx and inherits the same TX — failure rolls
+// back the move-out workflow step. Actor is nil because the cross-feature
+// port does not currently thread admin userID through.
 func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUID) error {
 	b, err := s.repo.FindByID(ctx, billID)
 	if err != nil {
@@ -225,10 +254,17 @@ func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUI
 	// Recompute totals from source of truth
 	b.CalculateTotal()
 
+	previousStatus := string(b.Status)
 	if err := b.Finalize(); err != nil {
 		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
-	return s.repo.Update(ctx, b)
+	if err := s.repo.Update(ctx, b); err != nil {
+		return err
+	}
+	return s.recordAudit(ctx, b.ID, AuditFinalize, nil, AuditFinalizePayload{
+		PreviousStatus: previousStatus,
+		TotalAmount:    b.TotalAmount,
+	})
 }
 
 // RegenerateSettlement voids the existing draft, creates a new DRAFT with
@@ -255,11 +291,18 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	}
 
 	// Void the existing bill
+	previousStatus := string(existing.Status)
 	if err := existing.Void("REGENERATED"); err != nil {
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
 	if err := s.repo.Update(ctx, existing); err != nil {
 		return nil, fmt.Errorf("void existing bill: %w", err)
+	}
+	if err := s.recordAudit(ctx, existing.ID, AuditVoid, nil, AuditVoidPayload{
+		PreviousStatus: previousStatus,
+		Reason:         "REGENERATED",
+	}); err != nil {
+		return nil, err
 	}
 
 	// Restore absorbed bills so they can be re-absorbed
@@ -274,6 +317,12 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	}
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.recordAudit(ctx, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+		LineItemCount: len(plan.Bill.LineItems),
+		TotalAmount:   plan.Bill.TotalAmount,
+	}); err != nil {
 		return nil, err
 	}
 

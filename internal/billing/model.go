@@ -1028,17 +1028,17 @@ const (
 	AuditVoid        BillAuditAction = "VOID"
 
 	// Edit events — count toward is_edited.
-	AuditApplyOverride BillAuditAction = "APPLY_OVERRIDE"
-	AuditAddManual     BillAuditAction = "ADD_MANUAL"
-	AuditRemoveManual  BillAuditAction = "REMOVE_MANUAL"
-	AuditEditNote      BillAuditAction = "EDIT_NOTE"
+	AuditUpdateOverride   BillAuditAction = "UPDATE_OVERRIDE"
+	AuditAddManualItem    BillAuditAction = "ADD_MANUAL_ITEM"
+	AuditRemoveManualItem BillAuditAction = "REMOVE_MANUAL_ITEM"
+	AuditUpdateNote       BillAuditAction = "UPDATE_NOTE"
 )
 
 // IsEditEvent reports whether this action contributes to the is_edited flag
 // on the bill. Lifecycle events (CREATE_DRAFT, FINALIZE, VOID) do not.
 func (a BillAuditAction) IsEditEvent() bool {
 	switch a {
-	case AuditApplyOverride, AuditAddManual, AuditRemoveManual, AuditEditNote:
+	case AuditUpdateOverride, AuditAddManualItem, AuditRemoveManualItem, AuditUpdateNote:
 		return true
 	}
 	return false
@@ -1121,9 +1121,17 @@ func MarshalAuditPayload(v any) (AuditPayload, error) {
 
 // AuditCreateDraftPayload captures the shape of a bill at creation time.
 // LineItemCount + TotalAmount are snapshot values, not pointers to bill state.
+//
+// BatchID + RoomID + BillingMonth are populated only for batch-created monthly
+// bills (commitOneItem path). They let the audit timeline link a bill back to
+// the batch run it came from without joining the batch_items table at query
+// time. Direct CreateMonthlyBill / CreateSettlementBill emit these as omit.
 type AuditCreateDraftPayload struct {
-	LineItemCount int   `json:"line_item_count"`
-	TotalAmount   int64 `json:"total_amount"` // satang
+	LineItemCount int        `json:"line_item_count"`
+	TotalAmount   int64      `json:"total_amount"`             // satang
+	BatchID       *uuid.UUID `json:"batch_id,omitempty"`       // populated for batch-created bills only
+	RoomID        *uuid.UUID `json:"room_id,omitempty"`        // populated for batch-created bills only
+	BillingMonth  string     `json:"billing_month,omitempty"`  // populated for batch-created bills only
 }
 
 // AuditOverridePayload records one override key transition. When admin edits
@@ -1138,10 +1146,10 @@ type AuditOverridePayload struct {
 	After  *int64 `json:"after,omitempty"`  // satang, nil if removed
 }
 
-// AuditAddManualPayload records a single MANUAL line item insertion.
+// AuditAddManualItemPayload records a single MANUAL line item insertion.
 // Quantity + UnitPrice are optional (quantity-mode entries); flat-amount
 // entries omit them.
-type AuditAddManualPayload struct {
+type AuditAddManualItemPayload struct {
 	LineType    string `json:"line_type"`
 	Description string `json:"description"`
 	Amount      int64  `json:"amount"` // satang
@@ -1149,24 +1157,26 @@ type AuditAddManualPayload struct {
 	UnitPrice   *int64 `json:"unit_price,omitempty"` // satang
 }
 
-// AuditRemoveManualPayload records a MANUAL line item removal.
-type AuditRemoveManualPayload struct {
+// AuditRemoveManualItemPayload records a MANUAL line item removal.
+type AuditRemoveManualItemPayload struct {
 	LineType    string `json:"line_type"`
 	Description string `json:"description"`
 	Amount      int64  `json:"amount"` // satang
 }
 
-// AuditEditNotePayload records a note text change.
-type AuditEditNotePayload struct {
+// AuditUpdateNotePayload records a note text change.
+type AuditUpdateNotePayload struct {
 	Before string `json:"before"`
 	After  string `json:"after"`
 }
 
-// AuditFinalizePayload snapshots the bill total at the moment of FINALIZE.
-// Useful when later comparing against the on-the-wire total (e.g. did the
-// total drift after finalize? It shouldn't — this anchors the answer).
+// AuditFinalizePayload snapshots the bill total + the status the bill held
+// before transitioning to FINALIZED. PreviousStatus is always "DRAFT" today
+// (only DRAFTs can be finalized) but the field future-proofs the schema for
+// any post-finalize reopen / correction flow that might re-finalize.
 type AuditFinalizePayload struct {
-	TotalAmount int64 `json:"total_amount"` // satang at time of finalize
+	PreviousStatus string `json:"previous_status"`
+	TotalAmount    int64  `json:"total_amount"` // satang at time of finalize
 }
 
 // AuditVoidPayload records the void reason + the status the bill was in

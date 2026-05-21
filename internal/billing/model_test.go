@@ -1108,10 +1108,10 @@ func TestBillAuditAction_IsEditEvent(t *testing.T) {
 		want   bool
 	}{
 		// Edit events
-		{AuditApplyOverride, true},
-		{AuditAddManual, true},
-		{AuditRemoveManual, true},
-		{AuditEditNote, true},
+		{AuditUpdateOverride, true},
+		{AuditAddManualItem, true},
+		{AuditRemoveManualItem, true},
+		{AuditUpdateNote, true},
 
 		// Lifecycle events — must not count
 		{AuditCreateDraft, false},

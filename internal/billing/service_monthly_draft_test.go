@@ -30,20 +30,23 @@ func monthlyDraftFixture() *Bill {
 	}
 }
 
-func newMonthlyDraftService(bill *Bill) (BillingService, *mockBillingRepo) {
+func newMonthlyDraftService(bill *Bill) (BillingService, *mockBillingRepo, *mockBillAuditRepo) {
 	repo := &mockBillingRepo{}
 	repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) {
 		return bill, nil
 	}
-	return newSvc(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}), repo
+	audit := &mockBillAuditRepo{}
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	return svc, repo, audit
 }
 
 // Happy path: override an AUTO amount, add two MANUAL items, set the note.
 // Asserts the full chain: delete-then-create line items, override applied,
-// note set, Update called once with the curated state.
+// note set, Update called once with the curated state, AND the audit log
+// emits one row per diff (1 add-manual × 2 + 1 update-override + 1 update-note).
 func TestUpdateMonthlyDraft_HappyPath(t *testing.T) {
 	bill := monthlyDraftFixture()
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, audit := newMonthlyDraftService(bill)
 
 	note := "ตรวจมิเตอร์ซ้ำแล้ว"
 	qty := 2
@@ -135,6 +138,37 @@ func TestUpdateMonthlyDraft_HappyPath(t *testing.T) {
 	if seenAuto != 3 {
 		t.Errorf("AUTO items in saved bill = %d, want 3 (none should be deleted)", seenAuto)
 	}
+
+	// Audit log: 2 × ADD_MANUAL_ITEM (no removes since fixture has 0 manuals)
+	// + 1 × UPDATE_OVERRIDE (electricity, before nil → after 75,000) + 1 ×
+	// UPDATE_NOTE (empty → "ตรวจมิเตอร์ซ้ำแล้ว") = 4 rows total.
+	counts := auditActionCounts(audit.logs)
+	if got := counts[AuditAddManualItem]; got != 2 {
+		t.Errorf("ADD_MANUAL_ITEM count = %d, want 2", got)
+	}
+	if got := counts[AuditRemoveManualItem]; got != 0 {
+		t.Errorf("REMOVE_MANUAL_ITEM count = %d, want 0 (fixture had 0 manuals)", got)
+	}
+	if got := counts[AuditUpdateOverride]; got != 1 {
+		t.Errorf("UPDATE_OVERRIDE count = %d, want 1 (only electricity changed)", got)
+	}
+	if got := counts[AuditUpdateNote]; got != 1 {
+		t.Errorf("UPDATE_NOTE count = %d, want 1", got)
+	}
+	if got := counts[AuditCreateDraft] + counts[AuditFinalize] + counts[AuditVoid]; got != 0 {
+		t.Errorf("lifecycle events on an edit = %d, want 0", got)
+	}
+}
+
+// auditActionCounts groups recorded audit events by action for assertion.
+// Helper local to draft tests so the surface stays small; promote later if
+// other test files reach for the same shape.
+func auditActionCounts(logs []BillAuditLog) map[BillAuditAction]int {
+	counts := map[BillAuditAction]int{}
+	for _, l := range logs {
+		counts[l.Action]++
+	}
+	return counts
 }
 
 // AUTO line items can have holes in their sort_order (e.g. [1, 3]) from prior
@@ -155,7 +189,7 @@ func TestUpdateMonthlyDraft_ManualSortAppendsAfterMaxAuto_NotCount(t *testing.T)
 			{ID: uuid.New(), BillID: billID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ", Amount: 18000, SortOrder: 3},
 		},
 	}
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, _ := newMonthlyDraftService(bill)
 
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
 		ManualItems: []ManualLineItemRequest{
@@ -178,7 +212,7 @@ func TestUpdateMonthlyDraft_ManualSortAppendsAfterMaxAuto_NotCount(t *testing.T)
 func TestUpdateMonthlyDraft_RejectsSettlementBill(t *testing.T) {
 	bill := monthlyDraftFixture()
 	bill.BillType = BillTypeSettlement
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, _ := newMonthlyDraftService(bill)
 
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{}, nil)
 	if err == nil {
@@ -200,7 +234,7 @@ func TestUpdateMonthlyDraft_RejectsSettlementBill(t *testing.T) {
 func TestUpdateMonthlyDraft_RejectsNonDraft(t *testing.T) {
 	bill := monthlyDraftFixture()
 	bill.Status = BillStatusFinalized
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, _ := newMonthlyDraftService(bill)
 
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{}, nil)
 	if err == nil {
@@ -222,7 +256,7 @@ func TestUpdateMonthlyDraft_RejectsNonDraft(t *testing.T) {
 // (note / overrides) can be cleared or set.
 func TestUpdateMonthlyDraft_EmptyManualItems_AutoPreserved(t *testing.T) {
 	bill := monthlyDraftFixture()
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, _ := newMonthlyDraftService(bill)
 
 	out, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
 		ManualItems: []ManualLineItemRequest{},
@@ -252,7 +286,7 @@ func TestUpdateMonthlyDraft_EmptyManualItems_AutoPreserved(t *testing.T) {
 // the handler returns 400 instead of an opaque 500 from CalculateTotal.
 func TestUpdateMonthlyDraft_InvalidOverrideKey_SurfacesAsAppError(t *testing.T) {
 	bill := monthlyDraftFixture()
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, _ := newMonthlyDraftService(bill)
 
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
 		Overrides: map[string]float64{string(LineItemPrepaidCredit): 100},
@@ -275,7 +309,7 @@ func TestUpdateMonthlyDraft_InvalidOverrideKey_SurfacesAsAppError(t *testing.T) 
 // any DB write so the bill is not left half-edited inside the TX.
 func TestUpdateMonthlyDraft_InvalidManualLineType_SurfacesAsAppError(t *testing.T) {
 	bill := monthlyDraftFixture()
-	svc, repo := newMonthlyDraftService(bill)
+	svc, repo, _ := newMonthlyDraftService(bill)
 
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
 		ManualItems: []ManualLineItemRequest{
@@ -293,5 +327,71 @@ func TestUpdateMonthlyDraft_InvalidManualLineType_SurfacesAsAppError(t *testing.
 	}
 	if got := repo.deletedSourcesByBillID[bill.ID]; len(got) != 0 {
 		t.Error("DeleteLineItemsBySource must not be called when manual validation fails")
+	}
+}
+
+// Diff semantics: if the note isn't part of the request (or matches the
+// existing note), no UPDATE_NOTE audit row is emitted. Same for overrides
+// (no map provided → no UPDATE_OVERRIDE). Locks the rule that audit rows
+// represent real transitions only, not "the API was called".
+func TestUpdateMonthlyDraft_NoteUnchanged_NoUpdateNoteEvent(t *testing.T) {
+	bill := monthlyDraftFixture()
+	bill.Note = "ของเดิม"
+	svc, _, audit := newMonthlyDraftService(bill)
+
+	// Empty request: no manual items, no overrides, no note change.
+	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
+		ManualItems: []ManualLineItemRequest{},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	counts := auditActionCounts(audit.logs)
+	if got := counts[AuditUpdateNote]; got != 0 {
+		t.Errorf("UPDATE_NOTE count = %d, want 0 (note never changed)", got)
+	}
+	if got := counts[AuditUpdateOverride]; got != 0 {
+		t.Errorf("UPDATE_OVERRIDE count = %d, want 0 (no overrides in request)", got)
+	}
+	if got := counts[AuditAddManualItem]; got != 0 {
+		t.Errorf("ADD_MANUAL_ITEM count = %d, want 0 (empty manuals)", got)
+	}
+}
+
+// Locked invariant: recordAudit failure rolls back the parent mutation
+// (correctness > availability for billing forensics). The mock TxManager
+// can't actually undo state mutations in memory, but the contract verified
+// here is the propagation path: audit error wraps up and out, the bill
+// Update result is discarded by the caller, no surface success leaks.
+func TestUpdateMonthlyDraft_AuditFailureRollsBack(t *testing.T) {
+	bill := monthlyDraftFixture()
+	svc, repo, audit := newMonthlyDraftService(bill)
+	audit.createErr = errors.New("audit store offline")
+
+	note := "won't take effect because audit fails"
+	out, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
+		ManualItems: []ManualLineItemRequest{
+			{LineType: string(LineItemCleaningFee), Description: "x", Amount: 10},
+		},
+		Note: &note,
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error when audit Create fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit") {
+		t.Errorf("error %q should mention audit failure cause", err.Error())
+	}
+	if out != nil {
+		t.Errorf("response should be nil on audit failure, got %+v", out)
+	}
+	// Audit Create was attempted but rejected — no logs land in the in-memory mock.
+	if len(audit.logs) != 0 {
+		t.Errorf("audit.logs = %d, want 0 (Create rejected before append)", len(audit.logs))
+	}
+	// State-mutation calls happened up to the audit failure point — the real
+	// DB TX rolls those back; the mock can only verify the error path was hit.
+	if len(repo.updatedBills) != 1 {
+		t.Errorf("Update was attempted within the TX (len=%d, want 1) — production DB rollback discards it", len(repo.updatedBills))
 	}
 }

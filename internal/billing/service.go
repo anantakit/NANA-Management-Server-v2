@@ -22,10 +22,10 @@ type BillingService interface {
 	List(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
 	GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
-	CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*BillWithRelations, error)
-	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest) (*BillWithRelations, error)
-	FinalizeBill(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
-	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*BillWithRelations, error)
+	CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
+	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
+	FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error)
+	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error)
 	PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error)
@@ -38,7 +38,7 @@ type BillingService interface {
 	PreviewSettlement(ctx context.Context, input PreviewSettlementInput) (*SettlementPreview, error)
 
 	// Settlement draft editing
-	UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest) (*BillWithRelations, error)
+	UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest, actor *uuid.UUID) (*BillWithRelations, error)
 
 	// Monthly draft editing
 	UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, req UpdateMonthlyDraftRequest, actor *uuid.UUID) (*BillWithRelations, error)
@@ -143,9 +143,19 @@ func (s *billingService) lookupLatePenaltyReference(ctx context.Context, b *Bill
 	return ComputeLatePenaltyReference(&b.Bill, rate, today)
 }
 
-// CreateMonthlyBill generates a FINALIZED monthly bill.
+// CreateMonthlyBill generates a DRAFT monthly bill from a single contract +
+// meter reading. Same DRAFT-first semantics as the batch path
+// (commitOneItem) — admin then reviews + optionally edits + explicitly
+// finalizes via PATCH /:id/finalize. Pre-existing finalize-on-create
+// behavior removed 2026-05-21 after FE audit confirmed no callers depended
+// on immediate-FINALIZED response.
+//
 // Monthly = ค่าห้องเดือนถัดไป (advance) + ค่าน้ำไฟเดือนนี้ (meter)
-func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest) (*BillWithRelations, error) {
+//
+// Emits exactly one CREATE_DRAFT audit row inside the same TX as the bill
+// insert. No FINALIZE event here — the bill stays DRAFT until the admin
+// calls FinalizeBill explicitly.
+func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest, actor *uuid.UUID) (*BillWithRelations, error) {
 	contractID, err := uuid.Parse(req.ContractID)
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง")
@@ -158,7 +168,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, respond.ErrBadRequest.WithMessage("meter_reading_id ไม่ถูกต้อง")
 	}
 
-	// Validate contract
+	// Validate contract + meter outside the TX to keep lock time short.
 	c, err := s.contracts.FindByIDSimple(ctx, contractID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -170,7 +180,6 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, ErrContractNotActive
 	}
 
-	// Check duplicate
 	_, err = s.repo.FindByContractAndMonth(ctx, contractID, req.BillingMonth, BillTypeMonthly)
 	if err == nil {
 		return nil, ErrBillAlreadyExists
@@ -179,7 +188,6 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, fmt.Errorf("check duplicate: %w", err)
 	}
 
-	// Get and validate meter reading
 	reading, err := s.meters.FindByIDSimple(ctx, meterID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -200,7 +208,13 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	snapshot := computeMonthlyBillSnapshot(req.BillingMonth,
 		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
 
+	// Pre-generate the bill ID so the CREATE_DRAFT audit row can reference
+	// it inside the same TX as the bill insert. BeforeCreate skips uuid.New()
+	// when ID is already set. Note: line items in the snapshot still hold
+	// uuid.Nil for their BillID — repo.Create resolves them via the parent
+	// bill association at insert time.
 	bill := Bill{
+		ID:           uuid.New(),
 		ContractID:   contractID,
 		BillingMonth: req.BillingMonth,
 		BillType:     BillTypeMonthly,
@@ -208,52 +222,87 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		LineItems:    snapshot.ToLineItems(uuid.Nil),
 		TotalAmount:  snapshot.TotalAmount,
 	}
-	if err := bill.Finalize(); err != nil {
-		return nil, respond.ErrBadRequest.WithMessage(err.Error())
-	}
 
-	if err := s.repo.Create(ctx, &bill); err != nil {
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := s.repo.Create(txCtx, &bill); err != nil {
+			return fmt.Errorf("create monthly bill: %w", err)
+		}
+		return s.recordAudit(txCtx, bill.ID, AuditCreateDraft, actor, AuditCreateDraftPayload{
+			LineItemCount: len(bill.LineItems),
+			TotalAmount:   bill.TotalAmount,
+		})
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("create monthly bill: %w", err)
 	}
 	return s.repo.FindByIDWithRelations(ctx, bill.ID)
 }
 
-func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
-	b, err := s.repo.FindByID(ctx, id)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrBillNotFound
+// FinalizeBill transitions a DRAFT bill (monthly or settlement) to FINALIZED.
+// Wrapped in a TX so the bill Update + FINALIZE audit row are atomic — audit
+// failure rolls back the status transition.
+func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error) {
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		b, err := s.repo.FindByID(txCtx, id)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrBillNotFound
+			}
+			return fmt.Errorf("find bill: %w", err)
 		}
-		return nil, fmt.Errorf("find bill: %w", err)
-	}
 
-	if err := b.Finalize(); err != nil {
-		return nil, respond.ErrBadRequest.WithMessage(err.Error())
-	}
-
-	if err := s.repo.Update(ctx, b); err != nil {
+		previousStatus := string(b.Status)
+		if err := b.Finalize(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, b); err != nil {
+			return fmt.Errorf("finalize bill: %w", err)
+		}
+		return s.recordAudit(txCtx, b.ID, AuditFinalize, actor, AuditFinalizePayload{
+			PreviousStatus: previousStatus,
+			TotalAmount:    b.TotalAmount,
+		})
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("finalize bill: %w", err)
 	}
-	return s.repo.FindByIDWithRelations(ctx, b.ID)
+	return s.repo.FindByIDWithRelations(ctx, id)
 }
 
-func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest) (*BillWithRelations, error) {
-	b, err := s.repo.FindByID(ctx, id)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrBillNotFound
+// VoidBill marks a bill as VOID with the provided reason. Wrapped in a TX so
+// the bill Update + VOID audit row are atomic.
+func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest, actor *uuid.UUID) (*BillWithRelations, error) {
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		b, err := s.repo.FindByID(txCtx, id)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrBillNotFound
+			}
+			return fmt.Errorf("find bill: %w", err)
 		}
-		return nil, fmt.Errorf("find bill: %w", err)
-	}
 
-	if err := b.Void(req.Reason); err != nil {
-		return nil, respond.ErrBadRequest.WithMessage(err.Error())
-	}
-
-	if err := s.repo.Update(ctx, b); err != nil {
+		previousStatus := string(b.Status)
+		if err := b.Void(req.Reason); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Update(txCtx, b); err != nil {
+			return fmt.Errorf("void bill: %w", err)
+		}
+		return s.recordAudit(txCtx, b.ID, AuditVoid, actor, AuditVoidPayload{
+			PreviousStatus: previousStatus,
+			Reason:         req.Reason,
+		})
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
 		return nil, fmt.Errorf("void bill: %w", err)
 	}
-	return s.repo.FindByIDWithRelations(ctx, b.ID)
+	return s.repo.FindByIDWithRelations(ctx, id)
 }
 
 func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
