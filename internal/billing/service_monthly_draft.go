@@ -1,0 +1,138 @@
+package billing
+
+import (
+	"context"
+	"fmt"
+
+	"nana/internal/shared/money"
+	"nana/internal/shared/respond"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// UpdateMonthlyDraft replaces all MANUAL line items, applies overrides to AUTO
+// line item amounts, and updates the note on a DRAFT monthly bill.
+//
+// Mirrors UpdateSettlementDraft minus the deposit-application path (monthly
+// bills have no deposit concept). Reuses ValidateOverrides + the shared
+// overrideableLineTypes map from the domain layer, which already covers every
+// monthly AUTO line type (ROOM_RENT, ELECTRICITY, WATER).
+//
+// Sort-order invariant (locked, see project_billing_editable_monthly_arch_lock.md):
+//   - AUTO items keep their existing sort_order — never mutated by this method
+//   - MANUAL items append after the last AUTO item in request order
+//   - Empty manual_items array is valid → bill ends up with only AUTO items
+//
+// State guards:
+//   - Bill must be DRAFT (FINALIZED / PAID / VOID rejected with AppError)
+//   - Bill must be MONTHLY (SETTLEMENT routed to UpdateSettlementDraft)
+//
+// `actor` is captured at the param boundary so the audit recorder can be
+// threaded in the next commit without re-touching every callsite. Today it
+// is intentionally unused — the underscore assignment documents that.
+func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, req UpdateMonthlyDraftRequest, actor *uuid.UUID) (*BillWithRelations, error) {
+	_ = actor // threaded in next commit when recordAudit lands on mutators
+
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		b, err := s.repo.FindByID(txCtx, id)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrBillNotFound
+			}
+			return fmt.Errorf("find bill: %w", err)
+		}
+		if !b.IsDraft() {
+			return respond.ErrBadRequest.WithMessage(ErrNotDraft.Error())
+		}
+		if !b.IsMonthly() {
+			return respond.ErrBadRequest.WithMessage("แก้ไขได้เฉพาะบิลรายเดือน")
+		}
+
+		// Validate manual line types BEFORE touching the DB so an invalid
+		// request never leaves the bill in a half-edited state inside the TX.
+		for _, item := range req.ManualItems {
+			if !IsValidManualLineType(LineItemType(item.LineType)) {
+				return respond.ErrBadRequest.WithMessage(
+					fmt.Sprintf("ประเภทรายการ %q ไม่สามารถเพิ่มเองได้", item.LineType))
+			}
+		}
+
+		// Wipe existing MANUAL items — request is the new source of truth.
+		// AUTO items are never touched.
+		if err := s.repo.DeleteLineItemsBySource(txCtx, id, LineItemSourceManual); err != nil {
+			return fmt.Errorf("delete manual items: %w", err)
+		}
+
+		// MANUAL sort_order appends after the last AUTO item. Use max(sort_order)
+		// not count: AUTO rows can have holes (e.g. [1, 3] from prior edits or
+		// future schema migrations) — count-based baseOrder would collide with
+		// existing AUTO sort_orders. max+1 guarantees MANUAL lands strictly
+		// after every AUTO row regardless of holes. Edge case: no AUTO items
+		// → maxSort stays 0 → MANUAL starts at sort_order 1.
+		maxSort := 0
+		for _, li := range b.LineItems {
+			if li.IsAuto() && li.SortOrder > maxSort {
+				maxSort = li.SortOrder
+			}
+		}
+		baseOrder := maxSort + 1
+		var manualItems []BillLineItem
+		for i, item := range req.ManualItems {
+			li := BillLineItem{
+				BillID:      id,
+				LineType:    LineItemType(item.LineType),
+				Source:      LineItemSourceManual,
+				Description: item.Description,
+				SortOrder:   baseOrder + i,
+			}
+			if item.Quantity != nil && item.UnitPrice != nil && *item.Quantity > 0 {
+				// Quantity mode: amount = qty × unit_price (rounded at satang layer).
+				li.Quantity = *item.Quantity
+				li.UnitPrice = money.ToSatang(*item.UnitPrice)
+				li.Amount = int64(*item.Quantity) * li.UnitPrice
+			} else {
+				li.Amount = money.ToSatang(item.Amount)
+			}
+			manualItems = append(manualItems, li)
+		}
+		if len(manualItems) > 0 {
+			if err := s.repo.CreateLineItems(txCtx, manualItems); err != nil {
+				return fmt.Errorf("create manual items: %w", err)
+			}
+		}
+
+		// Reload to include the freshly-created MANUAL items + recompute totals
+		// off the latest persisted state.
+		reloaded, err := s.repo.FindByID(txCtx, id)
+		if err != nil {
+			return fmt.Errorf("reload bill: %w", err)
+		}
+
+		// Apply overrides — validate before assigning so the bad-key error
+		// surfaces as AppError (not opaque 500 from CalculateTotal).
+		if req.Overrides != nil {
+			overrides := make(OverrideMap, len(req.Overrides))
+			for key, amount := range req.Overrides {
+				overrides[key] = money.ToSatang(amount)
+			}
+			reloaded.Overrides = overrides
+			if err := reloaded.ValidateOverrides(); err != nil {
+				return respond.ErrBadRequest.WithMessage(err.Error())
+			}
+		}
+
+		reloaded.CalculateTotal()
+		if req.Note != nil {
+			reloaded.Note = *req.Note
+		}
+		return s.repo.Update(txCtx, reloaded)
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("update monthly draft: %w", err)
+	}
+
+	return s.repo.FindByIDWithRelations(ctx, id)
+}

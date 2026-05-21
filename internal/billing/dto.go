@@ -56,6 +56,25 @@ type ManualLineItemRequest struct {
 	UnitPrice   *float64 `json:"unit_price,omitempty"` // baht per unit
 }
 
+// UpdateMonthlyDraftRequest replaces all MANUAL line items, applies optional
+// overrides to AUTO line item amounts, and updates the note on a DRAFT monthly
+// bill.
+//
+// Edit scope (locked, mirrors settlement minus deposit):
+//   - MANUAL items: request is the new source of truth — items not in the
+//     request are deleted, items in the request are inserted (append after
+//     AUTO in request order). Empty array is valid (bill keeps only AUTO).
+//   - AUTO items: line_type, description, sort_order are immutable. Only the
+//     .amount field is mutable, via the OverrideMap (keyed by LineType).
+//   - Deposit fields are intentionally absent — settlement-only concept.
+//
+// See project_billing_editable_monthly_arch_lock.md for the why.
+type UpdateMonthlyDraftRequest struct {
+	ManualItems []ManualLineItemRequest `json:"manual_items" validate:"dive"`
+	Note        *string                 `json:"note"`
+	Overrides   map[string]float64      `json:"overrides"` // override_key (LineType) → baht
+}
+
 type BillListParams struct {
 	pagination.PaginationParams
 	ContractID  string `query:"contract_id"`

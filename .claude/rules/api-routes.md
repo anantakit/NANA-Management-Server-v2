@@ -94,10 +94,12 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | POST | `/settlement` | Create settlement bill (DRAFT) |
 | GET | `/preflight` | Readiness counts for monthly batch (read-only; query `apartment_id` + `billing_month`). Returns total_rooms / ready_count / missing_meter_count / already_exists_count / move_out_pending_count / not_billable_count. Powers the Generate page readiness card — no batch persisted |
 | POST | `/batch-monthly` | Trigger batch monthly generation (compute snapshots, no bills yet) |
-| PATCH | `/:id/finalize` | Transition DRAFT → FINALIZED |
+| PATCH | `/:id/finalize` | Transition DRAFT → FINALIZED (works for both MONTHLY and SETTLEMENT drafts) |
 | PATCH | `/:id/void` | Void bill (DRAFT/FINALIZED → VOID, requires reason) |
 | PATCH | `/:id/paid` | Mark bill as paid (FINALIZED → PAID) |
+| PATCH | `/:id/settlement-draft` | Edit DRAFT settlement bill (manual items, overrides, deposit application, note) |
+| PATCH | `/:id/monthly-draft` | Edit DRAFT monthly bill (manual items + AUTO overrides + note). Replaces all MANUAL items with the request; AUTO items immutable except `.amount` via overrides. Rejects FINALIZED/PAID/VOID and SETTLEMENT bills. |
 | GET | `/batches` | List batch runs (paginated, filter by apartment_id/billing_month/status) |
 | GET | `/batches/:id` | Get batch header with summary counts |
 | GET | `/batches/:id/items` | Get batch items with computed snapshots |
-| POST | `/batches/:id/commit` | Commit batch: create FINALIZED bills from snapshots (idempotent, per-item tx) |
+| POST | `/batches/:id/commit` | Commit batch: create DRAFT bills from snapshots (idempotent, per-item tx). Admin then edits + finalizes per bill via `PATCH /:id/monthly-draft` and `PATCH /:id/finalize` |

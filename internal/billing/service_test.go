@@ -38,6 +38,10 @@ type mockBillingRepo struct {
 	createdBills []*Bill // every bill created in order (used by batch commit tests)
 	updatedBills []*Bill
 
+	// Trackers for line-item mutation tests (UpdateMonthlyDraft / UpdateSettlementDraft).
+	deletedSourcesByBillID map[uuid.UUID][]LineItemSource
+	createdLineItems       []BillLineItem
+
 	createdBatch      *BillGenerationBatch
 	createdBatchItems []BillGenerationBatchItem
 }
@@ -160,10 +164,15 @@ func (m *mockBillingRepo) FindAbsorbedByContractID(ctx context.Context, contract
 	}
 	return nil, nil
 }
-func (m *mockBillingRepo) DeleteLineItemsBySource(_ context.Context, _ uuid.UUID, _ LineItemSource) error {
+func (m *mockBillingRepo) DeleteLineItemsBySource(_ context.Context, billID uuid.UUID, source LineItemSource) error {
+	if m.deletedSourcesByBillID == nil {
+		m.deletedSourcesByBillID = map[uuid.UUID][]LineItemSource{}
+	}
+	m.deletedSourcesByBillID[billID] = append(m.deletedSourcesByBillID[billID], source)
 	return nil
 }
-func (m *mockBillingRepo) CreateLineItems(_ context.Context, _ []BillLineItem) error {
+func (m *mockBillingRepo) CreateLineItems(_ context.Context, items []BillLineItem) error {
+	m.createdLineItems = append(m.createdLineItems, items...)
 	return nil
 }
 func (m *mockBillingRepo) CreateBatch(_ context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error {

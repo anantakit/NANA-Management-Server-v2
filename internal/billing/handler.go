@@ -38,6 +38,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Patch("/:id/void", h.Void)
 	r.Patch("/:id/paid", h.MarkPaid)
 	r.Patch("/:id/settlement-draft", h.UpdateSettlementDraft)
+	r.Patch("/:id/monthly-draft", h.UpdateMonthlyDraft)
 }
 
 func (h *BillingHandler) List(c fiber.Ctx) error {
@@ -297,6 +298,30 @@ func (h *BillingHandler) UpdateSettlementDraft(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "อัปเดตบิลสรุปยอดแล้ว", ToBillResponseWithRelations(*bill))
+}
+
+func (h *BillingHandler) UpdateMonthlyDraft(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+
+	var req UpdateMonthlyDraftRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	var actor *uuid.UUID
+	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
+		actor = &uid
+	}
+
+	bill, err := h.svc.UpdateMonthlyDraft(c.Context(), id, req, actor)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "อัปเดตบิลรายเดือนแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) MarkPaid(c fiber.Ctx) error {
