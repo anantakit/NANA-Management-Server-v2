@@ -34,7 +34,8 @@ type mockBillingRepo struct {
 	apartmentID                         uuid.UUID
 	findApartmentIDNotFound             bool // explicit opt-in for "room not found" path
 
-	createdBill  *Bill
+	createdBill  *Bill   // last bill created (kept for legacy single-bill tests)
+	createdBills []*Bill // every bill created in order (used by batch commit tests)
 	updatedBills []*Bill
 
 	createdBatch      *BillGenerationBatch
@@ -122,6 +123,7 @@ func (m *mockBillingRepo) FindExistingByContractsAndMonth(ctx context.Context, c
 }
 func (m *mockBillingRepo) Create(ctx context.Context, bill *Bill) error {
 	m.createdBill = bill
+	m.createdBills = append(m.createdBills, bill)
 	if m.createFn != nil {
 		return m.createFn(ctx, bill)
 	}

@@ -101,11 +101,44 @@ func TestCommitBatch_HappyPath(t *testing.T) {
 	if repo.createdBill == nil {
 		t.Fatal("expected at least one bill created")
 	}
-	if repo.createdBill.Status != BillStatusFinalized {
-		t.Errorf("bill status = %s, want FINALIZED", repo.createdBill.Status)
+	if repo.createdBill.Status != BillStatusDraft {
+		t.Errorf("bill status = %s, want DRAFT", repo.createdBill.Status)
 	}
 	if repo.createdBill.BillType != BillTypeMonthly {
 		t.Errorf("bill type = %s, want MONTHLY", repo.createdBill.BillType)
+	}
+}
+
+// TestCommitBatch_LandsAllAsDraft locks the invariant: every bill created from
+// a monthly batch commit enters DRAFT, not FINALIZED. Stronger than the
+// HappyPath assertion (which only checks the last created bill) — this walks
+// the full createdBills slice so a regression that flips even one bill back
+// to FINALIZED would fail loud.
+func TestCommitBatch_LandsAllAsDraft(t *testing.T) {
+	batch, items := newTestBatch(5)
+	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(repo)
+
+	result, err := svc.CommitBatch(context.Background(), batch.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.SuccessCount != 5 {
+		t.Errorf("SuccessCount = %d, want 5", result.SuccessCount)
+	}
+	if len(repo.createdBills) != 5 {
+		t.Fatalf("created %d bills, want 5", len(repo.createdBills))
+	}
+	for i, bill := range repo.createdBills {
+		if bill.Status != BillStatusDraft {
+			t.Errorf("bill[%d] status = %s, want DRAFT", i, bill.Status)
+		}
+		if bill.BillType != BillTypeMonthly {
+			t.Errorf("bill[%d] type = %s, want MONTHLY", i, bill.BillType)
+		}
+		if bill.FinalizedAt != nil {
+			t.Errorf("bill[%d] FinalizedAt should be nil until Finalize() runs, got %v", i, bill.FinalizedAt)
+		}
 	}
 }
 

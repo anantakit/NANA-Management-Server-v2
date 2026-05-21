@@ -171,8 +171,13 @@ func computeMonthlyBillSnapshot(
 }
 
 // CommitBatch reads the computed snapshots from a generate batch and creates
-// Bill(FINALIZED) rows. Per-item transactions ensure partial progress is preserved.
+// Bill(DRAFT) rows. Per-item transactions ensure partial progress is preserved.
 // Idempotent: retrying after partial commit only processes uncommitted items.
+//
+// DRAFT (not FINALIZED) is intentional — monthly bills enter the editable
+// curation phase mirroring settlement bills. Admin reviews + optionally edits
+// (override AUTO amounts, add MANUAL items, set note) before explicit Finalize.
+// See project_billing_editable_monthly_arch_lock.md for the locked semantics.
 func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*CommitBatchResult, error) {
 	// 1. Lock batch + read pending items in a short tx, then release.
 	var batch *BillGenerationBatch
@@ -249,8 +254,13 @@ func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*C
 	return result, nil
 }
 
-// commitOneItem creates a single FINALIZED bill from a batch item's snapshot.
+// commitOneItem creates a single DRAFT bill from a batch item's snapshot.
 // Runs in its own transaction so failures are isolated per-item.
+//
+// Bills land as DRAFT so admin can review + edit (override AUTO amounts,
+// add MANUAL items, set note) before explicit Finalize. The ComputedSnapshot
+// is the immutable system-computed source; the DRAFT row is the curation
+// surface admin operates on. See project_billing_editable_monthly_arch_lock.md.
 func (s *billingService) commitOneItem(ctx context.Context, batch *BillGenerationBatch, item BillGenerationBatchItem) error {
 	return s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		snapshot := item.ComputedSnapshot
@@ -266,7 +276,7 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 			ContractID:   item.ContractID,
 			BillingMonth: batch.BillingMonth,
 			BillType:     BillTypeMonthly,
-			Status:       BillStatusFinalized,
+			Status:       BillStatusDraft,
 			BatchID:      &item.BatchID,
 			LineItems:    snapshot.ToLineItems(billID),
 		}
