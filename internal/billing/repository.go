@@ -44,6 +44,9 @@ type BillingRepository interface {
 	UpdateBatchItemCommitted(ctx context.Context, itemID uuid.UUID, billID uuid.UUID) error
 	UpdateBatchItemCommitError(ctx context.Context, itemID uuid.UUID, reasonText string) error
 	UpdateBatchCommitStatus(ctx context.Context, batchID uuid.UUID, status CommitStatus, committedAt *time.Time) error
+
+	// Batch finalize flow
+	ListBillsByBatchID(ctx context.Context, batchID uuid.UUID) ([]Bill, error)
 }
 
 type billingRepository struct {
@@ -486,6 +489,29 @@ func (r *billingRepository) ListCommitPendingItems(ctx context.Context, batchID 
 		Order("room_floor ASC, room_number ASC").
 		Find(&items).Error
 	return items, err
+}
+
+// ListBillsByBatchID returns every monthly bill produced by the given batch
+// in deterministic order — JOIN through batch_items to sort by the same
+// (room_floor, room_number) the admin saw on BillBatchReview, then bill_id
+// as a stable tie-breaker. Returns all statuses (DRAFT / FINALIZED / VOID /
+// PAID) — the caller (BatchFinalizeAll) classifies what to do with each.
+//
+// Settlement bills are excluded at the SQL layer (defense-in-depth, even
+// though batch_id is only ever set on monthly bills by commitOneItem).
+// Soft-deleted bills are excluded by GORM's default DeletedAt scope.
+// Line items are preloaded so CanFinalize can validate ErrNoLineItems
+// without a per-bill round-trip.
+func (r *billingRepository) ListBillsByBatchID(ctx context.Context, batchID uuid.UUID) ([]Bill, error) {
+	var bills []Bill
+	err := database.DB(ctx, r.db).
+		Model(&Bill{}).
+		Joins("JOIN bill_generation_batch_items i ON i.bill_id = bills.id").
+		Where("i.batch_id = ? AND bills.bill_type = ?", batchID, BillTypeMonthly).
+		Order("i.room_floor ASC, i.room_number ASC, bills.id ASC").
+		Preload("LineItems").
+		Find(&bills).Error
+	return bills, err
 }
 
 // UpdateBatchItemCommitted sets bill_id on a batch item after successful bill creation.

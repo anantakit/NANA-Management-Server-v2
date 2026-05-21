@@ -20,6 +20,8 @@ import (
 
 type mockBillingRepo struct {
 	findAllFn                           func(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
+	listBillsByBatchIDFn                func(batchID uuid.UUID) ([]Bill, error)
+	updateErrByBillID                   map[uuid.UUID]error // per-bill Update failure injection
 	findByIDFn                          func(ctx context.Context, id uuid.UUID) (*Bill, error)
 	findByIDWithRelationsFn             func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	findByContractAndMonthFn            func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
@@ -138,11 +140,20 @@ func (m *mockBillingRepo) Create(ctx context.Context, bill *Bill) error {
 	return nil
 }
 func (m *mockBillingRepo) Update(ctx context.Context, bill *Bill) error {
+	if err, ok := m.updateErrByBillID[bill.ID]; ok && err != nil {
+		return err
+	}
 	m.updatedBills = append(m.updatedBills, bill)
 	if m.updateFn != nil {
 		return m.updateFn(ctx, bill)
 	}
 	return nil
+}
+func (m *mockBillingRepo) ListBillsByBatchID(_ context.Context, batchID uuid.UUID) ([]Bill, error) {
+	if m.listBillsByBatchIDFn != nil {
+		return m.listBillsByBatchIDFn(batchID)
+	}
+	return nil, nil
 }
 func (m *mockBillingRepo) SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, since string) (int64, error) {
 	if m.sumPaidFn != nil {
@@ -344,6 +355,7 @@ func (m *mockTxManager) RunInTx(_ context.Context, fn func(ctx context.Context) 
 // tests can prove batching (one call per page, no N+1).
 type mockBillAuditRepo struct {
 	createErr        error
+	createErrByBillID map[uuid.UUID]error // per-bill audit failure injection (BatchFinalizeAll tests)
 	editedErr        error
 	logs             []BillAuditLog
 	editedQueryCalls int
@@ -352,6 +364,11 @@ type mockBillAuditRepo struct {
 var _ BillAuditRepository = (*mockBillAuditRepo)(nil)
 
 func (m *mockBillAuditRepo) Create(_ context.Context, log *BillAuditLog) error {
+	// Per-bill failure injection takes precedence so per-item-isolation
+	// tests can fail bill A's audit while bill B/C continue cleanly.
+	if err, ok := m.createErrByBillID[log.BillID]; ok && err != nil {
+		return err
+	}
 	if m.createErr != nil {
 		return m.createErr
 	}

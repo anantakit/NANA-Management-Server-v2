@@ -103,3 +103,4 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | GET | `/batches/:id` | Get batch header with summary counts |
 | GET | `/batches/:id/items` | Get batch items with computed snapshots |
 | POST | `/batches/:id/commit` | Commit batch: create DRAFT bills from snapshots (idempotent, per-item tx). Admin then edits + finalizes per bill via `PATCH /:id/monthly-draft` and `PATCH /:id/finalize` |
+| POST | `/batches/:id/finalize-all` | Bulk finalize every DRAFT monthly bill in the batch (per-item tx, continue-on-error). Already-FINALIZED bills are silently skipped (idempotent rerun). Returns `{success_count, fail_count, failures[]}` with per-row code (`NO_LINE_ITEMS` / `NOT_DRAFT` / `INFRA_ERROR`). Settlement bills excluded by query + service guard |

@@ -38,6 +38,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/batches/:id", h.GetBatch)
 	r.Get("/batches/:id/items", h.GetBatchItems)
 	r.Post("/batches/:id/commit", h.CommitBatch)
+	r.Post("/batches/:id/finalize-all", h.BatchFinalizeAll)
 
 	r.Get("/summary", h.Summary)
 	r.Get("/preflight", h.PreflightMonthly)
@@ -247,6 +248,28 @@ func (h *BillingHandler) CommitBatch(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "commit บิลแล้ว", ToCommitBatchResponse(result))
+}
+
+// BatchFinalizeAll finalizes every DRAFT monthly bill in the given batch.
+// Returns 200 + structured result body (success_count / fail_count /
+// failures[]) — partial failure is a normal outcome, not an HTTP error,
+// so the FE can render per-row reasons without parsing a 4xx body.
+func (h *BillingHandler) BatchFinalizeAll(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.BatchFinalizeAll(c.Context(), id, actorFromCtx(c))
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	msg := "ออกบิลทั้งหมดแล้ว"
+	if result.FailCount > 0 {
+		msg = "ออกบิลบางใบไม่สำเร็จ กรุณาตรวจสอบ"
+	}
+	return respond.Success(c, msg, result)
 }
 
 func (h *BillingHandler) GetBatch(c fiber.Ctx) error {

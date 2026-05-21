@@ -305,6 +305,83 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 	})
 }
 
+// BatchFinalizeAll transitions every DRAFT monthly bill in the given batch
+// to FINALIZED in per-item transactions. Idempotent + continue-on-error:
+// already-FINALIZED bills are silent-skipped (not counted), non-DRAFT
+// non-FINALIZED states surface as NOT_DRAFT failures, infra errors surface
+// as INFRA_ERROR. Each successful finalize emits one FINALIZE audit row
+// inside the same per-item TX (lock #10: audit count == success count).
+//
+// Settlement bills are excluded at SQL by ListBillsByBatchID; the
+// b.IsMonthly() guard below is defense-in-depth per lock #9.
+func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error) {
+	bills, err := s.repo.ListBillsByBatchID(ctx, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("list batch bills: %w", err)
+	}
+
+	// Explicit empty (not nil) so the JSON serialization is consistently
+	// `"failures": []` rather than `null`.
+	result := &BatchFinalizeResult{Failures: []BatchFinalizeFailure{}}
+
+	for _, b := range bills {
+		// Lock #9 — never finalize settlement bills. The query filters by
+		// bill_type='MONTHLY' at SQL, so this branch is only reached on
+		// data corruption (batch_items pointing at the wrong bill row).
+		// Skip silently with a log so ops can triage without polluting
+		// the admin's failure list.
+		if !b.IsMonthly() {
+			slog.Warn("BatchFinalizeAll: skipping non-monthly bill in batch",
+				"batch_id", batchID, "bill_id", b.ID, "bill_type", b.BillType)
+			continue
+		}
+
+		// Idempotency: already-FINALIZED bills don't count toward success
+		// or failure — they're invisible to this call (lock #1).
+		if b.IsFinalized() {
+			continue
+		}
+
+		err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+			return s.finalizeBillInTx(txCtx, b.ID, actor)
+		})
+		if err != nil {
+			code, msg := classifyFinalizeError(err)
+			if code == FailureCodeInfraError {
+				// Server-log the underlying error for ops triage. The
+				// admin-facing message stays opaque (locked spec).
+				slog.Error("BatchFinalizeAll: bill finalize infra error",
+					"batch_id", batchID, "bill_id", b.ID, "error", err)
+			}
+			result.Failures = append(result.Failures, BatchFinalizeFailure{
+				BillID:  b.ID,
+				Code:    code,
+				Message: msg,
+			})
+			continue
+		}
+		result.SuccessCount++
+	}
+
+	result.FailCount = len(result.Failures)
+	return result, nil
+}
+
+// classifyFinalizeError maps a finalizeBillInTx error to the FE-facing
+// failure code + Thai message. ErrNotDraft / ErrNoLineItems are domain
+// sentinels surfaced via errors.Is; everything else falls through to
+// INFRA_ERROR so the underlying cause never leaks to the FE.
+func classifyFinalizeError(err error) (BatchFinalizeFailureCode, string) {
+	switch {
+	case errors.Is(err, ErrNoLineItems):
+		return FailureCodeNoLineItems, "ออกบิลไม่ได้: บิลไม่มีรายการ"
+	case errors.Is(err, ErrNotDraft):
+		return FailureCodeNotDraft, "ออกบิลไม่ได้: บิลไม่ใช่สถานะร่าง"
+	default:
+		return FailureCodeInfraError, "เกิดข้อผิดพลาดของระบบ กรุณาลองอีกครั้ง"
+	}
+}
+
 // isInfraError returns true for infrastructure/system errors that should stop the loop.
 // Business errors (validation, snapshot issues) are whitelisted and return false.
 func isInfraError(err error) bool {

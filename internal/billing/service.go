@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,6 +31,7 @@ type BillingService interface {
 	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error)
 	PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error)
 	CommitBatch(ctx context.Context, batchID uuid.UUID) (*CommitBatchResult, error)
+	BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error)
 	GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
 	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
@@ -287,34 +289,60 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 // FinalizeBill transitions a DRAFT bill (monthly or settlement) to FINALIZED.
 // Wrapped in a TX so the bill Update + FINALIZE audit row are atomic — audit
 // failure rolls back the status transition.
+//
+// Delegates the inner steps to finalizeBillInTx so BatchFinalizeAll can reuse
+// the exact same finalize semantics + audit boundary on a per-item basis.
+// Domain errors (ErrNotDraft / ErrNoLineItems) bubble up unwrapped from the
+// helper so they reach a single AppError conversion at this caller layer —
+// the bulk caller (BatchFinalizeAll) classifies via errors.Is instead.
 func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error) {
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		b, err := s.repo.FindByID(txCtx, id)
-		if err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return ErrBillNotFound
-			}
-			return fmt.Errorf("find bill: %w", err)
-		}
-
-		previousStatus := string(b.Status)
-		if err := b.Finalize(); err != nil {
-			return respond.ErrBadRequest.WithMessage(err.Error())
-		}
-		if err := s.repo.Update(txCtx, b); err != nil {
-			return fmt.Errorf("finalize bill: %w", err)
-		}
-		return s.recordAudit(txCtx, b.ID, AuditFinalize, actor, AuditFinalizePayload{
-			PreviousStatus: previousStatus,
-			TotalAmount:    b.TotalAmount,
-		})
+		return s.finalizeBillInTx(txCtx, id, actor)
 	}); err != nil {
+		// Domain-sentinel errors → 400 AppError so the API responds with the
+		// Thai validation message verbatim.
+		if errors.Is(err, ErrNotDraft) || errors.Is(err, ErrNoLineItems) {
+			return nil, respond.ErrBadRequest.WithMessage(err.Error())
+		}
 		if _, ok := respond.Is(err); ok {
 			return nil, err
 		}
 		return nil, fmt.Errorf("finalize bill: %w", err)
 	}
 	return s.repo.FindByIDWithRelations(ctx, id)
+}
+
+// finalizeBillInTx is the shared inner DRAFT→FINALIZED transition used by
+// single-bill FinalizeBill and bulk BatchFinalizeAll. Caller MUST provide a
+// txCtx — audit + Update run on it so audit failure rolls the parent TX
+// back (correctness > availability for billing forensics).
+//
+// Returns raw domain sentinel errors (ErrBillNotFound / ErrNotDraft /
+// ErrNoLineItems) so callers can classify via errors.Is. Infra errors
+// from repo or audit are wrapped with %w. Callers convert as needed:
+//   - FinalizeBill  : ErrNotDraft / ErrNoLineItems → AppError 400
+//   - BatchFinalizeAll: same sentinels → BatchFinalizeFailureCode
+func (s *billingService) finalizeBillInTx(txCtx context.Context, id uuid.UUID, actor *uuid.UUID) error {
+	b, err := s.repo.FindByID(txCtx, id)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrBillNotFound
+		}
+		return fmt.Errorf("find bill: %w", err)
+	}
+
+	previousStatus := string(b.Status)
+	if err := b.Finalize(); err != nil {
+		// Raw sentinel — caller classifies. No AppError wrap here.
+		return err
+	}
+	if err := s.repo.Update(txCtx, b); err != nil {
+		return fmt.Errorf("finalize bill: %w", err)
+	}
+	return s.recordAudit(txCtx, b.ID, AuditFinalize, actor, AuditFinalizePayload{
+		PreviousStatus: previousStatus,
+		TotalAmount:    b.TotalAmount,
+	})
 }
 
 // VoidBill marks a bill as VOID with the provided reason. Wrapped in a TX so

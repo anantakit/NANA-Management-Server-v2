@@ -38,6 +38,46 @@ type VoidBillRequest struct {
 	Reason string `json:"reason" validate:"required,min=1,max=100"`
 }
 
+// BatchFinalizeFailureCode enumerates the FE-renderable reasons a bill
+// could not be finalized as part of a bulk batch-finalize call. FE switches
+// on Code to pick a Thai message + remediation hint per row.
+type BatchFinalizeFailureCode string
+
+const (
+	// FailureCodeNoLineItems — bill has zero line items, cannot finalize
+	// (CanFinalize guard). Admin must add items via UpdateMonthlyDraft first.
+	FailureCodeNoLineItems BatchFinalizeFailureCode = "NO_LINE_ITEMS"
+	// FailureCodeNotDraft — bill is in a non-DRAFT, non-FINALIZED state
+	// (VOID / PAID). Already-FINALIZED bills are silent-skipped, not surfaced
+	// here.
+	FailureCodeNotDraft BatchFinalizeFailureCode = "NOT_DRAFT"
+	// FailureCodeInfraError — system error during persist or audit emission.
+	// Surfaces opaquely so admin retries via the same endpoint. Underlying
+	// error is server-logged with bill_id for ops triage.
+	FailureCodeInfraError BatchFinalizeFailureCode = "INFRA_ERROR"
+)
+
+// BatchFinalizeFailure is one row in the failure list returned by
+// BatchFinalizeAll. Order matches the processed-bill order so the FE can
+// align failures with the visible row order on BillBatchReview.
+type BatchFinalizeFailure struct {
+	BillID  uuid.UUID                `json:"bill_id"`
+	Code    BatchFinalizeFailureCode `json:"code"`
+	Message string                   `json:"message"` // Thai user-facing
+}
+
+// BatchFinalizeResult is the full response from BatchFinalizeAll.
+//
+// success_count = bills newly transitioned DRAFT→FINALIZED in this call.
+// fail_count    = len(failures).
+// Bills already FINALIZED before this call are SILENT — they neither
+// increment success_count nor appear in failures (idempotency).
+type BatchFinalizeResult struct {
+	SuccessCount int                    `json:"success_count"`
+	FailCount    int                    `json:"fail_count"`
+	Failures     []BatchFinalizeFailure `json:"failures"`
+}
+
 // UpdateSettlementDraftRequest replaces all MANUAL line items + note on a DRAFT settlement bill.
 // Also supports overrides (AUTO item amount adjustments) and deposit application mode.
 type UpdateSettlementDraftRequest struct {
