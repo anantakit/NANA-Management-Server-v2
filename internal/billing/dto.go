@@ -539,14 +539,21 @@ func toSnapshotPreview(s ComputedSnapshot) *SnapshotPreview {
 // --- Converters ---
 
 // toLineItemResponse converts a line item, enriching it with override state from the bill.
-func toLineItemResponse(li BillLineItem, overrides OverrideMap, isSettlement bool) LineItemResponse {
+//
+// Override application applies to ANY AUTO line whose LineType is in
+// overrideableLineTypes — both monthly and settlement bills now allow
+// overrides via UpdateMonthlyDraft / UpdateSettlementDraft (FE Phase 1).
+// The previous `isSettlement` gate left monthly-bill overrides silently
+// stripped from the response, breaking the edit drawer's initial-state
+// hydration + post-save refetch round-trip.
+func toLineItemResponse(li BillLineItem, overrides OverrideMap) LineItemResponse {
 	key := li.OverrideKey()
 	originalAmount := money.ToBaht(li.Amount)
 	effectiveAmount := originalAmount
 	isOverridden := false
 	overrideable := false
 
-	if isSettlement && li.IsAuto() {
+	if li.IsAuto() {
 		overrideable = IsOverrideableLineType(li.LineType)
 		if override, ok := overrides[key]; ok {
 			effectiveAmount = money.ToBaht(override)
@@ -571,11 +578,9 @@ func toLineItemResponse(li BillLineItem, overrides OverrideMap, isSettlement boo
 }
 
 func ToBillResponse(b Bill) BillResponse {
-	isSettlement := b.IsSettlement()
-
 	items := make([]LineItemResponse, len(b.LineItems))
 	for i, li := range b.LineItems {
-		items[i] = toLineItemResponse(li, b.Overrides, isSettlement)
+		items[i] = toLineItemResponse(li, b.Overrides)
 	}
 
 	resp := BillResponse{
@@ -597,17 +602,24 @@ func ToBillResponse(b Bill) BillResponse {
 		UpdatedAt:        b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 
-	if isSettlement {
+	// Overrides are exposed for both monthly + settlement bills now —
+	// FE 11's edit drawer needs them to hydrate the override inputs and
+	// detect "input != original" for the diff-based PATCH payload.
+	if len(b.Overrides) > 0 {
+		overrides := make(map[string]float64, len(b.Overrides))
+		for k, v := range b.Overrides {
+			overrides[k] = money.ToBaht(v)
+		}
+		resp.Overrides = overrides
+	}
+
+	if b.IsSettlement() {
 		resp.SettlementRentMode = string(b.SettlementRentMode)
 
-		// Override + deposit application
-		if len(b.Overrides) > 0 {
-			overrides := make(map[string]float64, len(b.Overrides))
-			for k, v := range b.Overrides {
-				overrides[k] = money.ToBaht(v)
-			}
-			resp.Overrides = overrides
-		}
+		// Deposit application — settlement-only concept (monthly bills have
+		// no deposit). FE 11 explicitly excludes deposit fields from
+		// UpdateMonthlyDraftRequest, so leaving these zero on monthly
+		// responses is the right default.
 		depApp := string(b.DepositApp)
 		if depApp == "" {
 			depApp = string(DepositAppFull)
