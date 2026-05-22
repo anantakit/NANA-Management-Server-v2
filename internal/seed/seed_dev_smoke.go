@@ -44,6 +44,8 @@ import (
 // | 21 | E201 | PENDING_SETTLEMENT | Scenario: missing baseline / incomplete data |
 // | 22 | D201 | PENDING_SETTLEMENT | Queue: draft + 2 MANUAL items (confirm modal) |
 // | 23 | D202 | PENDING_SETTLEMENT | Queue: draft + FULL_MONTH rent mode (continuity)|
+// | 26 | E101 | (ACTIVE contract)  | Bill-edit: DRAFT MONTHLY clean, no overrides   |
+// | 27 | E102 | (ACTIVE contract)  | Bill-edit: DRAFT MONTHLY w/ pre-existing override |
 //
 // Date-sensitive: TC3 requires mid-month "today" to flip across minMonths.
 // Works reliably when today.Day() <= daysInMonth(today) - 3.
@@ -118,6 +120,8 @@ var smokeRoomNumbers = []string{
 	"D103", "D104",
 	// Queue settlement smoke (TC22–TC23)
 	"D201", "D202",
+	// Bill-edit smoke (TC26–TC27): ACTIVE contract + DRAFT MONTHLY bill
+	"E101", "E102",
 }
 
 func seedDevSmoke(db *gorm.DB) error {
@@ -615,7 +619,36 @@ func seedDevSmoke(db *gorm.DB) error {
 		return fmt.Errorf("attach full-month draft for TC23: %w", err)
 	}
 
-	slog.Info("seeded smoke test fixtures", "count", 19)
+	// ─── Bill-edit smoke (TC26–TC27) ─────────────────────────────────
+	// ACTIVE contract + DRAFT MONTHLY bill in the current billing month.
+	// Anchors the playwright bill-edit smoke (no move-out involved).
+
+	// --- TC26: clean DRAFT MONTHLY — no overrides, no manual items ---
+	if err := createBillEditScenario(db, apt, roomByNumber["E101"], smokeTenant{
+		idCard: "9999999999026",
+		name:   "TC26_SMOKE บิลร่างยังไม่แก้",
+		phone:  "0999000026",
+	}, today, nil); err != nil {
+		return fmt.Errorf("seed TC26: %w", err)
+	}
+
+	// --- TC27: DRAFT MONTHLY with pre-existing ROOM_RENT override ---
+	// Override drops 500 baht from rent (250000 → 200000 satang). Used by
+	// the "reset by empty input" scenario in the bill-edit smoke — admin
+	// clears the input, save → BE removes the override → no more
+	// "เดิม ฿X" hint on next fetch.
+	tc27Overrides := billing.OverrideMap{
+		string(billing.LineItemRoomRent): 200000,
+	}
+	if err := createBillEditScenario(db, apt, roomByNumber["E102"], smokeTenant{
+		idCard: "9999999999027",
+		name:   "TC27_SMOKE บิลร่างมี override เดิม",
+		phone:  "0999000027",
+	}, today, tc27Overrides); err != nil {
+		return fmt.Errorf("seed TC27: %w", err)
+	}
+
+	slog.Info("seeded smoke test fixtures", "count", 21)
 	return nil
 }
 
@@ -1103,6 +1136,85 @@ func createMonthlyMeterReading(db *gorm.DB, roomID uuid.UUID, billingMonth strin
 		WaterCurrent:        waterCurr,
 	}
 	return db.Create(&reading).Error
+}
+
+// createBillEditScenario creates tenant + ACTIVE contract + DRAFT MONTHLY
+// bill for the current billing month. Used by TC26/TC27 to anchor the
+// bill-edit playwright smoke (no move-out involved).
+//
+// `preOverrides` seeds an existing Overrides map at insert time so TC27
+// can simulate "admin previously edited ROOM_RENT". When set, the bill's
+// TotalAmount reflects the post-override sum so the BillList row total
+// matches what the BE would render on fetch — line.Amount stays at the
+// original computed value (BE's source of truth for "เดิม ฿X" provenance).
+func createBillEditScenario(
+	db *gorm.DB,
+	apt apartment.Apartment,
+	rm room.Room,
+	t smokeTenant,
+	today time.Time,
+	preOverrides billing.OverrideMap,
+) error {
+	tn, err := ensureSmokeTenant(db, t)
+	if err != nil {
+		return err
+	}
+
+	start := today.AddDate(0, -6, 0)
+	c := contract.Contract{
+		TenantID:               tn.ID,
+		RoomID:                 rm.ID,
+		StartDate:              start,
+		MinMonths:              6,
+		MonthlyRent:            rm.BaseRent,
+		DepositAmount:          rm.BaseDeposit,
+		DepositStatus:          contract.DepositStatusCollected,
+		ElectricityRatePerUnit: apt.ElectricityRatePerUnit,
+		WaterRatePerUnit:       apt.WaterRatePerUnit,
+		Status:                 contract.ContractStatusActive,
+	}
+	if err := db.Create(&c).Error; err != nil {
+		return fmt.Errorf("create bill-edit contract %s: %w", rm.Number, err)
+	}
+	if err := db.Model(&room.Room{}).Where("id = ?", rm.ID).
+		Update("status", room.RoomStatusOccupied).Error; err != nil {
+		return fmt.Errorf("update room status %s: %w", rm.Number, err)
+	}
+
+	// Standard line item amounts (mirrors createFinalizedMonthlyBill so the
+	// breakdown is predictable across smoke runs — 20 water + 140 elec).
+	const waterUnits = 20
+	const elecUnits = 140
+	waterAmount := int64(waterUnits) * c.WaterRatePerUnit
+	elecAmount := int64(elecUnits) * c.ElectricityRatePerUnit
+
+	// Compute TotalAmount with override applied if present so list rows
+	// and detail view match.
+	roomRent := c.MonthlyRent
+	if preOverrides != nil {
+		if v, ok := preOverrides[string(billing.LineItemRoomRent)]; ok {
+			roomRent = v
+		}
+	}
+	total := roomRent + waterAmount + elecAmount
+
+	billingMonth := today.Format("2006-01")
+	bill := billing.Bill{
+		ContractID:   c.ID,
+		BillingMonth: billingMonth,
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusDraft,
+		TotalAmount:  total,
+	}
+	if preOverrides != nil {
+		bill.Overrides = preOverrides
+	}
+	items := []billing.BillLineItem{
+		{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: c.MonthlyRent, SortOrder: 1},
+		{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), Amount: waterAmount, Quantity: waterUnits, UnitPrice: c.WaterRatePerUnit, SortOrder: 2},
+		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), Amount: elecAmount, Quantity: elecUnits, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
+	}
+	return createBillWithLines(db, &bill, items)
 }
 
 // createFinalizedMonthlyBill creates a FINALIZED (unpaid) monthly bill
