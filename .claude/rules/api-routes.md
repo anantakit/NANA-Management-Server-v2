@@ -97,6 +97,7 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | PATCH | `/:id/finalize` | Transition DRAFT → FINALIZED (works for both MONTHLY and SETTLEMENT drafts) |
 | PATCH | `/:id/void` | Void bill (DRAFT/FINALIZED → VOID, requires reason) |
 | PATCH | `/:id/paid` | Mark bill as paid (FINALIZED → PAID) |
+| POST | `/:id/correct` | Void+recreate correction (FINALIZED MONTHLY only in v1). Voids old (void_reason=CORRECTION, sets superseded_by_bill_id), creates new DRAFT regenerated from contract+meter source-of-truth. Emits SUPERSEDE on old + CREATE_FROM_CORRECTION on new in same TX. Row-locked. PAID/DRAFT/VOID/SETTLEMENT/already-superseded all return 400 with Thai sentinel message. Requires `correction_reason` (min 5 chars). Returns 201 with new DRAFT bill. |
 | PATCH | `/:id/settlement-draft` | Edit DRAFT settlement bill (manual items, overrides, deposit application, note) |
 | PATCH | `/:id/monthly-draft` | Edit DRAFT monthly bill (manual items + AUTO overrides + note). Replaces all MANUAL items with the request; AUTO items immutable except `.amount` via overrides. Rejects FINALIZED/PAID/VOID and SETTLEMENT bills. |
 | GET | `/batches` | List batch runs (paginated, filter by apartment_id/billing_month/status) |

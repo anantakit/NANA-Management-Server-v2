@@ -177,6 +177,12 @@ var (
 	ErrVoidReasonEmpty = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
 	ErrNotAbsorbed     = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลสรุปยอด")
 	ErrBatchAlreadyCommitted = errors.New("batch ถูก commit ไปแล้ว")
+	// Correction (void+recreate) errors. ErrAlreadySuperseded fires when a bill
+	// is already linked to a replacement — chain corrections must target the
+	// latest bill in the chain. ErrSettlementCorrectionNotSupported gates v1
+	// scope (MONTHLY only); SETTLEMENT correction is Phase 2.1E.
+	ErrAlreadySuperseded                = errors.New("บิลนี้ถูกแทนที่ด้วยใบใหม่แล้ว")
+	ErrSettlementCorrectionNotSupported = errors.New("ยังไม่รองรับการแก้ไขบิลย้ายออกใน v1")
 )
 
 // --- Models ---
@@ -203,6 +209,14 @@ type Bill struct {
 	// Stays set through PAID/VOID transitions (audit of "when did this become
 	// a real receivable"). Nil while the bill is still DRAFT.
 	FinalizedAt *time.Time `gorm:"type:timestamptz" json:"finalized_at,omitempty"`
+	// SupersededByBillID forward-links this bill to its replacement when admin
+	// corrects a FINALIZED bill (void+recreate). Old bill: status=VOID +
+	// void_reason='CORRECTION' + SupersededByBillID=<new bill id>. New DRAFT
+	// leaves this NULL. Reverse direction ("which bill replaces this one") is
+	// served by indexed query on this column OR audit log
+	// CREATE_FROM_CORRECTION event — no second column maintained.
+	// See project_billing_correction_arch_lock.md.
+	SupersededByBillID *uuid.UUID `gorm:"type:uuid;column:superseded_by_bill_id" json:"superseded_by_bill_id,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -429,6 +443,76 @@ func (b *Bill) RestoreFromAbsorbed() error {
 // because it was absorbed into a settlement (not cancelled or regenerated).
 func (b *Bill) IsAbsorbedBySettlement() bool {
 	return b.IsVoid() && b.VoidReason != nil && *b.VoidReason == voidReasonAbsorbed
+}
+
+// --- Correction (void+recreate) lifecycle ---
+
+const voidReasonCorrection = "CORRECTION"
+
+// CanCorrect reports whether this bill is eligible for the void+recreate
+// correction flow. Stricter than CanVoid:
+//   - Must be FINALIZED (DRAFT → use the edit flow; PAID → ErrAlreadyPaid;
+//     VOID → ErrAlreadyVoided)
+//   - Must not already be superseded — chain corrections must target the
+//     latest bill in the chain, not an already-replaced one
+//   - MONTHLY only in v1 — SETTLEMENT correction is Phase 2.1E, gated here
+//     until the move-out workflow policies are locked
+func (b *Bill) CanCorrect() error {
+	if b.IsVoid() {
+		return ErrAlreadyVoided
+	}
+	if b.IsPaid() {
+		return ErrAlreadyPaid
+	}
+	if !b.IsFinalized() {
+		return ErrNotFinalized
+	}
+	if b.SupersededByBillID != nil {
+		return ErrAlreadySuperseded
+	}
+	if !b.IsMonthly() {
+		return ErrSettlementCorrectionNotSupported
+	}
+	return nil
+}
+
+// IsSuperseded reports whether this bill has been replaced by a correction.
+// Used by the FE to render "ถูกแทนที่ด้วยใบใหม่" cross-link on the old bill.
+func (b *Bill) IsSuperseded() bool {
+	return b.SupersededByBillID != nil
+}
+
+// IsSupersededByCorrection narrows IsSuperseded to the specific void reason
+// emitted by the correction flow (vs. the future possibility of a different
+// supersede path). True iff voided with CORRECTION reason AND the forward
+// link is set — both invariants hold together post-MarkSupersededByCorrection.
+func (b *Bill) IsSupersededByCorrection() bool {
+	return b.IsSuperseded() && b.IsVoid() &&
+		b.VoidReason != nil && *b.VoidReason == voidReasonCorrection
+}
+
+// MarkSupersededByCorrection voids this bill as superseded by a new DRAFT
+// created via the correction flow. Sets the forward link to the new bill so
+// the FE can render "ถูกแทนที่ด้วยใบใหม่" without an extra query.
+//
+// Re-checks CanCorrect defensively (caller must also gate, but the domain
+// stays correct under direct invocation). Also guards against self-reference
+// since the FK CHECK constraint would only catch it on persist.
+func (b *Bill) MarkSupersededByCorrection(newBillID uuid.UUID) error {
+	if newBillID == uuid.Nil {
+		return fmt.Errorf("supersede: new bill id required")
+	}
+	if newBillID == b.ID {
+		return fmt.Errorf("supersede: bill cannot supersede itself")
+	}
+	if err := b.CanCorrect(); err != nil {
+		return err
+	}
+	if err := b.Void(voidReasonCorrection); err != nil {
+		return err
+	}
+	b.SupersededByBillID = &newBillID
+	return nil
 }
 
 // --- Calculation ---
@@ -1057,6 +1141,13 @@ const (
 	AuditFinalize    BillAuditAction = "FINALIZE"
 	AuditVoid        BillAuditAction = "VOID"
 
+	// Correction lifecycle events — emitted as a pair when admin corrects a
+	// FINALIZED bill (void+recreate). SUPERSEDE goes on the OLD bill,
+	// CREATE_FROM_CORRECTION on the NEW bill. Both are lifecycle events
+	// (NOT counted toward is_edited).
+	AuditSupersede            BillAuditAction = "SUPERSEDE"
+	AuditCreateFromCorrection BillAuditAction = "CREATE_FROM_CORRECTION"
+
 	// Edit events — count toward is_edited.
 	AuditUpdateOverride   BillAuditAction = "UPDATE_OVERRIDE"
 	AuditAddManualItem    BillAuditAction = "ADD_MANUAL_ITEM"
@@ -1214,4 +1305,24 @@ type AuditFinalizePayload struct {
 type AuditVoidPayload struct {
 	PreviousStatus string `json:"previous_status"`
 	Reason         string `json:"reason"`
+}
+
+// AuditSupersedePayload records the correction event on the OLD bill.
+// PreviousStatus is always "FINALIZED" today (CanCorrect gates on it) but
+// the field future-proofs the schema for any future PAID-correction path.
+// NewBillID + CorrectionReason mirror the CREATE_FROM_CORRECTION payload
+// on the new bill so either end of the chain is queryable on its own.
+type AuditSupersedePayload struct {
+	PreviousStatus   string    `json:"previous_status"`
+	NewBillID        uuid.UUID `json:"new_bill_id"`
+	CorrectionReason string    `json:"correction_reason"`
+}
+
+// AuditCreateFromCorrectionPayload records the correction event on the NEW
+// bill. SupersededBillID + CorrectionReason mirror AuditSupersedePayload on
+// the old bill so the timeline is queryable from either end without joining
+// the two audit rows together.
+type AuditCreateFromCorrectionPayload struct {
+	SupersededBillID uuid.UUID `json:"superseded_bill_id"`
+	CorrectionReason string    `json:"correction_reason"`
 }

@@ -231,6 +231,14 @@ func (m *mockBillingRepo) LockBatchForCommit(_ context.Context, _ uuid.UUID) (*B
 	}
 	return nil, gorm.ErrRecordNotFound
 }
+
+// LockBillForCorrection mirrors FindByID semantics so correction tests can
+// inject the "old bill" via findByIDFn (or createdBill fallback). In real
+// production the SELECT FOR UPDATE locks the row; here the lock is a no-op
+// because mockTxManager doesn't model row-level concurrency.
+func (m *mockBillingRepo) LockBillForCorrection(ctx context.Context, id uuid.UUID) (*Bill, error) {
+	return m.FindByID(ctx, id)
+}
 func (m *mockBillingRepo) ListCommitPendingItems(_ context.Context, _ uuid.UUID) ([]BillGenerationBatchItem, error) {
 	var pending []BillGenerationBatchItem
 	for _, it := range m.createdBatchItems {

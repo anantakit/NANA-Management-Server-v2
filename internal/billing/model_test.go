@@ -1141,10 +1141,11 @@ func TestComputeDepositSettlementFromBill_Invariant_AvailableEqualsDepositMinusF
 	}
 }
 
-// Lock invariant: lifecycle events (CREATE_DRAFT / FINALIZE / VOID) must NOT
-// count toward is_edited. Only true user curation actions do. Future actions
-// (e.g. SUPERSEDE in Phase 2) MUST be classified explicitly — the default
-// (unknown action → false) ensures forgetting to classify fails closed.
+// Lock invariant: lifecycle events (CREATE_DRAFT / FINALIZE / VOID /
+// SUPERSEDE / CREATE_FROM_CORRECTION) must NOT count toward is_edited.
+// Only true user curation actions do. Unknown / future actions MUST default
+// to false — the switch's implicit default ensures forgetting to classify a
+// new action fails closed (it stays off is_edited until explicitly opted in).
 func TestBillAuditAction_IsEditEvent(t *testing.T) {
 	cases := []struct {
 		action BillAuditAction
@@ -1160,9 +1161,11 @@ func TestBillAuditAction_IsEditEvent(t *testing.T) {
 		{AuditCreateDraft, false},
 		{AuditFinalize, false},
 		{AuditVoid, false},
+		{AuditSupersede, false},
+		{AuditCreateFromCorrection, false},
 
 		// Unknown / future action — must default to false (fail-closed)
-		{BillAuditAction("SUPERSEDE"), false},
+		{BillAuditAction("UNKNOWN_FUTURE_ACTION"), false},
 		{BillAuditAction(""), false},
 	}
 	for _, tc := range cases {
@@ -1172,4 +1175,106 @@ func TestBillAuditAction_IsEditEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Correction (void+recreate) lifecycle ---
+//
+// CanCorrect is stricter than CanVoid: only FINALIZED MONTHLY bills that are
+// not already superseded are eligible. Each guard fires its own typed
+// sentinel so callers (service/handler) can route to the right HTTP status
+// without string-matching.
+
+func finalizedMonthly() Bill {
+	return Bill{
+		ID:        uuid.New(),
+		Status:    BillStatusFinalized,
+		BillType:  BillTypeMonthly,
+		LineItems: []BillLineItem{{LineType: LineItemRoomRent, Amount: 500000}},
+	}
+}
+
+func TestBill_CanCorrect(t *testing.T) {
+	t.Run("FINALIZED monthly is eligible", func(t *testing.T) {
+		b := finalizedMonthly()
+		if err := b.CanCorrect(); err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+	})
+	t.Run("DRAFT rejected → use edit flow", func(t *testing.T) {
+		b := finalizedMonthly()
+		b.Status = BillStatusDraft
+		if err := b.CanCorrect(); !errors.Is(err, ErrNotFinalized) {
+			t.Fatalf("expected ErrNotFinalized, got %v", err)
+		}
+	})
+	t.Run("PAID rejected (blocked in v1)", func(t *testing.T) {
+		b := finalizedMonthly()
+		b.Status = BillStatusPaid
+		if err := b.CanCorrect(); !errors.Is(err, ErrAlreadyPaid) {
+			t.Fatalf("expected ErrAlreadyPaid, got %v", err)
+		}
+	})
+	t.Run("VOID rejected (idempotent guard)", func(t *testing.T) {
+		b := finalizedMonthly()
+		b.Status = BillStatusVoid
+		if err := b.CanCorrect(); !errors.Is(err, ErrAlreadyVoided) {
+			t.Fatalf("expected ErrAlreadyVoided, got %v", err)
+		}
+	})
+	t.Run("already superseded rejected", func(t *testing.T) {
+		b := finalizedMonthly()
+		next := uuid.New()
+		b.SupersededByBillID = &next
+		if err := b.CanCorrect(); !errors.Is(err, ErrAlreadySuperseded) {
+			t.Fatalf("expected ErrAlreadySuperseded, got %v", err)
+		}
+	})
+	t.Run("SETTLEMENT rejected in v1", func(t *testing.T) {
+		b := finalizedMonthly()
+		b.BillType = BillTypeSettlement
+		if err := b.CanCorrect(); !errors.Is(err, ErrSettlementCorrectionNotSupported) {
+			t.Fatalf("expected ErrSettlementCorrectionNotSupported, got %v", err)
+		}
+	})
+}
+
+func TestBill_MarkSupersededByCorrection(t *testing.T) {
+	t.Run("happy path sets status, reason, link", func(t *testing.T) {
+		b := finalizedMonthly()
+		newID := uuid.New()
+		if err := b.MarkSupersededByCorrection(newID); err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if !b.IsVoid() {
+			t.Errorf("status = %v, want VOID", b.Status)
+		}
+		if b.VoidReason == nil || *b.VoidReason != voidReasonCorrection {
+			t.Errorf("void_reason = %v, want CORRECTION", b.VoidReason)
+		}
+		if b.SupersededByBillID == nil || *b.SupersededByBillID != newID {
+			t.Errorf("superseded_by_bill_id = %v, want %v", b.SupersededByBillID, newID)
+		}
+		if !b.IsSupersededByCorrection() {
+			t.Errorf("IsSupersededByCorrection = false, want true")
+		}
+	})
+	t.Run("rejects nil new bill id", func(t *testing.T) {
+		b := finalizedMonthly()
+		if err := b.MarkSupersededByCorrection(uuid.Nil); err == nil {
+			t.Fatalf("expected error on nil new bill id")
+		}
+	})
+	t.Run("rejects self-reference", func(t *testing.T) {
+		b := finalizedMonthly()
+		if err := b.MarkSupersededByCorrection(b.ID); err == nil {
+			t.Fatalf("expected error on self-reference")
+		}
+	})
+	t.Run("rejects when CanCorrect fails (PAID)", func(t *testing.T) {
+		b := finalizedMonthly()
+		b.Status = BillStatusPaid
+		if err := b.MarkSupersededByCorrection(uuid.New()); !errors.Is(err, ErrAlreadyPaid) {
+			t.Fatalf("expected ErrAlreadyPaid, got %v", err)
+		}
+	})
 }

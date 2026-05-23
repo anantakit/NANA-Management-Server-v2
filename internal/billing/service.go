@@ -27,6 +27,7 @@ type BillingService interface {
 	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error)
 	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
+	CorrectBill(ctx context.Context, id uuid.UUID, req CorrectBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error)
 	PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error)
@@ -375,6 +376,149 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 		return nil, fmt.Errorf("void bill: %w", err)
 	}
 	return s.repo.FindByIDWithRelations(ctx, id)
+}
+
+// CorrectBill executes the void+recreate correction flow on a FINALIZED bill.
+// Atomicity invariants (single TX):
+//
+//   1. Row-lock the old bill first — gates the double-correction race so two
+//      concurrent POST /:id/correct calls serialize on the lock.
+//   2. CanCorrect() blocks PAID / DRAFT / VOID / already-superseded /
+//      SETTLEMENT — single source of truth in the domain layer.
+//   3. Dispatch by bill_type. v1 implements MONTHLY only; SETTLEMENT is
+//      gated by CanCorrect, the switch's default is defense-in-depth.
+//   4. Old bill: MarkSupersededByCorrection sets status=VOID +
+//      void_reason=CORRECTION + superseded_by_bill_id=newID, all atomic.
+//   5. New bill: regenerated DRAFT from contract + meter source-of-truth
+//      (no override/manual carryover — fresh recalculation).
+//   6. Emit SUPERSEDE on old + CREATE_FROM_CORRECTION on new in the same
+//      TX. Audit failure rolls back the entire correction.
+//
+// Returns the new DRAFT bill with relations. Caller (handler) presents it
+// for further editing via UpdateMonthlyDraft + FinalizeBill.
+func (s *billingService) CorrectBill(ctx context.Context, id uuid.UUID, req CorrectBillRequest, actor *uuid.UUID) (*BillWithRelations, error) {
+	var newBillID uuid.UUID
+
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		old, err := s.repo.LockBillForCorrection(txCtx, id)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return ErrBillNotFound
+			}
+			return fmt.Errorf("lock bill for correction: %w", err)
+		}
+
+		if err := old.CanCorrect(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+
+		switch old.BillType {
+		case BillTypeMonthly:
+			nid, err := s.correctMonthlyBillInTx(txCtx, old, req, actor)
+			if err != nil {
+				return err
+			}
+			newBillID = nid
+			return nil
+		default:
+			// CanCorrect already gates SETTLEMENT; defense-in-depth here
+			// surfaces the same Thai message if a future caller forgets.
+			return respond.ErrBadRequest.WithMessage(ErrSettlementCorrectionNotSupported.Error())
+		}
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("correct bill: %w", err)
+	}
+	return s.repo.FindByIDWithRelations(ctx, newBillID)
+}
+
+// correctMonthlyBillInTx is the MONTHLY-specific arm of CorrectBill. Caller
+// must hold a row-lock on `old` and have validated CanCorrect(). Returns the
+// new DRAFT bill ID for the outer fetch-with-relations.
+//
+// Regenerate (not clone): old line items + overrides are intentionally NOT
+// copied. The new DRAFT is rebuilt from the contract + current monthly meter
+// reading — fresh recalculation per the architecture lock. Admin re-applies
+// any overrides via UpdateMonthlyDraft on the new DRAFT if needed.
+//
+// Contract IsActive guard is intentionally absent — the original bill may
+// be on an ENDED contract (e.g. post-move-out correction window). The bill
+// already exists, so correction must work regardless of contract status.
+func (s *billingService) correctMonthlyBillInTx(
+	txCtx context.Context,
+	old *Bill,
+	req CorrectBillRequest,
+	actor *uuid.UUID,
+) (uuid.UUID, error) {
+	previousStatus := string(old.Status)
+
+	c, err := s.contracts.FindByIDSimple(txCtx, old.ContractID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return uuid.Nil, ErrContractNotFound
+		}
+		return uuid.Nil, fmt.Errorf("find contract: %w", err)
+	}
+
+	// Look up the monthly meter reading for the same (room, billing_month)
+	// the old bill targeted. If admin re-recorded the meter, regeneration
+	// picks up the corrected values. If no meter exists for that month
+	// today, correction can't proceed — admin must record meter first.
+	readings, err := s.meters.FindMonthlyByRoomsAndMonth(txCtx, []uuid.UUID{c.RoomID}, old.BillingMonth)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("find meter for correction: %w", err)
+	}
+	reading, ok := readings[c.RoomID]
+	if !ok || reading == nil {
+		return uuid.Nil, ErrMeterNotFound
+	}
+
+	snapshot := computeMonthlyBillSnapshot(old.BillingMonth,
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+
+	// New DRAFT — pre-generate ID so the CREATE_FROM_CORRECTION audit row
+	// and the SUPERSEDE link both reference it inside the same TX.
+	// BatchID stays nil — corrected bill is a manual artifact, not part of
+	// the original batch run (batch_item keeps pointing at the old bill;
+	// FE walks superseded_by chain to find latest).
+	newBill := Bill{
+		ID:           uuid.New(),
+		ContractID:   old.ContractID,
+		BillingMonth: old.BillingMonth,
+		BillType:     BillTypeMonthly,
+		Status:       BillStatusDraft,
+		LineItems:    snapshot.ToLineItems(uuid.Nil),
+		TotalAmount:  snapshot.TotalAmount,
+	}
+	if err := s.repo.Create(txCtx, &newBill); err != nil {
+		return uuid.Nil, fmt.Errorf("create corrected bill: %w", err)
+	}
+
+	if err := old.MarkSupersededByCorrection(newBill.ID); err != nil {
+		// Domain re-checks CanCorrect — under correct caller usage this
+		// can't fire, but stay defensive in case lock semantics change.
+		return uuid.Nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	if err := s.repo.Update(txCtx, old); err != nil {
+		return uuid.Nil, fmt.Errorf("supersede old bill: %w", err)
+	}
+
+	if err := s.recordAudit(txCtx, old.ID, AuditSupersede, actor, AuditSupersedePayload{
+		PreviousStatus:   previousStatus,
+		NewBillID:        newBill.ID,
+		CorrectionReason: req.CorrectionReason,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	if err := s.recordAudit(txCtx, newBill.ID, AuditCreateFromCorrection, actor, AuditCreateFromCorrectionPayload{
+		SupersededBillID: old.ID,
+		CorrectionReason: req.CorrectionReason,
+	}); err != nil {
+		return uuid.Nil, err
+	}
+	return newBill.ID, nil
 }
 
 func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {

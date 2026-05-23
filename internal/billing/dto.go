@@ -38,6 +38,19 @@ type VoidBillRequest struct {
 	Reason string `json:"reason" validate:"required,min=1,max=100"`
 }
 
+// CorrectBillRequest triggers the void+recreate correction flow on a
+// FINALIZED bill. Old bill becomes VOID with void_reason=CORRECTION + a
+// forward link to the new DRAFT. New DRAFT carries the regenerated line
+// items (no override/manual copy — fresh recalculation from source).
+//
+// CorrectionReason is required and shown verbatim in the audit timeline
+// for both the SUPERSEDE and CREATE_FROM_CORRECTION events. Min-length
+// matches the locked Phase 1 rule for correction_reason (≥5 chars) so
+// the audit row is forensically useful rather than just "fix".
+type CorrectBillRequest struct {
+	CorrectionReason string `json:"correction_reason" validate:"required,min=5,max=500"`
+}
+
 // BatchFinalizeFailureCode enumerates the FE-renderable reasons a bill
 // could not be finalized as part of a bulk batch-finalize call. FE switches
 // on Code to pick a Thai message + remediation hint per row.

@@ -53,6 +53,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Patch("/:id/paid", h.MarkPaid)
 	r.Patch("/:id/settlement-draft", h.UpdateSettlementDraft)
 	r.Patch("/:id/monthly-draft", h.UpdateMonthlyDraft)
+	r.Post("/:id/correct", h.Correct)
 }
 
 func (h *BillingHandler) List(c fiber.Ctx) error {
@@ -197,6 +198,32 @@ func (h *BillingHandler) Void(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "ยกเลิกบิลแล้ว", ToBillResponseWithRelations(*bill))
+}
+
+// Correct executes the void+recreate correction flow on a FINALIZED bill.
+// Returns 201 with the new DRAFT bill — the FE typically routes from here
+// into the DRAFT editor for further adjustments before re-finalizing.
+//
+// Domain guards (PAID / DRAFT / VOID / SETTLEMENT / already-superseded) surface
+// as 400 with the Thai sentinel message. Race-safe via row-lock inside the
+// service TX.
+func (h *BillingHandler) Correct(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+
+	var req CorrectBillRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	bill, err := h.svc.CorrectBill(c.Context(), id, req, actorFromCtx(c))
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Created(c, "ออกบิลใหม่แทนใบเดิมแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) PreflightMonthly(c fiber.Ctx) error {

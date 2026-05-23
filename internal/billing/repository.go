@@ -47,6 +47,11 @@ type BillingRepository interface {
 
 	// Batch finalize flow
 	ListBillsByBatchID(ctx context.Context, batchID uuid.UUID) ([]Bill, error)
+
+	// Correction flow — row-locks the bill before void+recreate so concurrent
+	// correction attempts on the same bill serialize cleanly. Caller MUST be
+	// inside a TX (uses SELECT FOR UPDATE).
+	LockBillForCorrection(ctx context.Context, billID uuid.UUID) (*Bill, error)
 }
 
 type billingRepository struct {
@@ -476,6 +481,28 @@ func (r *billingRepository) LockBatchForCommit(ctx context.Context, batchID uuid
 	err := database.DB(ctx, r.db).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id = ?", batchID).
+		First(&b).Error
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// LockBillForCorrection acquires a row-level lock (SELECT FOR UPDATE) on the
+// bill and preloads line items so the correction service has the full state
+// it needs without a second round-trip. Must be called inside a transaction.
+//
+// Prevents the double-correction race: two concurrent POST /:id/correct
+// requests serialize on the lock, the first wins (old → VOID + supersede),
+// the second's CanCorrect() call sees ErrAlreadySuperseded and bails.
+func (r *billingRepository) LockBillForCorrection(ctx context.Context, billID uuid.UUID) (*Bill, error) {
+	var b Bill
+	err := database.DB(ctx, r.db).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Preload("LineItems", func(db *gorm.DB) *gorm.DB {
+			return db.Order("sort_order ASC")
+		}).
+		Where("id = ?", billID).
 		First(&b).Error
 	if err != nil {
 		return nil, err
