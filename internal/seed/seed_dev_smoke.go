@@ -18,34 +18,38 @@ import (
 	"gorm.io/gorm"
 )
 
-// Smoke test fixtures for the Move-out Settlement Preview flow.
+// Smoke test fixtures for the billing / move-out smoke suites.
 //
 // All fixtures are tagged with ID-card prefix "9999" so CleanupSmokeData
 // can find and remove them cleanly after testing.
 //
-// | TC | Room | Status             | Scenario                                  |
-// |----|------|--------------------|-------------------------------------------|
-// | 1  | B105 | PENDING_SETTLEMENT | Happy path — past minMonths, no draft     |
-// | 3  | B201 | PENDING_SETTLEMENT | MinMonths threshold flip (PRORATED fails) |
-// | 4  | B202 | PENDING_SETTLEMENT | Has existing DRAFT settlement bill        |
-// | 6  | B203 | PENDING_SETTLEMENT | Advance rent already paid (M-1 PAID)      |
-// | 7  | B204 | PENDING_SETTLEMENT | Has absorbed bills (FINALIZED earlier)    |
-// | 10 | B205 | PENDING_METER      | No actual_move_out_date yet               |
-// | 13 | C201 | PENDING_SETTLEMENT | Scenario: paid monthly bill carry-forward |
-// | 14 | C202 | PENDING_SETTLEMENT | Scenario: ONE unpaid monthly bill absorbed |
-// | 15 | C203 | PENDING_SETTLEMENT | Scenario: THREE unpaid monthly bills       |
-// | 16 | C204 | PENDING_SETTLEMENT | Scenario: scheduled ≠ actual move-out date |
-// | 17 | C205 | PENDING_SETTLEMENT | Scenario: actual move-out date backdated   |
-// | 18 | C101 | PENDING_SETTLEMENT | Scenario: deposit refund (covers charges)  |
-// | 19 | C102 | PENDING_SETTLEMENT | Scenario: deposit shortfall (owe money)    |
-// | 24 | D103 | PENDING_SETTLEMENT | Scenario: zero balance (charges = deposit)  |
-// | 25 | D104 | PENDING_SETTLEMENT | Scenario: deposit forfeited (short stay)    |
-// | 20 | D101 | PENDING_METER      | Scenario: invalid exit < prior MONTHLY     |
-// | 21 | E201 | PENDING_SETTLEMENT | Scenario: missing baseline / incomplete data |
-// | 22 | D201 | PENDING_SETTLEMENT | Queue: draft + 2 MANUAL items (confirm modal) |
-// | 23 | D202 | PENDING_SETTLEMENT | Queue: draft + FULL_MONTH rent mode (continuity)|
-// | 26 | E101 | (ACTIVE contract)  | Bill-edit: DRAFT MONTHLY clean, no overrides   |
-// | 27 | E102 | (ACTIVE contract)  | Bill-edit: DRAFT MONTHLY w/ pre-existing override |
+// Sorted by TC number. Move-out fixtures dominate (TC1–TC25); the bill-edit
+// fixtures (TC26–TC27) are ACTIVE contracts with a DRAFT monthly bill in
+// the current month — no move-out notice involved.
+//
+// | TC | Room | Status             | Scenario                                          |
+// |----|------|--------------------|---------------------------------------------------|
+// |  1 | B105 | PENDING_SETTLEMENT | Happy path — past minMonths, no draft             |
+// |  3 | B201 | PENDING_SETTLEMENT | MinMonths threshold flip (PRORATED fails)         |
+// |  4 | B202 | PENDING_SETTLEMENT | Has existing DRAFT settlement bill                |
+// |  6 | B203 | PENDING_SETTLEMENT | Advance rent already paid (M-1 PAID)              |
+// |  7 | B204 | PENDING_SETTLEMENT | Has absorbed bills (FINALIZED earlier)            |
+// | 10 | B205 | PENDING_METER      | No actual_move_out_date yet                       |
+// | 13 | C201 | PENDING_SETTLEMENT | Paid monthly bill carry-forward                   |
+// | 14 | C202 | PENDING_SETTLEMENT | ONE unpaid monthly bill absorbed                  |
+// | 15 | C203 | PENDING_SETTLEMENT | THREE unpaid monthly bills                        |
+// | 16 | C204 | PENDING_SETTLEMENT | Scheduled ≠ actual move-out date                  |
+// | 17 | C205 | PENDING_SETTLEMENT | Actual move-out date backdated                    |
+// | 18 | C101 | PENDING_SETTLEMENT | Deposit refund (covers charges)                   |
+// | 19 | C102 | PENDING_SETTLEMENT | Deposit shortfall (owe money)                     |
+// | 20 | D101 | PENDING_METER      | Invalid exit < prior MONTHLY                      |
+// | 21 | E201 | PENDING_SETTLEMENT | Missing baseline / incomplete data                |
+// | 22 | D201 | PENDING_SETTLEMENT | Queue: draft + 2 MANUAL items (confirm modal)     |
+// | 23 | D202 | PENDING_SETTLEMENT | Queue: draft + FULL_MONTH rent mode (continuity)  |
+// | 24 | D103 | PENDING_SETTLEMENT | Zero balance (charges = deposit)                  |
+// | 25 | D104 | PENDING_SETTLEMENT | Deposit forfeited (short stay)                    |
+// | 26 | E101 | ACTIVE contract    | Bill-edit: DRAFT MONTHLY clean, no overrides      |
+// | 27 | E102 | ACTIVE contract    | Bill-edit: DRAFT MONTHLY w/ pre-existing override |
 //
 // Date-sensitive: TC3 requires mid-month "today" to flip across minMonths.
 // Works reliably when today.Day() <= daysInMonth(today) - 3.

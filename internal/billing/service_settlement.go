@@ -151,13 +151,19 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 			return fmt.Errorf("delete manual items: %w", err)
 		}
 
-		autoCount := 0
+		// MANUAL sort_order appends after the last AUTO item. Use max(sort_order)
+		// not count: AUTO rows can have holes from prior edits or future schema
+		// migrations — count-based baseOrder would collide with existing AUTO
+		// sort_orders. max+1 guarantees MANUAL lands strictly after every AUTO
+		// row regardless of holes. Mirrors UpdateMonthlyDraft so both paths
+		// share the same MANUAL sort_order contract.
+		maxSort := 0
 		for _, li := range b.LineItems {
-			if li.IsAuto() {
-				autoCount++
+			if li.IsAuto() && li.SortOrder > maxSort {
+				maxSort = li.SortOrder
 			}
 		}
-		baseOrder := autoCount + 1
+		baseOrder := maxSort + 1
 		var manualItems []BillLineItem
 		for i, item := range req.ManualItems {
 			li := BillLineItem{
