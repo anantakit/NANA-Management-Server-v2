@@ -438,7 +438,12 @@ func (b *Bill) IsAbsorbedBySettlement() bool {
 func (b *Bill) CalculateTotal() {
 	var total int64
 	for _, item := range b.LineItems {
-		if b.IsSettlement() && item.IsAuto() {
+		// Overrides are a bill-level curation layer that applies to any
+		// editable bill (MONTHLY + SETTLEMENT), not just settlement.
+		// Skipping this for MONTHLY made `bills.total_amount` drift from
+		// the sum of effective line item amounts surfaced by the DTO
+		// mapper (which already substitutes overrides at read time).
+		if item.IsAuto() {
 			if override, ok := b.Overrides[item.OverrideKey()]; ok {
 				total += override
 				continue

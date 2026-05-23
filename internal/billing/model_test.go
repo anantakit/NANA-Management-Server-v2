@@ -582,20 +582,63 @@ func TestCalculateTotal_WithOverrides(t *testing.T) {
 	}
 }
 
-func TestCalculateTotal_OverrideIgnoredForNonSettlement(t *testing.T) {
+// MONTHLY drafts also accept overrides (Phase 1 editable bills). Total must
+// reflect the override, otherwise `bills.total_amount` drifts from the sum
+// of effective line item amounts that the DTO mapper surfaces — admin sees
+// breakdown ≠ total, batch summary stays stale, and finalize ships the
+// wrong amount.
+func TestCalculateTotal_OverrideAppliedForMonthly(t *testing.T) {
 	b := &Bill{
 		BillType: BillTypeMonthly,
 		Overrides: OverrideMap{
-			"ELECTRICITY": 1, // should be ignored
+			"ROOM_RENT": 350000, // override 250000 → 350000 (+100000 satang)
 		},
 		LineItems: []BillLineItem{
+			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 250000},
 			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 120000},
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 30000},
 		},
 	}
 	b.CalculateTotal()
 
-	if b.TotalAmount != 120000 {
-		t.Fatalf("TotalAmount = %d, want 120000 (override ignored for monthly)", b.TotalAmount)
+	// override(350000) + 120000 + 30000 = 500000
+	if b.TotalAmount != 500000 {
+		t.Fatalf("TotalAmount = %d, want 500000 (monthly override applied)", b.TotalAmount)
+	}
+}
+
+// Locks the DTO ↔ model invariant: bill.total_amount must equal the sum of
+// the effective amounts that toLineItemResponse surfaces (override substituted
+// for AUTO items). This is the exact invariant the in-context BatchItemDrawer
+// preview depends on after an edit; failing it makes the live preview total
+// drift from line item totals visible to the admin.
+func TestCalculateTotal_MonthlyTotalEqualsEffectiveLineItemSum(t *testing.T) {
+	b := &Bill{
+		BillType: BillTypeMonthly,
+		Overrides: OverrideMap{
+			"ROOM_RENT": 999, // override below original
+		},
+		LineItems: []BillLineItem{
+			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 250000},
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 120000},
+			{LineType: LineItemCleaningFee, Source: LineItemSourceManual, Amount: 50000},
+		},
+	}
+	b.CalculateTotal()
+
+	// Effective: 999 (overridden) + 120000 + 50000 (MANUAL untouched) = 170999
+	var effectiveSum int64
+	for _, li := range b.LineItems {
+		if li.IsAuto() {
+			if v, ok := b.Overrides[li.OverrideKey()]; ok {
+				effectiveSum += v
+				continue
+			}
+		}
+		effectiveSum += li.Amount
+	}
+	if b.TotalAmount != effectiveSum {
+		t.Fatalf("TotalAmount = %d, want effectiveSum = %d", b.TotalAmount, effectiveSum)
 	}
 }
 
