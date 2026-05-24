@@ -211,6 +211,13 @@ type BillResponse struct {
 	BillType       string             `json:"bill_type"`
 	Status         string             `json:"status"`
 	VoidReason     *string            `json:"void_reason"`
+	// SupersededByBillID forward-links this VOID bill to its replacement
+	// when admin uses the void+recreate correction flow. Populated only
+	// when status='VOID' AND void_reason='CORRECTION'. Null on every
+	// other bill (including VOID(ABSORBED_BY_SETTLEMENT) and unsuperseded
+	// VOID). FE renders the "ใบนี้ถูกแทนที่ด้วยใบใหม่" cross-link off
+	// this field; absence collapses the cross-link UI.
+	SupersededByBillID *uuid.UUID         `json:"superseded_by_bill_id,omitempty"`
 	DepositAmount    float64            `json:"deposit_amount"`
 	DepositBalance   float64            `json:"deposit_balance"`
 	DepositForfeited bool               `json:"deposit_forfeited"`
@@ -270,6 +277,10 @@ type BillListItemResponse struct {
 	BillType          string     `json:"bill_type"`
 	Status            string     `json:"status"`
 	VoidReason        *string    `json:"void_reason"`
+	// SupersededByBillID mirrors BillResponse.SupersededByBillID — see
+	// that field's doc. Surfaced on the list row so VOID(CORRECTION)
+	// rows can render a cross-link badge without an extra fetch.
+	SupersededByBillID *uuid.UUID `json:"superseded_by_bill_id,omitempty"`
 	TotalAmount       float64    `json:"total_amount"`
 	PaidAmount        float64    `json:"paid_amount"`
 	OutstandingAmount float64    `json:"outstanding_amount"`
@@ -603,6 +614,7 @@ func ToBillResponse(b Bill) BillResponse {
 		BillType:         string(b.BillType),
 		Status:           string(b.Status),
 		VoidReason:       b.VoidReason,
+		SupersededByBillID: b.SupersededByBillID,
 		DepositAmount:    money.ToBaht(b.DepositAmount),
 		DepositBalance:   money.ToBaht(b.DepositBalance),
 		DepositForfeited: b.DepositForfeited,
@@ -738,6 +750,7 @@ func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 		BillType:          string(b.BillType),
 		Status:            string(b.Status),
 		VoidReason:        b.VoidReason,
+		SupersededByBillID: b.SupersededByBillID,
 		TotalAmount:       money.ToBaht(b.TotalAmount),
 		PaidAmount:        money.ToBaht(b.PaidAmount()),
 		OutstandingAmount: money.ToBaht(b.OutstandingAmount()),
