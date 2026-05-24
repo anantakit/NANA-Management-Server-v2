@@ -2,6 +2,7 @@ package moveout
 
 import (
 	"nana/internal/shared/bind"
+	"nana/internal/shared/middleware"
 	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
@@ -42,6 +43,7 @@ func (h *MoveOutHandler) RegisterRoutes(router fiber.Router) {
 	router.Post("/:id/update-exit-meter", h.UpdateExitMeter)
 	router.Post("/:id/regenerate-settlement", h.RegenerateSettlement)
 	router.Post("/:id/reopen", h.ReopenForCorrection)
+	router.Post("/:id/correct-settlement", h.CorrectSettlement)
 }
 
 func (h *MoveOutHandler) List(c fiber.Ctx) error {
@@ -337,4 +339,30 @@ func (h *MoveOutHandler) ReopenForCorrection(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "เปิดแก้ไขแล้ว", ToMoveOutResponse(*result))
+}
+
+// CorrectSettlement triggers the user-initiated void+recreate flow on a
+// FINALIZED settlement bill of a PENDING_PAYMENT or READY_TO_CLOSE notice.
+// Service orchestrator atomically voids the old settlement, regenerates a
+// new DRAFT, rebinds notice.settlement_bill_id, downgrades status to
+// PENDING_SETTLEMENT, and clears payment metadata. PAID settlement and
+// COMPLETED notices are blocked. Returns the updated notice so the FE
+// re-renders the move-out detail at the settlement step.
+func (h *MoveOutHandler) CorrectSettlement(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("รหัสใบแจ้งย้ายออกไม่ถูกต้อง"))
+	}
+
+	var req CorrectSettlementRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.CorrectSettlement(c.Context(), id, req, middleware.ActorFromCtx(c))
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "ออกใบสรุปยอดใหม่แล้ว", ToMoveOutResponse(*result))
 }

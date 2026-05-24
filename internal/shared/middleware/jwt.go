@@ -80,3 +80,16 @@ func sendAuthError(c fiber.Ctx, appErr *respond.AppError) error {
 		Message: appErr.Message,
 	})
 }
+
+// ActorFromCtx returns the authenticated user's ID from request locals
+// (set above by JWTProtected at line 52). Returns nil when the request is
+// unauthenticated — handlers pass that nil through to service-layer audit
+// recorders for system-triggered events. Single source of truth for the
+// "read the actor" half of the userID lifecycle, paired with the
+// JWTProtected writer in this same file.
+func ActorFromCtx(c fiber.Ctx) *uuid.UUID {
+	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
+		return &uid
+	}
+	return nil
+}

@@ -39,6 +39,7 @@ type MoveOutService interface {
 	UpdateExitMeter(ctx context.Context, id uuid.UUID, req UpdateExitMeterRequest) (*MoveOutWithRelations, error)
 	RegenerateSettlement(ctx context.Context, id uuid.UUID, rentMode RentMode) (*MoveOutWithRelations, error)
 	ReopenForCorrection(ctx context.Context, id uuid.UUID) (*MoveOutWithRelations, error)
+	CorrectSettlement(ctx context.Context, id uuid.UUID, req CorrectSettlementRequest, actor *uuid.UUID) (*MoveOutWithRelations, error)
 }
 
 type moveOutService struct {
@@ -777,6 +778,85 @@ func (s *moveOutService) ReopenForCorrection(ctx context.Context, id uuid.UUID) 
 			return nil, err
 		}
 		return nil, fmt.Errorf("reopen for correction: %w", err)
+	}
+	return s.repo.FindByID(ctx, noticeID)
+}
+
+// CorrectSettlement is the move-out workflow's user-triggered void+recreate
+// flow for a FINALIZED settlement bill. Allowed from PENDING_PAYMENT or
+// READY_TO_CLOSE only — COMPLETED is Phase 2.1F backlog; PAID is blocked
+// at the billing layer via CanCorrect.
+//
+// One tx composes four state mutations: billing voids old + regenerates
+// new DRAFT (incl. absorbed-bill restore→re-absorb), notice rebinds
+// settlement_bill_id + net_amount, notice downgrades to PENDING_SETTLEMENT
+// (mirrors the UpdateExitMeter precedent), notice clears payment metadata.
+// See moveout.BillingCommander.CorrectSettlement + design lock for the
+// rationale of each piece.
+func (s *moveOutService) CorrectSettlement(ctx context.Context, id uuid.UUID, req CorrectSettlementRequest, actor *uuid.UUID) (*MoveOutWithRelations, error) {
+	var noticeID uuid.UUID
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		notice, err := s.repo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
+		}
+
+		// Guard 1: workflow status must allow the rewind.
+		if err := notice.CanDowngradeToPendingSettlement(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		// Guard 2: must have a settlement bill to correct. Independent of
+		// status so a future regression that lets a no-bill PENDING_PAYMENT
+		// notice slip through still gets caught.
+		if notice.SettlementBillID == nil {
+			return respond.ErrBadRequest.WithMessage(ErrMissingSettlementBill.Error())
+		}
+
+		// Resolve context for billing: contract for rates, actual move-out
+		// date for plan rebuild. ActualMoveOutDate is invariant once set
+		// (settlement requires it), so RequireActualDate succeeds here for
+		// any notice that has a settlement bill attached.
+		moveOutDate, err := notice.RequireActualDate()
+		if err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+
+		// Phase 1: billing voids old + regenerates new (with restore/re-absorb).
+		// Empty RentMode → billing reads from the locked old bill, so the
+		// correction preserves rent-mode policy (fixing numbers, not policy).
+		result, err := s.billingCmd.CorrectSettlement(txCtx, CorrectSettlementInput{
+			ExistingBillID:   *notice.SettlementBillID,
+			ContractID:       notice.ContractID,
+			MoveOutDate:      moveOutDate,
+			RentMode:         "",
+			CorrectionReason: req.CorrectionReason,
+			Actor:            actor,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Phase 2: notice rewind. Order matters — DowngradeToPendingSettlement
+		// must run BEFORE AttachDraft because AttachDraft's CanRecordSettlement
+		// guard requires PENDING_SETTLEMENT.
+		if err := notice.DowngradeToPendingSettlement(); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := notice.AttachDraft(result.BillID, result.NetAmount); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		notice.ClearPaymentOutcome()
+
+		if err := s.repo.Update(txCtx, notice); err != nil {
+			return err
+		}
+		noticeID = notice.ID
+		return nil
+	}); err != nil {
+		if _, ok := respond.Is(err); ok {
+			return nil, err
+		}
+		return nil, fmt.Errorf("correct settlement: %w", err)
 	}
 	return s.repo.FindByID(ctx, noticeID)
 }

@@ -42,6 +42,97 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	return result, nil
 }
 
+// CorrectSettlement implements moveout.BillingCommander — see that interface
+// for the contract differentiation (lock + CanCorrect, supersede link via
+// DEFERRABLE FK, no carryover). Called by the move-out orchestrator within
+// its transaction context — must NOT start its own transaction.
+//
+// Persist order is load-bearing (per fix 9e86e73 lesson): void old →
+// restore absorbed monthlies → prepare fresh plan → commit new. The new
+// bill's ID is pre-generated and threaded through plan.Bill.ID so the
+// supersede link resolves at COMMIT.
+func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.CorrectSettlementInput) (*moveout.SettlementBillResult, error) {
+	old, err := s.repo.LockBillForCorrection(ctx, in.ExistingBillID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrBillNotFound
+		}
+		return nil, fmt.Errorf("lock settlement for correction: %w", err)
+	}
+
+	if err := old.CanCorrect(); err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	// Defense-in-depth: this port is settlement-only. The moveout
+	// orchestrator already enforces this via notice.SettlementBillID
+	// pointing at a settlement bill, but guard here so a future caller
+	// can't quietly misuse the port for monthly bills.
+	if !old.IsSettlement() {
+		return nil, respond.ErrBadRequest.WithMessage("CorrectSettlement: bill is not a settlement bill")
+	}
+
+	previousStatus := string(old.Status)
+
+	// Pre-generate the new bill's ID so old.superseded_by_bill_id can
+	// reference it before commitSettlementPlan inserts the new row. The
+	// DEFERRABLE FK fires at COMMIT, by which point the new bill exists.
+	newBillID := uuid.New()
+
+	// Phase 1: mark the old bill superseded + flush. The status flip to
+	// VOID also removes it from any future partial-unique scope on
+	// settlement bills (Phase 2.1F backlog adds idx_bills_unique_settlement).
+	if err := old.MarkSupersededByCorrection(newBillID); err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	if err := s.repo.Update(ctx, old); err != nil {
+		return nil, fmt.Errorf("supersede old settlement: %w", err)
+	}
+
+	// Phase 2: restore previously-absorbed monthly bills so the fresh plan
+	// can re-absorb them (set may differ if the move-out date changed
+	// since the original settlement — that's the correct behavior).
+	if err := s.restoreAbsorbedBills(ctx, in.ContractID); err != nil {
+		return nil, fmt.Errorf("restore absorbed bills: %w", err)
+	}
+
+	// Phase 3: fresh settlement plan. Rent mode defaults to the old bill's
+	// setting unless the caller overrides — correction is for fixing
+	// numbers, not changing policy.
+	opts := SettlementOptions{RentMode: old.SettlementRentMode}
+	if in.RentMode != "" {
+		opts.RentMode = SettlementRentMode(in.RentMode)
+	}
+	plan, err := s.prepareSettlementPlan(ctx, in.ContractID, in.MoveOutDate, opts)
+	if err != nil {
+		return nil, err
+	}
+	// Override the auto-assigned ID with the pre-generated one so the
+	// supersede link resolves. Bill.BeforeCreate respects a non-Nil ID.
+	plan.Bill.ID = newBillID
+
+	result, err := s.commitSettlementPlan(ctx, plan)
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase 4: emit the correction audit pair (mirrors MONTHLY).
+	if err := s.recordAudit(ctx, old.ID, AuditSupersede, in.Actor, AuditSupersedePayload{
+		PreviousStatus:   previousStatus,
+		NewBillID:        newBillID,
+		CorrectionReason: in.CorrectionReason,
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.recordAudit(ctx, newBillID, AuditCreateFromCorrection, in.Actor, AuditCreateFromCorrectionPayload{
+		SupersededBillID: old.ID,
+		CorrectionReason: in.CorrectionReason,
+	}); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // VoidSettlement marks a settlement bill as VOIDED with the given reason.
 // Also restores any monthly bills that were absorbed by this settlement,
 // so they can be re-absorbed by a new settlement or collected normally.

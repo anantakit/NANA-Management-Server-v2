@@ -86,8 +86,27 @@ func (m RentMode) IsValid() bool {
 	return false
 }
 
-// BillingCommander generates, regenerates, finalizes, and voids settlement bills.
-// Implemented by billing.BillingService; injected via main.go.
+// CorrectSettlementInput bundles the inputs for BillingCommander.CorrectSettlement.
+// Struct-form (vs positional) because the field set is large enough that a
+// flat parameter list becomes a readability hazard and easy to mis-order at
+// the call site. Mirrors the user-triggered void+recreate intent.
+//
+// Actor lives in the struct rather than as a separate signature parameter so
+// the port shape stays (ctx, in) — symmetric with the standard Go pattern
+// for command ports. (Other BillingCommander methods drop actor entirely
+// because they're system-triggered; correction is the first user-attributed
+// one, see service_moveout_ports.go for the audit trail rationale.)
+type CorrectSettlementInput struct {
+	ExistingBillID   uuid.UUID
+	ContractID       uuid.UUID
+	MoveOutDate      time.Time
+	RentMode         RentMode // empty → derived from the existing bill's setting
+	CorrectionReason string
+	Actor            *uuid.UUID // nil for system-triggered events; UI sets the admin's user ID
+}
+
+// BillingCommander generates, regenerates, finalizes, voids, and corrects
+// settlement bills. Implemented by billing.BillingService; injected via main.go.
 type BillingCommander interface {
 	// GenerateSettlement creates a DRAFT settlement bill for the given contract
 	// and move-out date. Snapshots AUTO line items at creation time.
@@ -108,6 +127,25 @@ type BillingCommander interface {
 	// VoidSettlement marks a settlement bill as VOIDED with the given reason.
 	// Must be called within the caller's transaction context.
 	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
+
+	// CorrectSettlement is the user-triggered void+recreate flow for a
+	// FINALIZED settlement bill. Differs from RegenerateSettlement on three
+	// axes: (1) requires CanCorrect guard (FINALIZED, not PAID, not VOID,
+	// not already superseded), (2) sets old.superseded_by_bill_id to the
+	// new bill so the audit trail forms an explicit chain, (3) does NOT
+	// carry over MANUAL items / overrides / note — fresh slate per the
+	// "regenerate not clone" architectural lock (admin re-applies edits
+	// against the new DRAFT if needed).
+	//
+	// Caller (moveout orchestrator) is responsible for rebinding
+	// notice.settlement_bill_id + notice.net_amount in the same tx, plus
+	// the workflow rewind (downgrade to PENDING_SETTLEMENT, clear payment
+	// metadata). Must be called within the caller's transaction context.
+	//
+	// Emits SUPERSEDE on old + CREATE_FROM_CORRECTION on new in the same
+	// tx, attributed to in.Actor (nil → system event). Audit failure rolls
+	// back the entire correction.
+	CorrectSettlement(ctx context.Context, in CorrectSettlementInput) (*SettlementBillResult, error)
 }
 
 // --- Billing query port ---

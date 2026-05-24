@@ -49,6 +49,7 @@ type BillingService interface {
 	// Move-out workflow ports (satisfies moveout.BillingCommander + moveout.BillingQuerier)
 	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error)
 	RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error)
+	CorrectSettlement(ctx context.Context, in moveout.CorrectSettlementInput) (*moveout.SettlementBillResult, error)
 	PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error)
 	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
 	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error

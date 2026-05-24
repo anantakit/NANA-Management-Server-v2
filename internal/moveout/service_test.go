@@ -173,14 +173,17 @@ type mockBillingCommander struct {
 	regenerateFn   func(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode RentMode) (*SettlementBillResult, error)
 	finalizeFn     func(ctx context.Context, billID uuid.UUID) error
 	voidFn         func(ctx context.Context, billID uuid.UUID, reason string) error
+	correctFn      func(ctx context.Context, in CorrectSettlementInput) (*SettlementBillResult, error)
 
 	generateCalls   int
 	regenerateCalls int
 	finalizeCalls   int
 	voidCalls       int
+	correctCalls    int
 	voidBillID      uuid.UUID
 	voidReason      string
 	finalizeBillID  uuid.UUID
+	correctInput    CorrectSettlementInput
 }
 
 var _ BillingCommander = (*mockBillingCommander)(nil)
@@ -235,6 +238,19 @@ func (m *mockBillingCommander) VoidSettlement(_ context.Context, billID uuid.UUI
 		return m.voidFn(context.Background(), billID, reason)
 	}
 	return nil
+}
+
+func (m *mockBillingCommander) CorrectSettlement(ctx context.Context, in CorrectSettlementInput) (*SettlementBillResult, error) {
+	m.correctCalls++
+	m.correctInput = in
+	if m.correctFn != nil {
+		return m.correctFn(ctx, in)
+	}
+	return &SettlementBillResult{
+		BillID:      uuid.New(),
+		NetAmount:   75000, // 750 baht — distinct from generate/regenerate defaults
+		DepositUsed: 425000,
+	}, nil
 }
 
 // noopTxManager runs the callback with the same context — sufficient for mock repos.
@@ -1411,4 +1427,208 @@ func TestCloseMoveOut_MarkVacantFailure_ReturnsError(t *testing.T) {
 	}
 	// In real Postgres the ROLLBACK undoes steps 1–2.
 	// Here we at least verify the error propagated (service didn't swallow it).
+}
+
+// --- CorrectSettlement (Phase 2.1E-B) ---
+//
+// Service-layer tests pin the orchestration contract: billing port called
+// with the right inputs, notice domain methods composed in the right order,
+// fields end up in the right post-state, guard rejection blocks the call.
+// Real-Postgres TX invariants (row lock contention, DEFERRABLE FK at COMMIT,
+// audit rollback) belong in Phase 2.1E-C integration tests — not here.
+
+// finalizedSettlementNotice builds a PENDING_PAYMENT notice with a FINALIZED
+// settlement bill attached + payment outcome recorded. The standard
+// "ready to be corrected" fixture for the orchestrator tests.
+func finalizedSettlementNotice(noticeID, contractID, billID uuid.UUID) *MoveOutNotice {
+	moveOut := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+	netAmount := int64(120000) // 1200 baht — original (about to be replaced)
+	outcome := PaymentOutcomePaidExtra
+	method := domain.PaymentMethodCash
+	return &MoveOutNotice{
+		ID:                noticeID,
+		ContractID:        contractID,
+		Status:            MoveOutStatusPendingPayment,
+		ActualMoveOutDate: &moveOut,
+		SettlementBillID:  &billID,
+		NetAmount:         &netAmount,
+		PaymentOutcome:    &outcome,
+		PaymentMethod:     &method,
+		PaymentNote:       "เก็บแล้ว",
+	}
+}
+
+func TestCorrectSettlement_HappyPath(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	oldBillID := uuid.New()
+	newBillID := uuid.New()
+	actor := uuid.New()
+
+	h := newTestHarness(uuid.New(), contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return finalizedSettlementNotice(id, contractID, oldBillID), nil
+	}
+	// Stub billing to return a deterministic new bill so we can assert the
+	// notice rebinds correctly.
+	h.billingCmd.correctFn = func(_ context.Context, _ CorrectSettlementInput) (*SettlementBillResult, error) {
+		return &SettlementBillResult{
+			BillID:      newBillID,
+			NetAmount:   85000, // new net — differs from old (120000) so rebind is observable
+			DepositUsed: 415000,
+		}, nil
+	}
+
+	_, err := h.svc.CorrectSettlement(context.Background(), noticeID,
+		CorrectSettlementRequest{CorrectionReason: "ค่าไฟผิด คำนวณใหม่"}, &actor)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// ── Billing port called once with the right shape ──
+	if h.billingCmd.correctCalls != 1 {
+		t.Fatalf("CorrectSettlement calls: got %d, want 1", h.billingCmd.correctCalls)
+	}
+	if h.billingCmd.correctInput.ExistingBillID != oldBillID {
+		t.Errorf("input.ExistingBillID = %v, want %v", h.billingCmd.correctInput.ExistingBillID, oldBillID)
+	}
+	if h.billingCmd.correctInput.ContractID != contractID {
+		t.Errorf("input.ContractID = %v, want %v", h.billingCmd.correctInput.ContractID, contractID)
+	}
+	if h.billingCmd.correctInput.CorrectionReason != "ค่าไฟผิด คำนวณใหม่" {
+		t.Errorf("input.CorrectionReason = %q", h.billingCmd.correctInput.CorrectionReason)
+	}
+	if h.billingCmd.correctInput.RentMode != "" {
+		t.Errorf("input.RentMode = %q, want \"\" (let billing default from old bill)", h.billingCmd.correctInput.RentMode)
+	}
+	if h.billingCmd.correctInput.Actor == nil || *h.billingCmd.correctInput.Actor != actor {
+		t.Errorf("input.Actor = %v, want %v (admin attribution flows through)", h.billingCmd.correctInput.Actor, actor)
+	}
+
+	// ── Notice state flipped correctly ──
+	if h.repo.updateCalls != 1 {
+		t.Fatalf("notice Update calls: got %d, want 1", h.repo.updateCalls)
+	}
+	got := h.repo.updatedNotice
+	if got.Status != MoveOutStatusPendingSettlement {
+		t.Errorf("status = %s, want PENDING_SETTLEMENT (workflow rewound)", got.Status)
+	}
+	if got.SettlementBillID == nil || *got.SettlementBillID != newBillID {
+		t.Errorf("settlement_bill_id = %v, want %v (rebind to new bill)", got.SettlementBillID, newBillID)
+	}
+	if got.NetAmount == nil || *got.NetAmount != 85000 {
+		t.Errorf("net_amount = %v, want 85000 (recomputed)", got.NetAmount)
+	}
+	// Payment metadata wiped (audit honesty — design lock decision #6)
+	if got.PaymentOutcome != nil {
+		t.Errorf("payment_outcome = %v, want nil (cleared)", got.PaymentOutcome)
+	}
+	if got.PaymentMethod != nil {
+		t.Errorf("payment_method = %v, want nil (cleared)", got.PaymentMethod)
+	}
+	if got.PaymentNote != "" {
+		t.Errorf("payment_note = %q, want \"\" (cleared)", got.PaymentNote)
+	}
+}
+
+func TestCorrectSettlement_RejectsCompleted(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	billID := uuid.New()
+
+	h := newTestHarness(uuid.New(), contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		// COMPLETED notice — blocked in v1 per design lock decision #1
+		// (Phase 2.1F backlog: reverting contract.ENDED + room.VACANT).
+		n := finalizedSettlementNotice(id, contractID, billID)
+		n.Status = MoveOutStatusCompleted
+		return n, nil
+	}
+
+	_, err := h.svc.CorrectSettlement(context.Background(), noticeID,
+		CorrectSettlementRequest{CorrectionReason: "should not pass"}, nil)
+	if err == nil {
+		t.Fatal("expected guard rejection, got nil")
+	}
+	appErr, ok := respond.Is(err)
+	if !ok {
+		t.Fatalf("expected AppError, got %T: %v", err, err)
+	}
+	if appErr.HTTPStatus != 400 {
+		t.Errorf("HTTP status = %d, want 400", appErr.HTTPStatus)
+	}
+
+	// Billing must NOT be called when the workflow guard rejects.
+	if h.billingCmd.correctCalls != 0 {
+		t.Errorf("billing.CorrectSettlement calls = %d, want 0 (guarded before billing)", h.billingCmd.correctCalls)
+	}
+	// Notice must NOT be Updated either — no half-applied state.
+	if h.repo.updateCalls != 0 {
+		t.Errorf("notice Update calls = %d, want 0 (no mutation on guard reject)", h.repo.updateCalls)
+	}
+}
+
+func TestCorrectSettlement_BillingErrorPropagates(t *testing.T) {
+	noticeID := uuid.New()
+	contractID := uuid.New()
+	billID := uuid.New()
+
+	h := newTestHarness(uuid.New(), contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		return finalizedSettlementNotice(id, contractID, billID), nil
+	}
+	billErr := respond.ErrBadRequest.WithMessage("บิลถูกชำระแล้ว") // mirrors billing CanCorrect PAID reject
+	h.billingCmd.correctFn = func(_ context.Context, _ CorrectSettlementInput) (*SettlementBillResult, error) {
+		return nil, billErr
+	}
+
+	_, err := h.svc.CorrectSettlement(context.Background(), noticeID,
+		CorrectSettlementRequest{CorrectionReason: "ไม่สำเร็จ"}, nil)
+	if err == nil {
+		t.Fatal("expected error from billing, got nil")
+	}
+	if !errors.Is(err, billErr) {
+		// AppError equality via errors.Is — surface the billing reject
+		// verbatim so the FE shows the right Thai message.
+		t.Errorf("err = %v, want billing's AppError to propagate", err)
+	}
+
+	// Billing called once (where it failed).
+	if h.billingCmd.correctCalls != 1 {
+		t.Errorf("billing.CorrectSettlement calls = %d, want 1", h.billingCmd.correctCalls)
+	}
+	// Notice Update must NOT run — the orchestrator returns before reaching
+	// the notice rewind block, so no partial state escapes the tx closure.
+	if h.repo.updateCalls != 0 {
+		t.Errorf("notice Update calls = %d, want 0 (billing error must short-circuit before notice rewind)", h.repo.updateCalls)
+	}
+}
+
+func TestCorrectSettlement_RejectsMissingSettlementBill(t *testing.T) {
+	// The status guard (CanDowngradeToPendingSettlement) accepts a
+	// PENDING_PAYMENT notice. The second guard (SettlementBillID != nil)
+	// catches the unreachable-but-defensive case where a notice somehow
+	// reaches PENDING_PAYMENT without a bill attached. Pinning this here
+	// keeps the guard from rotting into dead code on future refactors.
+	noticeID := uuid.New()
+	contractID := uuid.New()
+
+	h := newTestHarness(uuid.New(), contractID)
+	h.repo.findForUpdateFn = func(_ context.Context, id uuid.UUID) (*MoveOutNotice, error) {
+		n := finalizedSettlementNotice(id, contractID, uuid.Nil)
+		n.SettlementBillID = nil
+		return n, nil
+	}
+
+	_, err := h.svc.CorrectSettlement(context.Background(), noticeID,
+		CorrectSettlementRequest{CorrectionReason: "should not pass"}, nil)
+	if err == nil {
+		t.Fatal("expected guard rejection on nil settlement_bill_id, got nil")
+	}
+	if h.billingCmd.correctCalls != 0 {
+		t.Errorf("billing called %d times, want 0 (guard fires before billing)", h.billingCmd.correctCalls)
+	}
+	if h.repo.updateCalls != 0 {
+		t.Errorf("notice Update calls = %d, want 0 (no mutation on guard reject)", h.repo.updateCalls)
+	}
 }

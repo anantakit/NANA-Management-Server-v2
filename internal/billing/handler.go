@@ -2,6 +2,7 @@ package billing
 
 import (
 	"nana/internal/shared/bind"
+	"nana/internal/shared/middleware"
 	"nana/internal/shared/money"
 	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
@@ -16,19 +17,6 @@ type BillingHandler struct {
 
 func NewBillingHandler(svc BillingService) *BillingHandler {
 	return &BillingHandler{svc: svc}
-}
-
-// actorFromCtx pulls the admin's user ID out of fiber locals set by the JWT
-// middleware (shared/middleware/jwt.go) so service-layer audit recorders can
-// stamp the actor on each event. Returns nil when the request is unauthenticated
-// (e.g. before the JWT middleware ran in test paths) — the audit row then
-// records a nil actor, which is the same shape used by cross-feature
-// system-triggered events.
-func actorFromCtx(c fiber.Ctx) *uuid.UUID {
-	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
-		return &uid
-	}
-	return nil
 }
 
 func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
@@ -119,7 +107,7 @@ func (h *BillingHandler) CreateMonthly(c fiber.Ctx) error {
 		return err
 	}
 
-	bill, err := h.svc.CreateMonthlyBill(c.Context(), req, actorFromCtx(c))
+	bill, err := h.svc.CreateMonthlyBill(c.Context(), req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -159,7 +147,7 @@ func (h *BillingHandler) CreateSettlement(c fiber.Ctx) error {
 		return err
 	}
 
-	bill, err := h.svc.CreateSettlementBill(c.Context(), req, actorFromCtx(c))
+	bill, err := h.svc.CreateSettlementBill(c.Context(), req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -173,7 +161,7 @@ func (h *BillingHandler) Finalize(c fiber.Ctx) error {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
 	}
 
-	bill, err := h.svc.FinalizeBill(c.Context(), id, actorFromCtx(c))
+	bill, err := h.svc.FinalizeBill(c.Context(), id, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -192,7 +180,7 @@ func (h *BillingHandler) Void(c fiber.Ctx) error {
 		return err
 	}
 
-	bill, err := h.svc.VoidBill(c.Context(), id, req, actorFromCtx(c))
+	bill, err := h.svc.VoidBill(c.Context(), id, req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -218,7 +206,7 @@ func (h *BillingHandler) Correct(c fiber.Ctx) error {
 		return err
 	}
 
-	bill, err := h.svc.CorrectBill(c.Context(), id, req, actorFromCtx(c))
+	bill, err := h.svc.CorrectBill(c.Context(), id, req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -287,7 +275,7 @@ func (h *BillingHandler) BatchFinalizeAll(c fiber.Ctx) error {
 		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
 	}
 
-	result, err := h.svc.BatchFinalizeAll(c.Context(), id, actorFromCtx(c))
+	result, err := h.svc.BatchFinalizeAll(c.Context(), id, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -355,7 +343,7 @@ func (h *BillingHandler) UpdateSettlementDraft(c fiber.Ctx) error {
 		return err
 	}
 
-	bill, err := h.svc.UpdateSettlementDraft(c.Context(), id, req, actorFromCtx(c))
+	bill, err := h.svc.UpdateSettlementDraft(c.Context(), id, req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}
@@ -374,7 +362,7 @@ func (h *BillingHandler) UpdateMonthlyDraft(c fiber.Ctx) error {
 		return err
 	}
 
-	bill, err := h.svc.UpdateMonthlyDraft(c.Context(), id, req, actorFromCtx(c))
+	bill, err := h.svc.UpdateMonthlyDraft(c.Context(), id, req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}

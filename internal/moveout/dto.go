@@ -66,6 +66,15 @@ type RecordPaymentOutcomeRequest struct {
 	PaymentNote    string `json:"payment_note"`
 }
 
+// CorrectSettlementRequest triggers the user-initiated void+recreate
+// correction flow for a FINALIZED settlement bill on the move-out notice.
+// CorrectionReason shows verbatim in the audit timeline (SUPERSEDE on
+// old + CREATE_FROM_CORRECTION on new) and on the move-out detail UI;
+// min-length matches the locked correction_reason rule.
+type CorrectSettlementRequest struct {
+	CorrectionReason string `json:"correction_reason" validate:"required,min=5,max=500"`
+}
+
 // --- Response ---
 
 type MoveOutResponse struct {
