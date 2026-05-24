@@ -478,8 +478,8 @@ func (s *billingService) correctMonthlyBillInTx(
 	snapshot := computeMonthlyBillSnapshot(old.BillingMonth,
 		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
 
-	// New DRAFT — pre-generate ID so the CREATE_FROM_CORRECTION audit row
-	// and the SUPERSEDE link both reference it inside the same TX.
+	// Pre-generate the new bill's ID so both the SUPERSEDE link (set on
+	// old NOW) and the CREATE_FROM_CORRECTION audit can reference it.
 	// BatchID stays nil — corrected bill is a manual artifact, not part of
 	// the original batch run (batch_item keeps pointing at the old bill;
 	// FE walks superseded_by chain to find latest).
@@ -492,10 +492,17 @@ func (s *billingService) correctMonthlyBillInTx(
 		LineItems:    snapshot.ToLineItems(uuid.Nil),
 		TotalAmount:  snapshot.TotalAmount,
 	}
-	if err := s.repo.Create(txCtx, &newBill); err != nil {
-		return uuid.Nil, fmt.Errorf("create corrected bill: %w", err)
-	}
 
+	// Persist order MATTERS: void+supersede old FIRST, then create new.
+	// The partial UNIQUE INDEX idx_bills_unique_monthly allows only one
+	// non-VOID monthly bill per (contract_id, billing_month), so creating
+	// the new DRAFT while the old is still FINALIZED would 500 on a
+	// constraint violation.
+	//
+	// The supersede FK on old → newBill.ID is set BEFORE newBill exists in
+	// the DB; migration 00032 makes that FK DEFERRABLE INITIALLY DEFERRED,
+	// so the check fires at COMMIT (when newBill exists) rather than at
+	// statement time.
 	if err := old.MarkSupersededByCorrection(newBill.ID); err != nil {
 		// Domain re-checks CanCorrect — under correct caller usage this
 		// can't fire, but stay defensive in case lock semantics change.
@@ -503,6 +510,9 @@ func (s *billingService) correctMonthlyBillInTx(
 	}
 	if err := s.repo.Update(txCtx, old); err != nil {
 		return uuid.Nil, fmt.Errorf("supersede old bill: %w", err)
+	}
+	if err := s.repo.Create(txCtx, &newBill); err != nil {
+		return uuid.Nil, fmt.Errorf("create corrected bill: %w", err)
 	}
 
 	if err := s.recordAudit(txCtx, old.ID, AuditSupersede, actor, AuditSupersedePayload{
