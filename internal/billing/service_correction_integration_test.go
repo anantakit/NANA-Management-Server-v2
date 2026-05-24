@@ -5,6 +5,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,13 @@ import (
 // Mock tests caught NONE of these — mockBillingRepo doesn't model partial
 // unique indexes, FK timing, row-locks, or real transactional semantics.
 // See post-mortem in project_billing_correction_arch_lock.md.
+
+// nilActor is the sentinel actor pointer passed to every CorrectBill call
+// in this file. bill_audit_log.actor_id is nullable (ON DELETE SET NULL),
+// and seeding a real user just to satisfy the FK adds noise without
+// testing anything. The audit recorder accepts nil for system-triggered
+// events — same shape works here.
+var nilActor *uuid.UUID
 
 // ── Integration ports: stubs for contract / config / moveout (correction
 //    flow only needs ContractQuerier.FindByIDSimple); real DB-backed
@@ -159,15 +167,10 @@ func newCorrectionTestEnv(t *testing.T, audit BillAuditRepository) *correctionTe
 
 func TestCorrectBill_Integration_HappyPath(t *testing.T) {
 	env := newCorrectionTestEnv(t, nil)
-	// Pass nil actor — bill_audit_log.actor_id is nullable (ON DELETE
-	// SET NULL) and seeding a real user just to satisfy the FK adds noise
-	// without testing anything. The audit recorder accepts nil for
-	// system-triggered events; same shape works here.
-	var actor *uuid.UUID
 	reason := "ค่าไฟผิดเดือนนี้ ออกใหม่"
 
 	newBill, err := env.svc.CorrectBill(context.Background(), env.oldBill.ID,
-		CorrectBillRequest{CorrectionReason: reason}, actor)
+		CorrectBillRequest{CorrectionReason: reason}, nilActor)
 	if err != nil {
 		t.Fatalf("CorrectBill: %v", err)
 	}
@@ -272,87 +275,108 @@ func TestCorrectBill_Integration_HappyPath(t *testing.T) {
 // ============================================================
 
 func TestCorrectBill_Integration_ConcurrentSecondFails(t *testing.T) {
-	env := newCorrectionTestEnv(t, nil)
-	// Pass nil actor — bill_audit_log.actor_id is nullable (ON DELETE
-	// SET NULL) and seeding a real user just to satisfy the FK adds noise
-	// without testing anything. The audit recorder accepts nil for
-	// system-triggered events; same shape works here.
-	var actor *uuid.UUID
+	// Loop the race so scheduler luck on a single iteration can't pass
+	// us a green run that didn't actually exercise the row-lock contest.
+	// Each iteration reseeds via newCorrectionTestEnv (fresh apartment +
+	// contract + bill), so iterations don't interact. 3 iterations gives
+	// enough scheduler diversity without bloating runtime.
+	const iterations = 3
+	for iter := 0; iter < iterations; iter++ {
+		iter := iter
+		t.Run(fmt.Sprintf("iter-%d", iter), func(t *testing.T) {
+			env := newCorrectionTestEnv(t, nil)
 
-	var (
-		wg          sync.WaitGroup
-		results     = make([]error, 2)
-		newBills    = make([]*BillWithRelations, 2)
-		startSignal = make(chan struct{})
-	)
-	wg.Add(2)
-	for i := 0; i < 2; i++ {
-		i := i
-		go func() {
-			defer wg.Done()
-			<-startSignal // release together to maximize the race
-			b, err := env.svc.CorrectBill(context.Background(), env.oldBill.ID,
-				CorrectBillRequest{CorrectionReason: "race attempt"}, actor)
-			results[i] = err
-			newBills[i] = b
-		}()
-	}
-	close(startSignal)
-	wg.Wait()
-
-	// Exactly one call must succeed.
-	successCount := 0
-	failCount := 0
-	for i, err := range results {
-		if err == nil {
-			successCount++
-			if newBills[i] == nil {
-				t.Errorf("call[%d] returned nil bill with nil error", i)
+			var (
+				wg          sync.WaitGroup
+				results     = make([]error, 2)
+				newBills    = make([]*BillWithRelations, 2)
+				startSignal = make(chan struct{})
+			)
+			wg.Add(2)
+			for i := 0; i < 2; i++ {
+				i := i
+				go func() {
+					defer wg.Done()
+					<-startSignal // release together to maximize the race
+					b, err := env.svc.CorrectBill(context.Background(), env.oldBill.ID,
+						CorrectBillRequest{CorrectionReason: "race attempt"}, nilActor)
+					results[i] = err
+					newBills[i] = b
+				}()
 			}
-		} else {
-			failCount++
-		}
-	}
-	if successCount != 1 || failCount != 1 {
-		t.Fatalf("expected 1 success + 1 fail, got %d success / %d fail; errors=%v",
-			successCount, failCount, results)
-	}
+			close(startSignal)
+			wg.Wait()
 
-	// The losing call must surface a CanCorrect-level error (AlreadyVoided
-	// or AlreadySuperseded depending on the timing window). Both are
-	// 400-class AppErrors with Thai sentinel messages — never 500.
-	for _, err := range results {
-		if err == nil {
-			continue
-		}
-		msg := err.Error()
-		if !strings.Contains(msg, "ยกเลิก") && !strings.Contains(msg, "แทนที่") {
-			t.Errorf("loser error = %q, want CanCorrect sentinel (already voided / superseded)", msg)
-		}
-	}
+			// Exactly one call must succeed.
+			successCount := 0
+			failCount := 0
+			for i, err := range results {
+				if err == nil {
+					successCount++
+					if newBills[i] == nil {
+						t.Errorf("call[%d] returned nil bill with nil error", i)
+					}
+				} else {
+					failCount++
+				}
+			}
+			if successCount != 1 || failCount != 1 {
+				t.Fatalf("expected 1 success + 1 fail, got %d success / %d fail; errors=%v",
+					successCount, failCount, results)
+			}
 
-	// Exactly ONE new bill exists in the DB (winner's). Audit rows = 2
-	// (one SUPERSEDE + one CREATE_FROM_CORRECTION). Loser's tx rolled back
-	// cleanly — no half-applied state.
-	var newCount int64
-	if err := env.db.Model(&Bill{}).
-		Where("contract_id = ? AND billing_month = ? AND status = ?",
-			env.c.ID, env.oldBill.BillingMonth, BillStatusDraft).
-		Count(&newCount).Error; err != nil {
-		t.Fatalf("count new draft: %v", err)
-	}
-	if newCount != 1 {
-		t.Errorf("draft count after race = %d, want 1 (loser's tx must roll back)", newCount)
-	}
+			// The losing call surfaces the CanCorrect sentinel for the
+			// winner's post-commit state. With READ COMMITTED isolation +
+			// FOR UPDATE row lock, the loser unblocks AFTER winner commits
+			// and reads status=VOID — CanCorrect's IsVoid check fires
+			// first (model.go ordering: VOID > PAID > Finalized > super-
+			// seded), so the expected sentinel is ErrAlreadyVoided. Pull
+			// the message text from the error constant rather than
+			// hardcoding Thai literals so the test is sensitive only to
+			// semantic changes, not wording tweaks.
+			//
+			// Service wraps via respond.ErrBadRequest.WithMessage(err.Error())
+			// so errors.Is won't match the sentinel directly — substring
+			// check on the AppError's Message is the pragmatic probe.
+			for _, err := range results {
+				if err == nil {
+					continue
+				}
+				msg := err.Error()
+				if !strings.Contains(msg, ErrAlreadyVoided.Error()) {
+					t.Errorf("loser error = %q, want to contain ErrAlreadyVoided sentinel %q",
+						msg, ErrAlreadyVoided.Error())
+				}
+			}
 
-	var auditCount int64
-	if err := env.db.Model(&BillAuditLog{}).
-		Where("action IN ?", []BillAuditAction{AuditSupersede, AuditCreateFromCorrection}).
-		Count(&auditCount).Error; err != nil {
-		t.Fatalf("count audit: %v", err)
-	}
-	if auditCount != 2 {
-		t.Errorf("audit count = %d, want 2 (only winner emits)", auditCount)
+			// Exactly ONE new bill exists in the DB (winner's). Audit rows
+			// scoped to this env = 2 (one SUPERSEDE + one CREATE_FROM_CORRECTION).
+			// Loser's tx rolled back cleanly — no half-applied state.
+			var newCount int64
+			if err := env.db.Model(&Bill{}).
+				Where("contract_id = ? AND billing_month = ? AND status = ?",
+					env.c.ID, env.oldBill.BillingMonth, BillStatusDraft).
+				Count(&newCount).Error; err != nil {
+				t.Fatalf("count new draft: %v", err)
+			}
+			if newCount != 1 {
+				t.Errorf("draft count after race = %d, want 1 (loser's tx must roll back)", newCount)
+			}
+
+			// Audit count scoped to THIS iteration's old bill — iterations
+			// share the same DB (TruncateAll in newCorrectionTestEnv wipes
+			// between iters), so an iteration-scoped count is needed.
+			var auditCount int64
+			if err := env.db.Model(&BillAuditLog{}).
+				Where("bill_id IN ?", []uuid.UUID{env.oldBill.ID}).
+				Where("action = ?", AuditSupersede).
+				Count(&auditCount).Error; err != nil {
+				t.Fatalf("count audit: %v", err)
+			}
+			if auditCount != 1 {
+				t.Errorf("SUPERSEDE audit count = %d, want 1 (only winner emits)", auditCount)
+			}
+		})
 	}
 }
 
@@ -369,24 +393,20 @@ func TestCorrectBill_Integration_ConcurrentSecondFails(t *testing.T) {
 // ============================================================
 
 func TestCorrectBill_Integration_AuditFailureRollsBack(t *testing.T) {
+	// testdb.Open is needed here to construct the realAudit dependency
+	// for failingAudit; newCorrectionTestEnv reuses the same db (testdb
+	// caches via sync.Once) and runs the canonical TruncateAll, so we
+	// don't need a redundant truncate at this scope.
 	db := testdb.Open(t)
-	testdb.TruncateAll(t, db)
-
-	// First seed real state via the standard env (so old bill exists).
 	realAudit := NewBillAuditRepository(db)
 	failingAudit := &failingAuditRepo{
 		wrapped: realAudit,
 		err:     errors.New("audit-store-down (correction rollback probe)"),
 	}
 	env := newCorrectionTestEnv(t, failingAudit)
-	// Pass nil actor — bill_audit_log.actor_id is nullable (ON DELETE
-	// SET NULL) and seeding a real user just to satisfy the FK adds noise
-	// without testing anything. The audit recorder accepts nil for
-	// system-triggered events; same shape works here.
-	var actor *uuid.UUID
 
 	_, err := env.svc.CorrectBill(context.Background(), env.oldBill.ID,
-		CorrectBillRequest{CorrectionReason: "rollback probe"}, actor)
+		CorrectBillRequest{CorrectionReason: "rollback probe"}, nilActor)
 	if err == nil {
 		t.Fatal("expected error from failing audit, got nil")
 	}
