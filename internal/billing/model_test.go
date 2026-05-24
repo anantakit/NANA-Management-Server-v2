@@ -1229,11 +1229,17 @@ func TestBill_CanCorrect(t *testing.T) {
 			t.Fatalf("expected ErrAlreadySuperseded, got %v", err)
 		}
 	})
-	t.Run("SETTLEMENT rejected in v1", func(t *testing.T) {
+	t.Run("SETTLEMENT now allowed (domain is type-agnostic since Phase 2.1E-A)", func(t *testing.T) {
+		// Settlement correction routing is enforced at the service-layer
+		// dispatcher (CorrectBill rejects SETTLEMENT to push callers to
+		// the move-out endpoint), NOT in the domain. CanCorrect models
+		// the document-replacement invariant only: a FINALIZED bill,
+		// regardless of type, can be replaced via void+recreate. See
+		// CanCorrect doc + project_settlement_correction_design_lock.
 		b := finalizedMonthly()
 		b.BillType = BillTypeSettlement
-		if err := b.CanCorrect(); !errors.Is(err, ErrSettlementCorrectionNotSupported) {
-			t.Fatalf("expected ErrSettlementCorrectionNotSupported, got %v", err)
+		if err := b.CanCorrect(); err != nil {
+			t.Fatalf("expected nil (SETTLEMENT now eligible at domain level), got %v", err)
 		}
 	})
 }

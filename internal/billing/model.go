@@ -179,8 +179,15 @@ var (
 	ErrBatchAlreadyCommitted = errors.New("batch ถูก commit ไปแล้ว")
 	// Correction (void+recreate) errors. ErrAlreadySuperseded fires when a bill
 	// is already linked to a replacement — chain corrections must target the
-	// latest bill in the chain. ErrSettlementCorrectionNotSupported gates v1
-	// scope (MONTHLY only); SETTLEMENT correction is Phase 2.1E.
+	// latest bill in the chain.
+	//
+	// ErrSettlementCorrectionNotSupported is endpoint-level routing: settlement
+	// correction lives in the move-out workflow (POST /move-out-notices/:id/
+	// correct-settlement), not the billing /bills/:id/correct endpoint. The
+	// billing CorrectBill dispatcher rejects SETTLEMENT bills with this error
+	// so callers route to the right endpoint. Domain CanCorrect itself is
+	// type-agnostic since Phase 2.1E-A — both bill types satisfy the
+	// document-replacement invariants. See project_settlement_correction_design_lock.
 	ErrAlreadySuperseded                = errors.New("บิลนี้ถูกแทนที่ด้วยใบใหม่แล้ว")
 	ErrSettlementCorrectionNotSupported = errors.New("ยังไม่รองรับการแก้ไขบิลย้ายออกใน v1")
 )
@@ -455,8 +462,13 @@ const voidReasonCorrection = "CORRECTION"
 //     VOID → ErrAlreadyVoided)
 //   - Must not already be superseded — chain corrections must target the
 //     latest bill in the chain, not an already-replaced one
-//   - MONTHLY only in v1 — SETTLEMENT correction is Phase 2.1E, gated here
-//     until the move-out workflow policies are locked
+//
+// Type-agnostic since Phase 2.1E-A: both MONTHLY and SETTLEMENT satisfy the
+// document-replacement invariants the domain models here. Routing to the
+// right orchestrator is a service-layer concern, not a domain one — the
+// billing CorrectBill dispatcher rejects SETTLEMENT at the endpoint level
+// (MONTHLY-only by design); settlement correction is owned by the move-out
+// workflow (Phase 2.1E-B+). See project_settlement_correction_design_lock.
 func (b *Bill) CanCorrect() error {
 	if b.IsVoid() {
 		return ErrAlreadyVoided
@@ -469,9 +481,6 @@ func (b *Bill) CanCorrect() error {
 	}
 	if b.SupersededByBillID != nil {
 		return ErrAlreadySuperseded
-	}
-	if !b.IsMonthly() {
-		return ErrSettlementCorrectionNotSupported
 	}
 	return nil
 }

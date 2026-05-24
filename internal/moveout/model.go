@@ -87,6 +87,10 @@ var (
 	ErrActualMoveOutDateRequired   = errors.New("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลสรุป")
 	ErrActualDateBeforeContractStart = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันเริ่มสัญญา")
 	ErrCannotSetActualDate         = errors.New("ไม่สามารถตั้งวันย้ายออกจริงได้ในสถานะนี้")
+	// ErrCannotDowngradeToPendingSettlement fires when the settlement-
+	// correction "workflow rewind" is attempted from a status that doesn't
+	// host a FINALIZED settlement bill — see CanDowngradeToPendingSettlement.
+	ErrCannotDowngradeToPendingSettlement = errors.New("ลดสถานะกลับสู่รอสร้างบิลได้เฉพาะสถานะรอชำระหรือพร้อมปิด")
 )
 
 // --- Status checks ---
@@ -398,6 +402,51 @@ func (m *MoveOutNotice) Cancel(now time.Time) error {
 	m.Status = MoveOutStatusCancelled
 	m.CancelledAt = &now
 	return nil
+}
+
+// --- Settlement correction primitives (Phase 2.1E-A) ---
+//
+// Pure-domain pieces of the settlement correction workflow rewind. Do NOT
+// trigger billing changes — the orchestrator (Phase 2.1E-B+) composes these
+// with billingCmd.CorrectSettlement inside one transaction.
+//
+// Design lock: project_settlement_correction_design_lock.md.
+
+// CanDowngradeToPendingSettlement reports whether the notice can rewind to
+// PENDING_SETTLEMENT — only legal from a status that hosts a FINALIZED
+// settlement bill (i.e. PENDING_PAYMENT or READY_TO_CLOSE). COMPLETED is
+// rejected: closed notices revert contract.ENDED + room.VACANT, which is
+// out of scope for v1 (Phase 2.1F backlog).
+//
+// Mirrors the UpdateExitMeter PENDING_PAYMENT → PENDING_SETTLEMENT
+// precedent (service.go) — same status downgrade, made explicit + audited
+// for the user-triggered correction flow.
+func (m *MoveOutNotice) CanDowngradeToPendingSettlement() error {
+	if m.IsPendingPayment() || m.IsReadyToClose() {
+		return nil
+	}
+	return ErrCannotDowngradeToPendingSettlement
+}
+
+// DowngradeToPendingSettlement performs the status rewind. Caller is
+// responsible for the billing-side void+regenerate + clearing payment
+// metadata (ClearPaymentOutcome) in the same transaction.
+func (m *MoveOutNotice) DowngradeToPendingSettlement() error {
+	if err := m.CanDowngradeToPendingSettlement(); err != nil {
+		return err
+	}
+	m.Status = MoveOutStatusPendingSettlement
+	return nil
+}
+
+// ClearPaymentOutcome wipes PaymentOutcome, PaymentMethod, PaymentNote so
+// settlement correction forces the admin to re-record against the new
+// numbers (audit honesty — see design lock decision #6). No guard: the
+// orchestrator gates appropriateness; the domain just performs.
+func (m *MoveOutNotice) ClearPaymentOutcome() {
+	m.PaymentOutcome = nil
+	m.PaymentMethod = nil
+	m.PaymentNote = ""
 }
 
 // --- Urgency (queue bucket relative to today) ---

@@ -383,10 +383,13 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 //
 //   1. Row-lock the old bill first — gates the double-correction race so two
 //      concurrent POST /:id/correct calls serialize on the lock.
-//   2. CanCorrect() blocks PAID / DRAFT / VOID / already-superseded /
-//      SETTLEMENT — single source of truth in the domain layer.
-//   3. Dispatch by bill_type. v1 implements MONTHLY only; SETTLEMENT is
-//      gated by CanCorrect, the switch's default is defense-in-depth.
+//   2. CanCorrect() blocks PAID / DRAFT / VOID / already-superseded —
+//      document-replacement invariants, single source of truth in the
+//      domain layer.
+//   3. Dispatch by bill_type. This endpoint is MONTHLY-only by design;
+//      SETTLEMENT correction is routed via the move-out workflow
+//      (POST /move-out-notices/:id/correct-settlement, Phase 2.1E-B+).
+//      The switch's default rejects SETTLEMENT with the Thai sentinel.
 //   4. Old bill: MarkSupersededByCorrection sets status=VOID +
 //      void_reason=CORRECTION + superseded_by_bill_id=newID, all atomic.
 //   5. New bill: regenerated DRAFT from contract + meter source-of-truth
@@ -421,8 +424,12 @@ func (s *billingService) CorrectBill(ctx context.Context, id uuid.UUID, req Corr
 			newBillID = nid
 			return nil
 		default:
-			// CanCorrect already gates SETTLEMENT; defense-in-depth here
-			// surfaces the same Thai message if a future caller forgets.
+			// SETTLEMENT correction is routed via the move-out workflow
+			// (POST /move-out-notices/:id/correct-settlement, Phase 2.1E-B+),
+			// not this billing /bills/:id/correct endpoint. The billing
+			// dispatcher is MONTHLY-only by design — domain CanCorrect (since
+			// Phase 2.1E-A) accepts SETTLEMENT, so the endpoint routing IS
+			// the gate here. See project_settlement_correction_design_lock.
 			return respond.ErrBadRequest.WithMessage(ErrSettlementCorrectionNotSupported.Error())
 		}
 	}); err != nil {

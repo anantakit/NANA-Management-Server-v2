@@ -1,6 +1,7 @@
 package moveout
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -863,4 +864,155 @@ func TestComputeUrgency(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Settlement correction primitives (Phase 2.1E-A) ---
+// Rationale + composition spec live on the methods themselves in model.go.
+
+func TestMoveOutNotice_ClearPaymentOutcome(t *testing.T) {
+	paid := PaymentOutcomePaidExtra
+	cash := domain.PaymentMethodCash
+
+	t.Run("clears all three payment fields from non-nil state", func(t *testing.T) {
+		n := &MoveOutNotice{
+			Status:         MoveOutStatusReadyToClose,
+			PaymentOutcome: &paid,
+			PaymentMethod:  &cash,
+			PaymentNote:    "เก็บเงินสดแล้ว",
+		}
+		n.ClearPaymentOutcome()
+		if n.PaymentOutcome != nil {
+			t.Errorf("PaymentOutcome = %v, want nil", n.PaymentOutcome)
+		}
+		if n.PaymentMethod != nil {
+			t.Errorf("PaymentMethod = %v, want nil", n.PaymentMethod)
+		}
+		if n.PaymentNote != "" {
+			t.Errorf("PaymentNote = %q, want \"\"", n.PaymentNote)
+		}
+	})
+
+	t.Run("idempotent on already-cleared state", func(t *testing.T) {
+		n := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
+		n.ClearPaymentOutcome()
+		if n.PaymentOutcome != nil || n.PaymentMethod != nil || n.PaymentNote != "" {
+			t.Errorf("idempotent clear mutated state: outcome=%v method=%v note=%q",
+				n.PaymentOutcome, n.PaymentMethod, n.PaymentNote)
+		}
+	})
+
+	t.Run("does not transition status", func(t *testing.T) {
+		// Separation of concerns: ClearPaymentOutcome only touches payment
+		// fields. Status rewind is DowngradeToPendingSettlement's job.
+		// The orchestrator composes both; the domain methods stay narrow.
+		n := &MoveOutNotice{
+			Status:         MoveOutStatusReadyToClose,
+			PaymentOutcome: &paid,
+		}
+		n.ClearPaymentOutcome()
+		if n.Status != MoveOutStatusReadyToClose {
+			t.Errorf("Status = %s, want READY_TO_CLOSE (ClearPaymentOutcome must not transition)", n.Status)
+		}
+	})
+}
+
+func TestMoveOutNotice_CanDowngradeToPendingSettlement(t *testing.T) {
+	cases := []struct {
+		name   string
+		status MoveOutStatus
+		wantOK bool
+	}{
+		// Allowed: statuses that host a FINALIZED settlement bill the user
+		// might want to correct.
+		{"PENDING_PAYMENT allowed", MoveOutStatusPendingPayment, true},
+		{"READY_TO_CLOSE allowed", MoveOutStatusReadyToClose, true},
+
+		// Rejected: pre-settlement statuses (no bill to correct yet — the
+		// regular regenerate path applies) + terminal statuses (COMPLETED
+		// blocked in v1 because reverting contract.ENDED + room.VACANT is
+		// out of scope; CANCELLED is just terminal).
+		{"PENDING_METER rejected", MoveOutStatusPendingMeter, false},
+		{"PENDING_SETTLEMENT rejected", MoveOutStatusPendingSettlement, false},
+		{"COMPLETED rejected (Phase 2.1F backlog)", MoveOutStatusCompleted, false},
+		{"CANCELLED rejected (terminal)", MoveOutStatusCancelled, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &MoveOutNotice{Status: tc.status}
+			err := n.CanDowngradeToPendingSettlement()
+			if tc.wantOK && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if !tc.wantOK && !errors.Is(err, ErrCannotDowngradeToPendingSettlement) {
+				t.Fatalf("expected ErrCannotDowngradeToPendingSettlement, got %v", err)
+			}
+		})
+	}
+}
+
+func TestMoveOutNotice_DowngradeToPendingSettlement(t *testing.T) {
+	paid := PaymentOutcomePaidExtra
+	cash := domain.PaymentMethodCash
+	billID := uuid.New()
+
+	t.Run("happy path from PENDING_PAYMENT", func(t *testing.T) {
+		n := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
+		if err := n.DowngradeToPendingSettlement(); err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if n.Status != MoveOutStatusPendingSettlement {
+			t.Errorf("Status = %s, want PENDING_SETTLEMENT", n.Status)
+		}
+	})
+
+	t.Run("happy path from READY_TO_CLOSE", func(t *testing.T) {
+		n := &MoveOutNotice{Status: MoveOutStatusReadyToClose}
+		if err := n.DowngradeToPendingSettlement(); err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if n.Status != MoveOutStatusPendingSettlement {
+			t.Errorf("Status = %s, want PENDING_SETTLEMENT", n.Status)
+		}
+	})
+
+	t.Run("rejects when CanDowngrade fails (COMPLETED)", func(t *testing.T) {
+		n := &MoveOutNotice{Status: MoveOutStatusCompleted}
+		err := n.DowngradeToPendingSettlement()
+		if !errors.Is(err, ErrCannotDowngradeToPendingSettlement) {
+			t.Fatalf("expected ErrCannotDowngradeToPendingSettlement, got %v", err)
+		}
+		if n.Status != MoveOutStatusCompleted {
+			t.Errorf("Status mutated on failed guard: got %s, want COMPLETED", n.Status)
+		}
+	})
+
+	t.Run("preserves payment fields and settlement_bill_id", func(t *testing.T) {
+		// Separation of concerns: the status transition does NOT touch
+		// payment metadata or settlement_bill_id. The orchestrator pairs
+		// this with ClearPaymentOutcome + billingCmd.CorrectSettlement;
+		// keeping the domain method narrow makes both layers testable in
+		// isolation and lets future callers compose differently.
+		n := &MoveOutNotice{
+			Status:           MoveOutStatusReadyToClose,
+			PaymentOutcome:   &paid,
+			PaymentMethod:    &cash,
+			PaymentNote:      "ก่อนแก้ไข",
+			SettlementBillID: &billID,
+		}
+		if err := n.DowngradeToPendingSettlement(); err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if n.PaymentOutcome == nil || *n.PaymentOutcome != paid {
+			t.Errorf("PaymentOutcome mutated: got %v, want %v", n.PaymentOutcome, paid)
+		}
+		if n.PaymentMethod == nil || *n.PaymentMethod != cash {
+			t.Errorf("PaymentMethod mutated: got %v, want %v", n.PaymentMethod, cash)
+		}
+		if n.PaymentNote != "ก่อนแก้ไข" {
+			t.Errorf("PaymentNote mutated: got %q", n.PaymentNote)
+		}
+		if n.SettlementBillID == nil || *n.SettlementBillID != billID {
+			t.Errorf("SettlementBillID mutated: got %v, want %v", n.SettlementBillID, billID)
+		}
+	})
 }
