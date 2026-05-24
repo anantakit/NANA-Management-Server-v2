@@ -218,14 +218,19 @@ func ensureDevMonthlyMeter(
 		return nil
 	}
 
-	// Chain off the room's most recent non-deleted reading. Order by
-	// billing_month so we pick the freshest monthly reading; created_at
-	// is a stable tiebreak for same-month re-records (shouldn't happen
-	// in seed but defensive).
+	// Chain off the room's most recent non-deleted MONTHLY reading. EXIT
+	// readings have NULL billing_month and would otherwise sort to the
+	// bottom via NULLS LAST — but if the room only has an EXIT reading,
+	// we'd pick it and feed wrong-shaped state into the chain. Filter
+	// explicitly to MONTHLY + non-null billing_month so the chain math
+	// stays meaningful regardless of what else lives in the room's
+	// meter history. created_at is a stable tiebreak for same-month
+	// re-records (shouldn't happen in seed but defensive).
 	var latest meterreading.MeterReading
 	err := db.
-		Where("room_id = ?", roomID).
-		Order("billing_month DESC NULLS LAST, created_at DESC").
+		Where("room_id = ? AND reading_type = ? AND billing_month IS NOT NULL",
+			roomID, meterreading.ReadingTypeMonthly).
+		Order("billing_month DESC, created_at DESC").
 		First(&latest).Error
 	var elecPrev, waterPrev int
 	switch {
