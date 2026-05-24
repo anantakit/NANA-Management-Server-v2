@@ -9,8 +9,10 @@ import (
 	"nana/internal/apartment"
 	"nana/internal/billing"
 	"nana/internal/contract"
+	"nana/internal/meterreading"
 	"nana/internal/room"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -122,6 +124,17 @@ func seedDevMonthlyBills(db *gorm.DB) error {
 			continue
 		}
 
+		// Ensure a matching MONTHLY meter exists for (room, billingMonth)
+		// BEFORE creating the bill. Real CreateMonthlyBill validates this
+		// invariant, so the seed must satisfy it too — otherwise the
+		// correction flow (which regenerates from contract+meter) can't
+		// find a source-of-truth meter and fails with ErrMeterNotFound.
+		// See feedback_seed_data ("Seed data must be realistic").
+		if err := ensureDevMonthlyMeter(db, rm.ID, billingMonth,
+			u.elecUnits, u.waterUnits); err != nil {
+			return fmt.Errorf("ensure meter %s: %w", rm.Number, err)
+		}
+
 		waterAmount := u.waterUnits * c.WaterRatePerUnit
 		elecAmount := u.elecUnits * c.ElectricityRatePerUnit
 		total := c.MonthlyRent + waterAmount + elecAmount
@@ -170,6 +183,76 @@ func seedDevMonthlyBills(db *gorm.DB) error {
 	if created > 0 {
 		slog.Info("seeded dev monthly bills",
 			"count", created, "billing_month", billingMonth)
+	}
+	return nil
+}
+
+// ensureDevMonthlyMeter creates a MONTHLY meter reading for (roomID, month)
+// if one doesn't already exist. Chains off the room's most recent meter so
+// the new reading's previous values match real-world meter continuity.
+//
+// Idempotent: returns nil without writing if a meter for the slot already
+// exists. Defaults to (1000 elec / 100 water) baseline when the room has
+// no prior history — mirrors seedDevMeterReadings defaults so chained
+// rooms stay self-consistent.
+//
+// Exists to keep the dev seed self-consistent for the void+recreate
+// correction flow, which regenerates the new DRAFT from the meter for
+// the bill's billing_month. Without this, dev bills created at
+// "current UTC month" would have no matching meter (seedDevMeterReadings
+// only goes Oct 2025 → Mar 2026), so correction would always 404.
+func ensureDevMonthlyMeter(
+	db *gorm.DB,
+	roomID uuid.UUID,
+	month string,
+	elecUnits, waterUnits int64,
+) error {
+	var existing int64
+	if err := db.Model(&meterreading.MeterReading{}).
+		Where("room_id = ? AND reading_type = ? AND billing_month = ?",
+			roomID, meterreading.ReadingTypeMonthly, month).
+		Count(&existing).Error; err != nil {
+		return fmt.Errorf("check existing meter: %w", err)
+	}
+	if existing > 0 {
+		return nil
+	}
+
+	// Chain off the room's most recent non-deleted reading. Order by
+	// billing_month so we pick the freshest monthly reading; created_at
+	// is a stable tiebreak for same-month re-records (shouldn't happen
+	// in seed but defensive).
+	var latest meterreading.MeterReading
+	err := db.
+		Where("room_id = ?", roomID).
+		Order("billing_month DESC NULLS LAST, created_at DESC").
+		First(&latest).Error
+	var elecPrev, waterPrev int
+	switch {
+	case err == nil:
+		elecPrev = latest.ElectricityCurrent
+		waterPrev = latest.WaterCurrent
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		// No prior meter for this room — start from the same baseline
+		// seedDevMeterReadings uses for rooms without explicit overrides.
+		elecPrev = 1000
+		waterPrev = 100
+	default:
+		return fmt.Errorf("find latest meter: %w", err)
+	}
+
+	bm := month
+	reading := meterreading.MeterReading{
+		RoomID:              roomID,
+		ReadingType:         meterreading.ReadingTypeMonthly,
+		BillingMonth:        &bm,
+		ElectricityPrevious: elecPrev,
+		ElectricityCurrent:  elecPrev + int(elecUnits),
+		WaterPrevious:       waterPrev,
+		WaterCurrent:        waterPrev + int(waterUnits),
+	}
+	if err := db.Create(&reading).Error; err != nil {
+		return fmt.Errorf("create meter: %w", err)
 	}
 	return nil
 }
