@@ -32,6 +32,7 @@ type mockBillingRepo struct {
 	hasPaidAdvanceRentFn                func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
 	findUnpaidMonthlyFn                 func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
 	findAbsorbedFn                      func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
+	findCorrectedFromBillIDFn           func(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error)
 	createFn                            func(ctx context.Context, bill *Bill) error
 	updateFn                            func(ctx context.Context, bill *Bill) error
 	apartmentID                         uuid.UUID
@@ -238,6 +239,17 @@ func (m *mockBillingRepo) LockBatchForCommit(_ context.Context, _ uuid.UUID) (*B
 // because mockTxManager doesn't model row-level concurrency.
 func (m *mockBillingRepo) LockBillForCorrection(ctx context.Context, id uuid.UUID) (*Bill, error) {
 	return m.FindByID(ctx, id)
+}
+
+// FindCorrectedFromBillID returns nil pointer by default so existing tests
+// (which don't care about the reverse correction-chain link) see the
+// "normal bill" path. Tests covering replacement-side bills should set
+// findCorrectedFromBillIDFn explicitly.
+func (m *mockBillingRepo) FindCorrectedFromBillID(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error) {
+	if m.findCorrectedFromBillIDFn != nil {
+		return m.findCorrectedFromBillIDFn(ctx, billID)
+	}
+	return nil, nil
 }
 func (m *mockBillingRepo) ListCommitPendingItems(_ context.Context, _ uuid.UUID) ([]BillGenerationBatchItem, error) {
 	var pending []BillGenerationBatchItem

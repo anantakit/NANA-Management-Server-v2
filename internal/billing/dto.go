@@ -218,6 +218,15 @@ type BillResponse struct {
 	// VOID). FE renders the "ใบนี้ถูกแทนที่ด้วยใบใหม่" cross-link off
 	// this field; absence collapses the cross-link UI.
 	SupersededByBillID *uuid.UUID         `json:"superseded_by_bill_id,omitempty"`
+	// CorrectedFromBillID is the REVERSE link — populated only when this
+	// bill is the DRAFT/FINALIZED/PAID replacement created by a correction.
+	// Resolved by GetByID via a single indexed lookup on
+	// superseded_by_bill_id (no N+1 because detail is per-click).
+	// Omitted on list responses to keep the list path cheap; FE renders
+	// the "บิลนี้สร้างจากการแก้ไขบิลเดิม" hint in the drawer off this
+	// field's presence. Null on every bill that is not a correction
+	// replacement (the common case).
+	CorrectedFromBillID *uuid.UUID        `json:"corrected_from_bill_id,omitempty"`
 	DepositAmount    float64            `json:"deposit_amount"`
 	DepositBalance   float64            `json:"deposit_balance"`
 	DepositForfeited bool               `json:"deposit_forfeited"`
@@ -670,6 +679,7 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 	resp.ApartmentName = b.ApartmentName
 	resp.ApartmentID = b.ApartmentID
 	resp.IsEdited = b.IsEdited
+	resp.CorrectedFromBillID = b.CorrectedFromBillID
 	if b.OverdueDays > 0 {
 		d := b.OverdueDays
 		resp.OverdueDays = &d

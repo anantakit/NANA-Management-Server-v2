@@ -158,6 +158,19 @@ func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRe
 		return nil, fmt.Errorf("populate is_edited: %w", err)
 	}
 	b.IsEdited = editedSet[b.ID]
+
+	// corrected_from_bill_id surfaces the reverse correction-chain link
+	// for the BillDrawer's "บิลนี้สร้างจากการแก้ไขบิลเดิม" hint. The
+	// forward link (SupersededByBillID) is already on the bill row;
+	// the reverse direction requires an indexed lookup on the index
+	// (single point query — see FindCorrectedFromBillID). Propagate
+	// errors rather than silently hiding lineage; otherwise a transient
+	// DB blip would let a replacement bill render as a "normal" DRAFT.
+	correctedFrom, err := s.repo.FindCorrectedFromBillID(ctx, b.ID)
+	if err != nil {
+		return nil, fmt.Errorf("populate corrected_from_bill_id: %w", err)
+	}
+	b.CorrectedFromBillID = correctedFrom
 	return b, nil
 }
 

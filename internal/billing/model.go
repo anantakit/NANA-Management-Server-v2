@@ -1100,6 +1100,15 @@ type BillWithRelations struct {
 	// only this derived boolean. Populated by service.GetByID (single-bill)
 	// and service.List (batched per page, no N+1).
 	IsEdited bool `gorm:"-" json:"-"`
+
+	// CorrectedFromBillID is the reverse link to the VOID(CORRECTION) bill
+	// that this bill replaced — populated only by service.GetByID when the
+	// reverse-link lookup hits a match. Nil for normal bills (the common
+	// case). FE renders the "บิลนี้สร้างจากการแก้ไขบิลเดิม" hint off
+	// this field's presence. Not surfaced on list responses (would be N+1
+	// without a batched join, and the list collapses correction chains
+	// client-side anyway — only the drawer needs lineage context).
+	CorrectedFromBillID *uuid.UUID `gorm:"-" json:"-"`
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).

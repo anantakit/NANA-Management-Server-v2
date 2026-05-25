@@ -52,6 +52,12 @@ type BillingRepository interface {
 	// correction attempts on the same bill serialize cleanly. Caller MUST be
 	// inside a TX (uses SELECT FOR UPDATE).
 	LockBillForCorrection(ctx context.Context, billID uuid.UUID) (*Bill, error)
+
+	// FindCorrectedFromBillID returns the ID of the VOID(CORRECTION) bill
+	// that was replaced by this bill, or (nil, nil) when this bill is not
+	// the replacement side of a correction chain. Single-row indexed lookup
+	// — used by GetByID to surface the reverse link on the BillDrawer.
+	FindCorrectedFromBillID(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error)
 }
 
 type billingRepository struct {
@@ -486,6 +492,39 @@ func (r *billingRepository) LockBatchForCommit(ctx context.Context, batchID uuid
 		return nil, err
 	}
 	return &b, nil
+}
+
+// FindCorrectedFromBillID looks up the VOID(CORRECTION) bill that was
+// replaced by the given bill. Returns (nil, nil) when this bill is not the
+// replacement side of a correction chain (the common case — most bills).
+//
+// Read-only single indexed lookup on (superseded_by_bill_id, status,
+// void_reason). Used by GetByID to populate the reverse-link hint on the
+// BillDrawer; cost is one point query per detail fetch, which is acceptable
+// because detail is opened per click, not in loops.
+//
+// The schema enforces a single-forward-link invariant (CHECK + partial
+// UNIQUE on superseded_by_bill_id) so at most one VOID can supersede a
+// given bill — Limit(1) here is defense-in-depth, not a real cap.
+func (r *billingRepository) FindCorrectedFromBillID(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error) {
+	var raw string
+	err := database.DB(ctx, r.db).
+		Model(&Bill{}).
+		Where("superseded_by_bill_id = ? AND status = ? AND void_reason = ?",
+			billID, BillStatusVoid, voidReasonCorrection).
+		Limit(1).
+		Pluck("id", &raw).Error
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse corrected_from_bill_id %q: %w", raw, err)
+	}
+	return &id, nil
 }
 
 // LockBillForCorrection acquires a row-level lock (SELECT FOR UPDATE) on the
