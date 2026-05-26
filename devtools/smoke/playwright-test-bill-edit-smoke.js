@@ -113,14 +113,19 @@ async function openEditDrawer(page, roomNumber) {
     .click({ timeout: 5000 })
 
   // BillEditDrawer mounts under the SAME [role="dialog"] selector (Sheet
-  // primitive). Wait for its title "แก้ไข ห้อง E101" to confirm it's the
-  // edit drawer, not BillDrawer.
+  // primitive). Confirm it's the edit drawer by checking BOTH:
+  //   - h2 contains room identity ("ห้อง E101") — identity-first title
+  //   - dialog text contains "แก้ไข" (subtitle: "...แก้ไขบิลรายเดือน")
+  // The combined check defeats false-positives if the view drawer were
+  // still mounted (it would have the room h2 but no "แก้ไข" copy).
   await page.waitForFunction(
     (rn) => {
       const dlg = document.querySelector('[role="dialog"]')
       if (!dlg) return false
       const heading = dlg.querySelector('h2, h3, [role="heading"]')
-      return heading?.textContent?.includes(`แก้ไข ห้อง ${rn}`) ?? false
+      const headingMatches = heading?.textContent?.includes(`ห้อง ${rn}`) ?? false
+      const editAffordance = dlg.textContent?.includes('แก้ไข') ?? false
+      return headingMatches && editAffordance
     },
     roomNumber,
     { timeout: 5000 },
@@ -231,11 +236,16 @@ function fail(msg) {
   console.log('▶ B: manual-add E101')
   const MANUAL_DESC = 'ค่าทดสอบ SMOKE'
   const MANUAL_AMT = '123'
+  // ManualItemEditor exposes preset chips ("ค่าทำความสะอาด", "ค่าซ่อมแซม",
+  // "ค่ากุญแจ") + a custom-row trigger labelled "เพิ่มเอง" (was "เพิ่มรายการ"
+  // before the 2026-05-23 chip redesign). Match via partial substring so
+  // future copy tweaks don't re-break.
   await dialog
-    .getByRole('button', { name: 'เพิ่มรายการ', exact: true })
+    .getByRole('button', { name: /เพิ่มเอง/, exact: false })
     .click({ timeout: 5000 })
-  // Description input — aria-label="คำอธิบายรายการ"
-  await dialog.locator('[aria-label="คำอธิบายรายการ"]').last().fill(MANUAL_DESC)
+  // Description input — aria-label="ชื่อรายการ" (was "คำอธิบายรายการ"
+  // before the 2026-05-23 ManualItemRow rename).
+  await dialog.locator('[aria-label="ชื่อรายการ"]').last().fill(MANUAL_DESC)
   // Default mode = flat amount; aria-label="จำนวนเงิน" (no suffix).
   // .last() since there could be multiple manual rows; we just added one.
   await dialog.locator('[aria-label="จำนวนเงิน"]').last().fill(MANUAL_AMT)
@@ -249,7 +259,7 @@ function fail(msg) {
   await openEditDrawer(page, ROOM_CLEAN)
   const manualVisible = await page
     .locator(`[role="dialog"]`)
-    .locator(`input[aria-label="คำอธิบายรายการ"][value="${MANUAL_DESC}"]`)
+    .locator(`input[aria-label="ชื่อรายการ"][value="${MANUAL_DESC}"]`)
     .first()
     .isVisible({ timeout: 3000 })
     .catch(() => false)
