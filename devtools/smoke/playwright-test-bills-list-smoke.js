@@ -4,16 +4,19 @@
 //   1. Renders end-to-end at desktop (1440) + mobile (375) viewports
 //   2. Renders the partial-payment progress bar via the dev-only
 //      `?mockPartial=ROOM_NUMBER` injector
-//   3. Bulk-select toggle + checkbox column + dark action bar appear
-//      in the right order
+//   3. Bulk-select toggle morphs the filter row into a 3-tier command
+//      bar (selection-as-highlight pattern — NO inline row checkbox)
 //   4. Bulk confirm modal opens with verb-differentiated CTAs
-//   5. Interaction model (Pattern B — Gmail-mobile selection):
+//   5. Interaction model (selection-as-highlight — Things 3 / Superhuman):
 //        - row body opens BillDrawer in `view` mode (breakdown auto-open)
 //        - "ดูรายละเอียด" / "รับชำระ" / "คืนเงิน" are all <button>s that
 //          open BillDrawer in `act` mode (breakdown closed) and
 //          stopPropagation from the row body
-//        - in selectionMode, row body toggles the checkbox instead of
-//          opening the drawer (Gmail pattern)
+//        - in selectionMode, row body click TOGGLES selection (whole-row
+//          highlight via bg-primary-muted — no inline checkbox glyph
+//          exists per `feedback_bulk_select_doctrine`)
+//        - non-selectable rows in selectionMode dim to opacity-70 and
+//          their click is a silent no-op
 //
 // Screenshots are saved to /tmp/bills-*.png for eyeballed visual review.
 // Failure of the interaction-model probe `process.exit(1)`s.
@@ -72,11 +75,13 @@ async function login(page) {
     // weight has migrated font-semibold → font-medium between revisions).
     const sections = document.querySelectorAll('section[aria-label*="บิล"]')
     for (const s of sections) {
-      const cells = s.querySelectorAll('div')
-      for (const d of cells) {
-        const txt = (d.textContent || '').trim()
+      // Room-number leaf can be <div> or <span> depending on the row
+      // layout revision — walk all element nodes and match by text.
+      const nodes = s.querySelectorAll('*')
+      for (const el of nodes) {
+        const txt = (el.textContent || '').trim()
         if (!/^[A-Z]\d{3}$/.test(txt)) continue
-        const rect = d.getBoundingClientRect()
+        const rect = el.getBoundingClientRect()
         if (rect.width > 0 && rect.height > 0) return txt
       }
     }
@@ -98,32 +103,64 @@ async function login(page) {
     console.log('partial mobile saved')
   }
 
-  // Bulk-select smoke — toggle on, select first 3 rows, capture state.
+  // Bulk-select smoke — toggle on, tap first 3 selectable row bodies,
+  // capture state. Selection-as-highlight pattern: no inline checkbox
+  // input exists on rows (deleted with BillSelectionSlot). Selectable
+  // rows are identified by the "รับชำระ" CTA button (only actionable
+  // states render it). Toggle happens via the row container's onClick
+  // — we click slightly left-of-center where there's no CTA so the
+  // row body handler fires (CTA stopPropagation wouldn't apply).
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`${FRONTEND}/bills`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(1500)
-  // Click the "เลือกหลายใบ" toggle
   await page.locator('button:has-text("เลือกหลายใบ")').click({ timeout: 8000 })
   await page.waitForTimeout(300)
-  // Click first 3 row checkboxes. The input is sr-only so we trigger
-  // the click directly on the underlying element (it owns the change
-  // handler via React's onChange).
-  const rowCount = await page.locator('input[aria-label^="เลือกบิลห้อง"]').count()
-  for (let i = 0; i < Math.min(3, rowCount); i++) {
-    await page
-      .locator('input[aria-label^="เลือกบิลห้อง"]')
-      .nth(i)
-      .evaluate((el) => el.click())
+
+  // Walk from each "รับชำระ" CTA up to the row container, then click on
+  // the row left-side (identity area) to fire the row's onClick handler
+  // — which toggles selection in selectionMode.
+  const ctaButtons = page.locator('button[aria-label^="รับชำระ บิลห้อง "]')
+  const ctaCount = await ctaButtons.count()
+  for (let i = 0; i < Math.min(3, ctaCount); i++) {
+    const row = ctaButtons.nth(i).locator(
+      'xpath=ancestor::div[contains(@class, "border-l-transparent")][1]',
+    )
+    // Click 40px from the row's left edge, vertical center — lands on
+    // the room-number / tenant cluster, never the CTA button on the right.
+    await row.click({ position: { x: 40, y: 24 } })
+    await page.waitForTimeout(80)
   }
   await page.waitForTimeout(300)
   await page.screenshot({ path: '/tmp/bills-bulk-select.png', fullPage: false })
   console.log('bulk select saved')
 
-  // Open confirm modal
+  // Verify command bar reflects the selection — "เลือก N ใบ" + primary
+  // CTA appear, row count matches what we clicked (capped at ctaCount).
+  const selectedTextOk = await page.evaluate(() => {
+    const bar = document.querySelector('[role="region"][aria-label="แถบดำเนินการกับบิลที่เลือก"]')
+    if (!bar) return { ok: false, reason: 'command bar not rendered' }
+    const txt = bar.textContent || ''
+    const m = txt.match(/เลือก\s+(\d+)\s+ใบ/)
+    if (!m) return { ok: false, reason: `summary missing in: ${txt}` }
+    return { ok: true, n: Number(m[1]) }
+  })
+  if (!selectedTextOk.ok) {
+    console.error('  ❌ bulk-select command bar probe FAILED:', selectedTextOk.reason)
+    process.exit(1)
+  }
+  console.log(`  ✅ command bar shows "เลือก ${selectedTextOk.n} ใบ"`)
+
+  // Open confirm modal via the primary CTA in the command bar.
   await page.locator('button:has-text("รับชำระทั้งหมด")').click()
   await page.waitForTimeout(400)
   await page.screenshot({ path: '/tmp/bills-bulk-confirm.png', fullPage: false })
   console.log('bulk confirm modal saved')
+
+  // Dismiss modal so the interaction-model probe below starts from a
+  // clean state (probe re-navigates anyway, but explicit close keeps
+  // the screenshot trail predictable).
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
 
   // ── Interaction-model probe: confirm drawer-based interaction model.
   //
@@ -156,7 +193,7 @@ async function login(page) {
     // that carries Thai text and is NOT a header label / chip / CTA.
     // If clicking that text resolves to an <a href="/bills/...">, the
     // row-not-nav contract is broken.
-    const HEADER_OR_CTA = /^(ห้อง|ผู้เช่า|การชำระ|ยอดเงิน|รับชำระ|ดูรายละเอียด|ชำระแล้ว|เหลือ|ค้าง|ปิดสัญญา|คืนเงิน|เก็บเพิ่ม|จบแล้ว|บิล|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)/
+    const HEADER_OR_CTA = /^(เลือกทั้งหมด|รับชำระ|ดูรายละเอียด|รอชำระ|ชำระแล้ว|แก้ไขแล้ว|เหลือ|ค้าง|สร้าง|ครบกำหนด|ยกเลิก|ปิดสัญญา|คืนเงิน|เก็บเพิ่ม|จบแล้ว|บิล|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)/
     const tenantText = Array.from(
       document.querySelectorAll('section[aria-label*="บิล"] *'),
     ).find((el) => {
