@@ -2,7 +2,9 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -426,6 +428,25 @@ func (m *mockBillAuditRepo) EditedBillIDs(_ context.Context, billIDs []uuid.UUID
 		}
 	}
 	return result, nil
+}
+
+// FindLatestSupersedeReason mirrors the production query in-memory: scan
+// recorded logs for the most recent SUPERSEDE row matching the bill and
+// unmarshal its AuditSupersedePayload. Returns ("", nil) when no row exists
+// so VOID bills without a SUPERSEDE event behave like the real DB path.
+func (m *mockBillAuditRepo) FindLatestSupersedeReason(_ context.Context, billID uuid.UUID) (string, error) {
+	for i := len(m.logs) - 1; i >= 0; i-- {
+		log := m.logs[i]
+		if log.BillID != billID || log.Action != AuditSupersede {
+			continue
+		}
+		var payload AuditSupersedePayload
+		if err := json.Unmarshal([]byte(log.Payload), &payload); err != nil {
+			return "", fmt.Errorf("mock: unmarshal supersede payload: %w", err)
+		}
+		return payload.CorrectionReason, nil
+	}
+	return "", nil
 }
 
 // --- Test helpers ---

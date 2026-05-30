@@ -227,6 +227,14 @@ type BillResponse struct {
 	// field's presence. Null on every bill that is not a correction
 	// replacement (the common case).
 	CorrectedFromBillID *uuid.UUID        `json:"corrected_from_bill_id,omitempty"`
+	// CorrectionReason is the admin-typed reason captured at correction
+	// time (min 5 chars). Populated only when this bill is VOID with
+	// void_reason='CORRECTION' — pulled from the latest SUPERSEDE audit
+	// event for this bill. Empty/absent for every other bill. FE renders
+	// verbatim beneath the humanized void_reason ("ยกเลิกเพื่อแก้ไข") so
+	// admins can see *why* without DB access. Detail-only — list path
+	// stays cheap.
+	CorrectionReason *string            `json:"correction_reason,omitempty"`
 	DepositAmount    float64            `json:"deposit_amount"`
 	DepositBalance   float64            `json:"deposit_balance"`
 	DepositForfeited bool               `json:"deposit_forfeited"`
@@ -680,6 +688,10 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 	resp.ApartmentID = b.ApartmentID
 	resp.IsEdited = b.IsEdited
 	resp.CorrectedFromBillID = b.CorrectedFromBillID
+	if b.CorrectionReason != "" {
+		cr := b.CorrectionReason
+		resp.CorrectionReason = &cr
+	}
 	if b.OverdueDays > 0 {
 		d := b.OverdueDays
 		resp.OverdueDays = &d

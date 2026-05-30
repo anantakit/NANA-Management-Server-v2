@@ -72,6 +72,10 @@ func (f *correctionFailingAuditRepo) EditedBillIDs(ctx context.Context, billIDs 
 	return f.wrapped.EditedBillIDs(ctx, billIDs)
 }
 
+func (f *correctionFailingAuditRepo) FindLatestSupersedeReason(ctx context.Context, billID uuid.UUID) (string, error) {
+	return f.wrapped.FindLatestSupersedeReason(ctx, billID)
+}
+
 // correctionEnv holds the DB-wired scaffolding for one settlement correction
 // scenario. The constructor seeds an apartment / contract / room / configs /
 // EXIT meter / notice and walks the production move-out workflow up to the

@@ -32,6 +32,10 @@ func (f *failingAuditRepo) EditedBillIDs(ctx context.Context, billIDs []uuid.UUI
 	return f.wrapped.EditedBillIDs(ctx, billIDs)
 }
 
+func (f *failingAuditRepo) FindLatestSupersedeReason(ctx context.Context, billID uuid.UUID) (string, error) {
+	return f.wrapped.FindLatestSupersedeReason(ctx, billID)
+}
+
 // TestUpdateMonthlyDraft_AuditFailureRollsBackDBState locks the production
 // invariant for the locked spec: "audit fail = transaction fail. No swallow,
 // no log-only, no background async."

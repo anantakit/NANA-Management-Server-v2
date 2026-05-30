@@ -1109,6 +1109,16 @@ type BillWithRelations struct {
 	// without a batched join, and the list collapses correction chains
 	// client-side anyway — only the drawer needs lineage context).
 	CorrectedFromBillID *uuid.UUID `gorm:"-" json:"-"`
+
+	// CorrectionReason is the admin-typed reason captured at correction time
+	// (min 5 chars per CorrectBillRequest / CorrectSettlementRequest). Sourced
+	// from the latest SUPERSEDE audit event for this bill — the bills table
+	// does NOT denormalize this field (audit log stays single source of truth).
+	// Populated only by service.GetByID when the bill is VOID(CORRECTION);
+	// empty string for every other state. FE renders verbatim beneath the
+	// humanized void_reason on the BillDrawer so "why was this voided"
+	// readable without DB access.
+	CorrectionReason string `gorm:"-" json:"-"`
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).

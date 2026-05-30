@@ -171,6 +171,20 @@ func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRe
 		return nil, fmt.Errorf("populate corrected_from_bill_id: %w", err)
 	}
 	b.CorrectedFromBillID = correctedFrom
+
+	// correction_reason surfaces the admin-typed reason on the VOID(CORRECTION)
+	// drawer so "why was this voided" is readable without DB access. Single
+	// indexed lookup on bill_audit_log(bill_id, created_at DESC); audit log
+	// stays single source of truth (no denormalization to bills table). Empty
+	// reason when no SUPERSEDE event exists — graceful for pre-correction
+	// VOID bills and any non-CORRECTION void path.
+	if b.IsSupersededByCorrection() {
+		reason, err := s.audit.FindLatestSupersedeReason(ctx, b.ID)
+		if err != nil {
+			return nil, fmt.Errorf("populate correction_reason: %w", err)
+		}
+		b.CorrectionReason = reason
+	}
 	return b, nil
 }
 

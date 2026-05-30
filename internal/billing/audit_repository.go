@@ -2,6 +2,8 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"nana/internal/shared/database"
@@ -31,6 +33,17 @@ type BillAuditRepository interface {
 	//
 	// Empty input → empty map, no DB hit.
 	EditedBillIDs(ctx context.Context, billIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+
+	// FindLatestSupersedeReason returns the admin-typed correction_reason
+	// from the most recent SUPERSEDE event recorded against the given bill.
+	// Used by GetByID to surface the verbatim reason on a VOID(CORRECTION)
+	// bill drawer — the humanized void_reason enum alone ("ยกเลิกเพื่อแก้ไข")
+	// is insufficient context for forensic / "why was this voided" lookups.
+	//
+	// Returns ("", nil) when no SUPERSEDE row exists for the bill (graceful
+	// for any VOID bill that pre-dates the correction flow, or bills voided
+	// for non-correction reasons). Real DB errors propagate.
+	FindLatestSupersedeReason(ctx context.Context, billID uuid.UUID) (string, error)
 }
 
 type billAuditRepository struct {
@@ -78,4 +91,25 @@ func (r *billAuditRepository) EditedBillIDs(ctx context.Context, billIDs []uuid.
 		result[id] = true
 	}
 	return result, nil
+}
+
+func (r *billAuditRepository) FindLatestSupersedeReason(ctx context.Context, billID uuid.UUID) (string, error) {
+	var row BillAuditLog
+	err := database.DB(ctx, r.db).
+		Where("bill_id = ? AND action = ?", billID, AuditSupersede).
+		Order("created_at DESC").
+		Limit(1).
+		Take(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("query supersede audit row: %w", err)
+	}
+
+	var payload AuditSupersedePayload
+	if err := json.Unmarshal([]byte(row.Payload), &payload); err != nil {
+		return "", fmt.Errorf("unmarshal supersede payload: %w", err)
+	}
+	return payload.CorrectionReason, nil
 }
