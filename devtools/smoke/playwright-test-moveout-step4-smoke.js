@@ -4,7 +4,7 @@
 // the RoomWorkflowDrawer:
 //
 //   A  PENDING_PAYMENT + null → record settled → close → history
-//      Drawer at Step 3 shows form + edit-back ("แก้มิเตอร์", "แก้ยอดสรุป").
+//      Drawer at Step 3 shows form + edit-back ("กลับไปแก้มิเตอร์", "กลับไปแก้ยอดสรุป").
 //      After record, drawer auto-advances to Step 4. "ปิดสัญญา" closes the
 //      contract. Card lands in history; backend = COMPLETED + outcome set.
 //
@@ -264,10 +264,10 @@ async function main() {
     await clickQueueCard(page, tc22.room_number)
     check('Drawer opens at Step 3 (Payment) for PENDING_PAYMENT', (await getSelectedStepIdx(page)) === 2)
 
-    const editMeterBtn = page.locator(`${DRAWER} button:has-text("แก้มิเตอร์")`)
-    const editSettlementBtn = page.locator(`${DRAWER} button:has-text("แก้ยอดสรุป")`)
-    check('"แก้มิเตอร์" visible on PENDING_PAYMENT initial entry', await editMeterBtn.isVisible().catch(() => false))
-    check('"แก้ยอดสรุป" visible on PENDING_PAYMENT initial entry', await editSettlementBtn.isVisible().catch(() => false))
+    const editMeterBtn = page.locator(`${DRAWER} button:has-text("กลับไปแก้มิเตอร์")`)
+    const editSettlementBtn = page.locator(`${DRAWER} button:has-text("กลับไปแก้ยอดสรุป")`)
+    check('"กลับไปแก้มิเตอร์" visible on PENDING_PAYMENT initial entry', await editMeterBtn.isVisible().catch(() => false))
+    check('"กลับไปแก้ยอดสรุป" visible on PENDING_PAYMENT initial entry', await editSettlementBtn.isVisible().catch(() => false))
 
     // Pick CASH (TC22 has manual items → likely PAY_MORE outcome → method required).
     const cashBtn = page.locator(`${DRAWER} button:has-text("เงินสด")`).first()
@@ -431,11 +431,11 @@ async function main() {
     // Edit-back must be hidden (operational close already happened, backend
     // UpdateExitMeter would 400). Skip must be hidden too (SkipPayment
     // rejects past PENDING_PAYMENT).
-    const editMeterRe = page.locator(`${DRAWER} button:has-text("แก้มิเตอร์")`)
-    const editSettlementRe = page.locator(`${DRAWER} button:has-text("แก้ยอดสรุป")`)
+    const editMeterRe = page.locator(`${DRAWER} button:has-text("กลับไปแก้มิเตอร์")`)
+    const editSettlementRe = page.locator(`${DRAWER} button:has-text("กลับไปแก้ยอดสรุป")`)
     const skipBtnRe = page.locator(`${DRAWER} button:has-text("ยังไม่ชำระ")`)
-    check('"แก้มิเตอร์" hidden on COMPLETED+nil', !(await editMeterRe.isVisible().catch(() => false)))
-    check('"แก้ยอดสรุป" hidden on COMPLETED+nil', !(await editSettlementRe.isVisible().catch(() => false)))
+    check('"กลับไปแก้มิเตอร์" hidden on COMPLETED+nil', !(await editMeterRe.isVisible().catch(() => false)))
+    check('"กลับไปแก้ยอดสรุป" hidden on COMPLETED+nil', !(await editSettlementRe.isVisible().catch(() => false)))
     check('"ยังไม่ชำระ" hidden on COMPLETED+nil', !(await skipBtnRe.isVisible().catch(() => false)))
 
     // Pick method (TC23 likely PAY_MORE/REFUND non-zero) and submit. Sticking

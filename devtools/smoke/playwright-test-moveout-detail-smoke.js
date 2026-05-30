@@ -417,7 +417,7 @@ async function main() {
     // ReopenForCorrection clears payment_outcome so the operator can
     // re-record it). Button copy "กลับไปบันทึกการชำระ" matches this.
     // Drawer lands at Step 3 (Payment) on next entry. To edit the
-    // settlement bill instead, the operator clicks "แก้ยอดสรุป" inside
+    // settlement bill instead, the operator clicks "กลับไปแก้ยอดสรุป" inside
     // Step 3 (the drawer's own edit-back affordance).
     const tc23After = await getNotice(token, fx.TC23.notice_id)
     check('READY_TO_CLOSE → reopen: backend status now PENDING_PAYMENT',
