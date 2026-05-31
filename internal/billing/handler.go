@@ -257,12 +257,12 @@ func (h *BillingHandler) CommitBatch(c fiber.Ctx) error {
 	if err != nil {
 		// Partial commit: return 200 with result so FE can see progress.
 		if result != nil {
-			return respond.Success(c, "commit บางส่วนล้มเหลว กรุณาลองใหม่", ToCommitBatchResponse(result))
+			return respond.Success(c, "สร้างร่างบิลไม่สำเร็จบางส่วน กรุณาลองใหม่", ToCommitBatchResponse(result))
 		}
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "commit บิลแล้ว", ToCommitBatchResponse(result))
+	return respond.Success(c, "สร้างร่างบิลแล้ว", ToCommitBatchResponse(result))
 }
 
 // BatchFinalizeAll finalizes every DRAFT monthly bill in the given batch.
@@ -280,7 +280,7 @@ func (h *BillingHandler) BatchFinalizeAll(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	msg := "ออกบิลทั้งหมดแล้ว"
+	msg := "ออกบิลแล้ว"
 	if result.FailCount > 0 {
 		msg = "ออกบิลบางใบไม่สำเร็จ กรุณาตรวจสอบ"
 	}
