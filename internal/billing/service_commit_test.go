@@ -274,6 +274,80 @@ func TestCommitBatch_NotFound(t *testing.T) {
 	}
 }
 
+// --- B2 — race-window duplicate INSERT continues the loop ---
+//
+// Regression guard for the "commit ค้างที่ DRAFT" failure mode: planner picks
+// a contract as CREATED, but between snapshot and commit another writer lands
+// a non-VOID bill for the same (contract, month). The INSERT hits
+// idx_bills_unique_monthly. Pre-fix this surfaced as a raw PG error → classified
+// as infra → loop break → batch ends with success=0/fail=0/pending=N, the
+// commit_status pointer stays nil, and the FE never transitions out of
+// pre-commit state. Post-fix the duplicate is translated to ErrBillAlreadyExists
+// (a whitelisted business conflict), so the loop marks one item failed and
+// keeps going.
+func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.T) {
+	batch, items := newTestBatch(3)
+
+	calls := 0
+	repo := &mockBillingRepo{
+		createdBatch:      batch,
+		createdBatchItems: items,
+		createFn: func(_ context.Context, _ *Bill) error {
+			calls++
+			if calls == 1 {
+				// Shape of pgx/lib/pq error string for SQLSTATE 23505; the
+				// isDuplicateBillError matcher keys off the substring, mirroring
+				// meterreading/service.go's isDuplicateKeyError convention.
+				return errors.New(`ERROR: duplicate key value violates unique constraint "idx_bills_unique_monthly" (SQLSTATE 23505)`)
+			}
+			return nil
+		},
+	}
+	svc := newCommitService(repo)
+
+	result, err := svc.CommitBatch(context.Background(), batch.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.SuccessCount != 2 {
+		t.Errorf("SuccessCount = %d, want 2 (loop must continue past dup)", result.SuccessCount)
+	}
+	if result.FailCount != 1 {
+		t.Errorf("FailCount = %d, want 1 (dup item marked failed)", result.FailCount)
+	}
+	if result.PendingCount != 0 {
+		t.Errorf("PendingCount = %d, want 0 (loop drained all items)", result.PendingCount)
+	}
+	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != CommitStatusPartiallyCommitted {
+		t.Errorf("CommitStatus = %v, want PARTIALLY_COMMITTED", result.Batch.CommitStatus)
+	}
+	// Failed item carries COMMIT_ERROR so the FE attention section can surface it.
+	if items[0].ReasonCode != ReasonCodeCommitError {
+		t.Errorf("first item reason = %q, want COMMIT_ERROR", items[0].ReasonCode)
+	}
+}
+
+func TestIsDuplicateBillError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"sqlstate 23505", errors.New("ERROR: duplicate key value violates unique constraint (SQLSTATE 23505)"), true},
+		{"duplicate key substring only", errors.New("pq: duplicate key value"), true},
+		{"unrelated error", errors.New("connection refused"), false},
+		{"context canceled", context.Canceled, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDuplicateBillError(tt.err); got != tt.want {
+				t.Errorf("isDuplicateBillError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- isInfraError ---
 
 func TestIsInfraError(t *testing.T) {

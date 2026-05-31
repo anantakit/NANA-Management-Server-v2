@@ -301,7 +301,14 @@ func (r *billingRepository) FindActiveContractsByApartmentID(ctx context.Context
 	return result, nil
 }
 
-// FindExistingByContractsAndMonth bulk-checks for existing FINALIZED/PAID MONTHLY bills.
+// FindExistingByContractsAndMonth bulk-checks for an existing non-VOID MONTHLY
+// bill per contract. Predicate mirrors the `idx_bills_unique_monthly` partial
+// unique index exactly (bill_type = MONTHLY, status != VOID, deleted_at IS NULL —
+// soft-delete filter applied automatically by GORM), so planner classification
+// and commit-time INSERT agree on which contracts already have a bill.
+//
+// DRAFT bills count as existing — a correction-pending DRAFT (or any in-flight
+// curation surface) blocks a fresh CREATE, just like the constraint does.
 // Returns map[contractID]*Bill with ID always populated.
 func (r *billingRepository) FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error) {
 	if len(contractIDs) == 0 {
@@ -309,8 +316,8 @@ func (r *billingRepository) FindExistingByContractsAndMonth(ctx context.Context,
 	}
 	var bills []Bill
 	err := database.DB(ctx, r.db).
-		Where("contract_id IN ? AND billing_month = ? AND bill_type = ? AND status IN ?",
-			contractIDs, month, BillTypeMonthly, []BillStatus{BillStatusFinalized, BillStatusPaid}).
+		Where("contract_id IN ? AND billing_month = ? AND bill_type = ? AND status <> ?",
+			contractIDs, month, BillTypeMonthly, BillStatusVoid).
 		Find(&bills).Error
 	if err != nil {
 		return nil, err

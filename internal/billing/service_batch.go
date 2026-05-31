@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"nana/internal/meterreading"
@@ -288,6 +289,16 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 		bill.CalculateTotal()
 
 		if err := s.repo.Create(txCtx, bill); err != nil {
+			// PG unique-violation on idx_bills_unique_monthly: another non-VOID
+			// bill for the same (contract, month) exists. Race against a parallel
+			// single-bill create / correction DRAFT that landed between planner
+			// snapshot and commit. Translate to ErrBillAlreadyExists so the
+			// isInfraError whitelist surfaces it as a business conflict — the
+			// loop marks this item failed and continues with the rest of the
+			// batch instead of aborting the whole commit.
+			if isDuplicateBillError(err) {
+				return ErrBillAlreadyExists
+			}
 			return err
 		}
 
@@ -380,6 +391,21 @@ func classifyFinalizeError(err error) (BatchFinalizeFailureCode, string) {
 	default:
 		return FailureCodeInfraError, "เกิดข้อผิดพลาดของระบบ กรุณาลองอีกครั้ง"
 	}
+}
+
+// isDuplicateBillError detects a PG unique-constraint violation on the bills
+// table. Used by commitOneItem to translate a race-window duplicate INSERT into
+// ErrBillAlreadyExists (a business conflict) so the batch commit loop can mark
+// the item failed and continue with the rest, rather than aborting via the
+// infra-error break path. SQLSTATE 23505 + "duplicate key" string match mirrors
+// the convention already used by meterreading/service.go isDuplicateKeyError —
+// kept as substring match (not pgconn.PgError type assertion) for parity.
+func isDuplicateBillError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "23505")
 }
 
 // isInfraError returns true for infrastructure/system errors that should stop the loop.
