@@ -327,6 +327,57 @@ func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.
 	}
 }
 
+// TestCommitBatch_InfraErrorOnFirstItem_MarksFailedNotNil pins B3: when the
+// loop breaks on the very first item via a genuine infra error, the batch
+// must surface CommitStatus = FAILED. Pre-B3 this state left CommitStatus =
+// nil because MarkCommitResult early-returned on pending>0; the FE then read
+// undefined and stayed on the pre-commit toolbar with no signal that the
+// commit had been attempted. Distinct from
+// TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed: dup-key
+// is now a business conflict (B2) so the loop continues; an infra error
+// still breaks the loop, and the test guards the status the broken loop
+// leaves behind.
+func TestCommitBatch_InfraErrorOnFirstItem_MarksFailedNotNil(t *testing.T) {
+	batch, items := newTestBatch(3)
+	repo := &mockBillingRepo{
+		createdBatch:      batch,
+		createdBatchItems: items,
+		createFn: func(_ context.Context, _ *Bill) error {
+			// Generic non-whitelisted error → isInfraError returns true →
+			// loop breaks. Mirrors a DB connection drop / transient infra
+			// failure on the first INSERT.
+			return errors.New("connection reset by peer")
+		},
+	}
+	svc := newCommitService(repo)
+
+	result, err := svc.CommitBatch(context.Background(), batch.ID)
+	// Service surfaces the infra error so the caller knows the commit was
+	// partial; result is still populated so the handler can return the
+	// honest counts + commit_status to the FE.
+	if err == nil {
+		t.Fatal("expected infra error to propagate")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result alongside infra error")
+	}
+	if result.SuccessCount != 0 {
+		t.Errorf("SuccessCount = %d, want 0", result.SuccessCount)
+	}
+	if result.PendingCount != 3 {
+		t.Errorf("PendingCount = %d, want 3 (loop broke before any item)", result.PendingCount)
+	}
+	if result.Batch.CommitStatus == nil {
+		t.Fatal("CommitStatus should not be nil — FE reads this to leave pre-commit")
+	}
+	if *result.Batch.CommitStatus != CommitStatusFailed {
+		t.Errorf("CommitStatus = %v, want FAILED", *result.Batch.CommitStatus)
+	}
+	if result.Batch.CommittedAt != nil {
+		t.Error("CommittedAt should be nil when nothing committed")
+	}
+}
+
 func TestIsDuplicateBillError(t *testing.T) {
 	tests := []struct {
 		name string

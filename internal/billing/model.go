@@ -981,22 +981,42 @@ func (b *BillGenerationBatch) CanCommit() error {
 }
 
 // MarkCommitResult sets CommitStatus + CommittedAt based on per-item tallies.
-// pendingCount > 0 keeps CommitStatus as NULL (defensive — caller shouldn't do this).
+//
+// pendingCount > 0 means the commit loop broke before draining every item
+// (e.g. an infra error tripped the loop's early-exit). The previous behavior
+// left CommitStatus = nil in that case, which the FE reads as undefined and
+// can't distinguish from a fresh pre-commit batch — the page stays on the
+// pre-commit toolbar with no signal that something went wrong. Map the
+// pending-broke case to a real status so every commit response carries an
+// honest commit_status the FE can branch on:
+//
+//	pending>0 + success>0  → PARTIALLY_COMMITTED (some bills landed, then broke)
+//	pending>0 + success==0 → FAILED (broke before any bill landed)
+//
+// CanCommit() still allows retry from both PARTIALLY_COMMITTED and FAILED, so
+// the operational meaning matches "operation incomplete — try again". The
+// dual-status model (commit_status separate from batch.status) covers both:
+// PARTIALLY_COMMITTED keeps the successful bills visible while the FE retry
+// toolbar drives the remaining pending items.
 func (b *BillGenerationBatch) MarkCommitResult(successCount, failCount, pendingCount int) {
-	if pendingCount > 0 {
-		return
-	}
 	now := time.Now()
 	switch {
-	case successCount > 0 && failCount == 0:
+	case successCount > 0 && failCount == 0 && pendingCount == 0:
 		s := CommitStatusCommitted
 		b.CommitStatus = &s
 		b.CommittedAt = &now
-	case successCount > 0 && failCount > 0:
+	case successCount > 0:
+		// success>0 with any combination of fail/pending — some bills landed,
+		// so the batch is partially committed. Covers both "tried everything"
+		// (pending=0, fail>0) and "broke mid-loop" (pending>0).
 		s := CommitStatusPartiallyCommitted
 		b.CommitStatus = &s
 		b.CommittedAt = &now
-	case successCount == 0 && failCount > 0:
+	case successCount == 0 && (failCount > 0 || pendingCount > 0):
+		// No bill landed — either every item failed business rules, or the
+		// loop broke on the very first item. Either way the operation didn't
+		// produce anything for admin to act on; mark FAILED so the retry
+		// toolbar surfaces instead of silently sitting on pre-commit.
 		s := CommitStatusFailed
 		b.CommitStatus = &s
 		b.CommittedAt = nil

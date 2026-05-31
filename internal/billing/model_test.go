@@ -133,11 +133,32 @@ func TestBillGenerationBatch_MarkCommitResult(t *testing.T) {
 			t.Fatalf("expected CommittedAt nil on FAILED")
 		}
 	})
-	t.Run("pending > 0 → no change", func(t *testing.T) {
+	t.Run("pending > 0 + success > 0 → PARTIALLY_COMMITTED", func(t *testing.T) {
+		// Loop broke mid-flight via an infra error after some bills landed.
+		// Pre-B3 this left CommitStatus = nil and the FE wedged on the
+		// pre-commit toolbar (no signal that progress happened or that
+		// retry was needed). Now the dual-status model carries the partial
+		// state honestly so the FE retry path activates.
 		b := &BillGenerationBatch{}
 		b.MarkCommitResult(1, 0, 2)
-		if b.CommitStatus != nil {
-			t.Fatalf("expected nil, got %v", b.CommitStatus)
+		if b.CommitStatus == nil || *b.CommitStatus != CommitStatusPartiallyCommitted {
+			t.Fatalf("expected PARTIALLY_COMMITTED, got %v", b.CommitStatus)
+		}
+		if b.CommittedAt == nil {
+			t.Fatalf("expected CommittedAt set on partial progress")
+		}
+	})
+	t.Run("pending > 0 + success == 0 → FAILED", func(t *testing.T) {
+		// Loop broke on the very first item — nothing committed. Pre-B3
+		// this left CommitStatus = nil. Now FAILED so canRetry surfaces
+		// the retry CTA on the FE instead of silently sitting on pre-commit.
+		b := &BillGenerationBatch{}
+		b.MarkCommitResult(0, 0, 3)
+		if b.CommitStatus == nil || *b.CommitStatus != CommitStatusFailed {
+			t.Fatalf("expected FAILED, got %v", b.CommitStatus)
+		}
+		if b.CommittedAt != nil {
+			t.Fatalf("expected CommittedAt nil when nothing committed")
 		}
 	})
 }
