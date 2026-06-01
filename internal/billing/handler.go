@@ -211,7 +211,7 @@ func (h *BillingHandler) Correct(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Created(c, "ออกบิลใหม่แทนใบเดิมแล้ว", ToBillResponseWithRelations(*bill))
+	return respond.Created(c, "สร้างบิลร่างใหม่แทนใบเดิมแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) PreflightMonthly(c fiber.Ctx) error {
