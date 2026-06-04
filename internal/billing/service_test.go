@@ -226,6 +226,41 @@ func (m *mockBillingRepo) ListBatches(_ context.Context, _ BatchListParams) ([]B
 	return nil, 0, nil
 }
 
+// Single-item re-plan stubs. Service tests for re-plan live in
+// service_batch_replan_integration_test.go (real Postgres) because the
+// flow touches the planner's joined inputs (contracts + meters + bills)
+// and a mock that returns canned rows would skip the integration risks.
+func (m *mockBillingRepo) FindBatchItemByID(_ context.Context, itemID uuid.UUID) (*BillGenerationBatchItem, error) {
+	for i := range m.createdBatchItems {
+		if m.createdBatchItems[i].ID == itemID {
+			it := m.createdBatchItems[i]
+			return &it, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (m *mockBillingRepo) FindBatchItemByIDWithTenant(_ context.Context, itemID uuid.UUID) (*BatchItemWithTenant, error) {
+	for i := range m.createdBatchItems {
+		if m.createdBatchItems[i].ID == itemID {
+			return &BatchItemWithTenant{BillGenerationBatchItem: m.createdBatchItems[i]}, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (m *mockBillingRepo) UpdateBatchItemPlan(_ context.Context, itemID uuid.UUID, resultType ResultType, reasonCode, reasonText string, billID *uuid.UUID, snapshot ComputedSnapshot) error {
+	for i := range m.createdBatchItems {
+		if m.createdBatchItems[i].ID == itemID {
+			m.createdBatchItems[i].ResultType = resultType
+			m.createdBatchItems[i].ReasonCode = reasonCode
+			m.createdBatchItems[i].ReasonText = reasonText
+			m.createdBatchItems[i].BillID = billID
+			m.createdBatchItems[i].ComputedSnapshot = snapshot
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
+}
+
 // --- Commit flow mocks ---
 
 func (m *mockBillingRepo) LockBatchForCommit(_ context.Context, _ uuid.UUID) (*BillGenerationBatch, error) {

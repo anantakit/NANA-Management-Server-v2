@@ -36,6 +36,19 @@ type BillingRepository interface {
 	CreateBatch(ctx context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error
 	FindBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
 	FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]BatchItemWithTenant, error)
+	FindBatchItemByID(ctx context.Context, itemID uuid.UUID) (*BillGenerationBatchItem, error)
+	FindBatchItemByIDWithTenant(ctx context.Context, itemID uuid.UUID) (*BatchItemWithTenant, error)
+	// UpdateBatchItemPlan rewrites a batch item's classification snapshot
+	// after a single-item re-plan. Sets result_type / reason_code / reason_text
+	// + the AUTO snapshot. `billID` is nil except for the ALREADY_EXISTS case.
+	UpdateBatchItemPlan(
+		ctx context.Context,
+		itemID uuid.UUID,
+		resultType ResultType,
+		reasonCode, reasonText string,
+		billID *uuid.UUID,
+		snapshot ComputedSnapshot,
+	) error
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 
 	// Commit flow
@@ -382,6 +395,82 @@ func (r *billingRepository) FindBatchItemsByBatchID(ctx context.Context, batchID
 		}
 	}
 	return result, nil
+}
+
+// FindBatchItemByID returns the raw batch item row. Used by the single-item
+// re-plan flow to authorize against the batch + verify pre-commit state
+// before re-running the planner. Returns gorm.ErrRecordNotFound when the
+// item ID does not exist.
+func (r *billingRepository) FindBatchItemByID(ctx context.Context, itemID uuid.UUID) (*BillGenerationBatchItem, error) {
+	var it BillGenerationBatchItem
+	err := database.DB(ctx, r.db).Where("id = ?", itemID).First(&it).Error
+	if err != nil {
+		return nil, err
+	}
+	return &it, nil
+}
+
+// FindBatchItemByIDWithTenant returns the same projection as
+// FindBatchItemsByBatchID (tenant_name + bill_status joined) but scoped to
+// one item. Used as the response payload for POST replan so the FE can
+// patch a single row in place without refetching the whole batch.
+func (r *billingRepository) FindBatchItemByIDWithTenant(ctx context.Context, itemID uuid.UUID) (*BatchItemWithTenant, error) {
+	type joinRow struct {
+		BillGenerationBatchItem
+		TenantName string      `gorm:"column:tenant_name"`
+		BillStatus *BillStatus `gorm:"column:bill_status"`
+	}
+	var row joinRow
+	err := database.DB(ctx, r.db).
+		Table("bill_generation_batch_items AS bi").
+		Select("bi.*, t.full_name AS tenant_name, b.status AS bill_status").
+		Joins("LEFT JOIN contracts c ON c.id = bi.contract_id AND c.deleted_at IS NULL").
+		Joins("LEFT JOIN tenants t ON t.id = c.tenant_id AND t.deleted_at IS NULL").
+		Joins("LEFT JOIN bills b ON b.id = bi.bill_id AND b.deleted_at IS NULL").
+		Where("bi.id = ?", itemID).
+		Scan(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	// Scan returns zero-value (no error) when no row matches — translate to
+	// ErrRecordNotFound so the service maps consistently to 404.
+	if row.ID == uuid.Nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &BatchItemWithTenant{
+		BillGenerationBatchItem: row.BillGenerationBatchItem,
+		TenantName:              row.TenantName,
+		BillStatus:              row.BillStatus,
+	}, nil
+}
+
+// UpdateBatchItemPlan rewrites the classification snapshot for one batch
+// item. Used by single-item re-plan after a state change (e.g. meter
+// recorded for a MISSING_METER_READING row). Uses an explicit column list
+// so the empty ComputedSnapshot for non-CREATED rows is persisted as
+// `{}` rather than skipped by GORM's zero-value default in Updates(struct).
+//
+// `bill_id` is set to NULL except for the ALREADY_EXISTS classification
+// where the planner returns a pointer to the existing bill.
+func (r *billingRepository) UpdateBatchItemPlan(
+	ctx context.Context,
+	itemID uuid.UUID,
+	resultType ResultType,
+	reasonCode, reasonText string,
+	billID *uuid.UUID,
+	snapshot ComputedSnapshot,
+) error {
+	updates := map[string]any{
+		"result_type":       resultType,
+		"reason_code":       reasonCode,
+		"reason_text":       reasonText,
+		"bill_id":           billID,
+		"computed_snapshot": snapshot,
+	}
+	return database.DB(ctx, r.db).
+		Model(&BillGenerationBatchItem{}).
+		Where("id = ?", itemID).
+		Updates(updates).Error
 }
 
 func (r *billingRepository) ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error) {

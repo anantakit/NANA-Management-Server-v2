@@ -35,6 +35,11 @@ type BillingService interface {
 	BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error)
 	GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
 	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
+	// RePlanBatchItem re-runs the planner for a single batch item and writes
+	// the updated classification + snapshot back. Used when state behind a
+	// SKIPPED row changes mid-batch (e.g. admin records the missing meter)
+	// and the row needs to flip to CREATED without regenerating the whole batch.
+	RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID) (*BatchItemWithTenant, error)
 	ListBatches(ctx context.Context, params BatchListParams) ([]BillGenerationBatch, int64, error)
 
 	// Settlement preview (non-persisting)

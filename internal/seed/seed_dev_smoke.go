@@ -126,6 +126,13 @@ var smokeRoomNumbers = []string{
 	"D201", "D202",
 	// Bill-edit smoke (TC26–TC27): ACTIVE contract + DRAFT MONTHLY bill
 	"E101", "E102",
+	// Batch-replan smoke (TC28–TC29): ACTIVE contract, no meter, no move-out
+	// → produces SKIPPED(MISSING_METER_READING) in a monthly batch run.
+	// Rooms must be VACANT in every other dev seed (A101–A111 / A108–A109 /
+	// A110–A111 / B101–B104 / B201–B205 etc. are all taken by dev fixtures
+	// or smoke move-out seeds) — D105/D106 are clean across every other
+	// seeder so cleanup → seed re-occupies them with no leakage.
+	"D105", "D106",
 }
 
 func seedDevSmoke(db *gorm.DB) error {
@@ -652,7 +659,31 @@ func seedDevSmoke(db *gorm.DB) error {
 		return fmt.Errorf("seed TC27: %w", err)
 	}
 
-	slog.Info("seeded smoke test fixtures", "count", 21)
+	// ─── Batch-replan smoke (TC28–TC29) ──────────────────────────────
+	// ACTIVE contract + NO meter for current month + NO move-out notice.
+	// When the monthly batch runs for นานาคอร์ท, both rows land as
+	// SKIPPED(MISSING_METER_READING) — the exact pre-state the
+	// playwright-test-bill-batch-replan-smoke needs:
+	//   TC28 (A103) → happy path (record meter → replan → CREATED)
+	//   TC29 (A104) → fail path (mocked replan 500 → warning toast)
+
+	if err := createMissingMeterScenario(db, apt, roomByNumber["D105"], smokeTenant{
+		idCard: "9999999999028",
+		name:   "TC28_SMOKE รอจดมิเตอร์ (replan happy)",
+		phone:  "0999000028",
+	}); err != nil {
+		return fmt.Errorf("seed TC28: %w", err)
+	}
+
+	if err := createMissingMeterScenario(db, apt, roomByNumber["D106"], smokeTenant{
+		idCard: "9999999999029",
+		name:   "TC29_SMOKE รอจดมิเตอร์ (replan fail)",
+		phone:  "0999000029",
+	}); err != nil {
+		return fmt.Errorf("seed TC29: %w", err)
+	}
+
+	slog.Info("seeded smoke test fixtures", "count", 23)
 	return nil
 }
 
@@ -1219,6 +1250,48 @@ func createBillEditScenario(
 		{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), Amount: elecAmount, Quantity: elecUnits, UnitPrice: c.ElectricityRatePerUnit, SortOrder: 3},
 	}
 	return createBillWithLines(db, &bill, items)
+}
+
+// createMissingMeterScenario plants the minimal pre-state for a single
+// MISSING_METER_READING row in a monthly batch: ACTIVE contract, no
+// MONTHLY meter reading for the current month, no move-out notice.
+// Used by TC28/TC29 to anchor the batch-replan smoke.
+//
+// MonthlyRent + apartment rates come from the room/apartment defaults so
+// the snapshot post-replan is deterministic and matches what a fresh
+// generate would produce.
+func createMissingMeterScenario(
+	db *gorm.DB,
+	apt apartment.Apartment,
+	rm room.Room,
+	t smokeTenant,
+) error {
+	tn, err := ensureSmokeTenant(db, t)
+	if err != nil {
+		return err
+	}
+	today := truncateToDate(time.Now().UTC())
+	start := today.AddDate(0, -6, 0)
+	c := contract.Contract{
+		TenantID:               tn.ID,
+		RoomID:                 rm.ID,
+		StartDate:              start,
+		MinMonths:              6,
+		MonthlyRent:            rm.BaseRent,
+		DepositAmount:          rm.BaseDeposit,
+		DepositStatus:          contract.DepositStatusCollected,
+		ElectricityRatePerUnit: apt.ElectricityRatePerUnit,
+		WaterRatePerUnit:       apt.WaterRatePerUnit,
+		Status:                 contract.ContractStatusActive,
+	}
+	if err := db.Create(&c).Error; err != nil {
+		return fmt.Errorf("create missing-meter contract %s: %w", rm.Number, err)
+	}
+	if err := db.Model(&room.Room{}).Where("id = ?", rm.ID).
+		Update("status", room.RoomStatusOccupied).Error; err != nil {
+		return fmt.Errorf("update room status %s: %w", rm.Number, err)
+	}
+	return nil
 }
 
 // createFinalizedMonthlyBill creates a FINALIZED (unpaid) monthly bill

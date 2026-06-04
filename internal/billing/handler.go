@@ -27,6 +27,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/batches/:id/items", h.GetBatchItems)
 	r.Post("/batches/:id/commit", h.CommitBatch)
 	r.Post("/batches/:id/finalize-all", h.BatchFinalizeAll)
+	r.Post("/batches/:id/items/:itemId/replan", h.RePlanBatchItem)
 
 	r.Get("/summary", h.Summary)
 	r.Get("/preflight", h.PreflightMonthly)
@@ -313,6 +314,27 @@ func (h *BillingHandler) GetBatchItems(c fiber.Ctx) error {
 		resp[i] = ToBatchItemResponse(it)
 	}
 	return respond.Success(c, "สำเร็จ", resp)
+}
+
+// RePlanBatchItem re-evaluates a single batch item against current state
+// (e.g. after recording the missing meter for a SKIPPED row) and rewrites
+// its classification + snapshot. POST so the side effect is explicit in
+// the HTTP verb. Idempotent — calling repeatedly with no state change
+// returns the same classification.
+func (h *BillingHandler) RePlanBatchItem(c fiber.Ctx) error {
+	batchID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+	itemID, err := uuid.Parse(c.Params("itemId"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("item_id ไม่ถูกต้อง"))
+	}
+	item, err := h.svc.RePlanBatchItem(c.Context(), batchID, itemID)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Success(c, "สำเร็จ", ToBatchItemResponse(*item))
 }
 
 func (h *BillingHandler) ListBatches(c fiber.Ctx) error {
