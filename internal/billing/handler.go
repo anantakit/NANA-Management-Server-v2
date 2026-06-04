@@ -113,7 +113,7 @@ func (h *BillingHandler) CreateMonthly(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Created(c, "สร้างบิลรายเดือนแล้ว", ToBillResponseWithRelations(*bill))
+	return respond.Created(c, "สร้างบิลร่างรายเดือนแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) PreviewSettlement(c fiber.Ctx) error {
@@ -153,7 +153,7 @@ func (h *BillingHandler) CreateSettlement(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Created(c, "สร้างบิลย้ายออกแล้ว", ToBillResponseWithRelations(*bill))
+	return respond.Created(c, "สร้างบิลร่างปิดสัญญาแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) Finalize(c fiber.Ctx) error {
@@ -167,7 +167,7 @@ func (h *BillingHandler) Finalize(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "ยืนยันบิลแล้ว", ToBillResponseWithRelations(*bill))
+	return respond.Success(c, "ออกบิลแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) Void(c fiber.Ctx) error {
@@ -245,7 +245,7 @@ func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "สร้างบิลรายเดือนแบบกลุ่มแล้ว", ToBatchTriggerResponse(result))
+	return respond.Success(c, "คำนวณรอบบิลรายเดือนแล้ว", ToBatchTriggerResponse(result))
 }
 
 func (h *BillingHandler) CommitBatch(c fiber.Ctx) error {
@@ -370,7 +370,7 @@ func (h *BillingHandler) UpdateSettlementDraft(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "อัปเดตบิลสรุปยอดแล้ว", ToBillResponseWithRelations(*bill))
+	return respond.Success(c, "อัปเดตบิลปิดสัญญาแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 func (h *BillingHandler) UpdateMonthlyDraft(c fiber.Ctx) error {

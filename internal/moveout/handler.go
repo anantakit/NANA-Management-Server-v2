@@ -197,7 +197,7 @@ func (h *MoveOutHandler) GenerateSettlement(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "สร้างบิลสรุปแล้ว", ToMoveOutResponse(*result))
+	return respond.Success(c, "สร้างบิลร่างปิดสัญญาแล้ว", ToMoveOutResponse(*result))
 }
 
 func (h *MoveOutHandler) FinalizeSettlement(c fiber.Ctx) error {
@@ -211,7 +211,7 @@ func (h *MoveOutHandler) FinalizeSettlement(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "ยืนยันบิลสรุปยอดแล้ว", ToMoveOutResponse(*result))
+	return respond.Success(c, "สรุปยอดแล้ว", ToMoveOutResponse(*result))
 }
 
 func (h *MoveOutHandler) RecordPaymentOutcome(c fiber.Ctx) error {
@@ -324,7 +324,7 @@ func (h *MoveOutHandler) RegenerateSettlement(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 
-	return respond.Success(c, "สร้างบิลสรุปใหม่แล้ว", ToMoveOutResponse(*result))
+	return respond.Success(c, "สร้างบิลร่างปิดสัญญาใหม่แล้ว", ToMoveOutResponse(*result))
 }
 
 func (h *MoveOutHandler) ReopenForCorrection(c fiber.Ctx) error {

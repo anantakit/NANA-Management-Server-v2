@@ -10,7 +10,7 @@ var (
 	ErrMeterNotFound       = respond.ErrNotFound.WithMessage("ไม่พบข้อมูลมิเตอร์สำหรับเดือนที่ระบุ")
 	ErrBillAlreadyExists   = respond.ErrConflict.WithMessage("มีบิลสำหรับเดือนนี้อยู่แล้ว")
 	ErrMoveOutNotFound    = respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
-	ErrActualDateRequired = respond.ErrBadRequest.WithMessage("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลสรุป")
+	ErrActualDateRequired = respond.ErrBadRequest.WithMessage("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลปิดสัญญา")
 	ErrExitReadingMissing = respond.ErrBadRequest.WithMessage("ไม่พบข้อมูลมิเตอร์ย้ายออก กรุณาจดมิเตอร์ย้ายออกก่อน")
 	ErrMeterTypeMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ที่ระบุไม่ใช่ประเภทรายเดือน")
 	ErrMeterRoomMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ไม่ตรงกับห้องในสัญญา")

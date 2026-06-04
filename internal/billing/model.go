@@ -175,7 +175,7 @@ var (
 	ErrAlreadyVoided  = errors.New("บิลถูกยกเลิกแล้ว")
 	ErrAlreadyPaid    = errors.New("บิลถูกชำระแล้ว")
 	ErrVoidReasonEmpty = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
-	ErrNotAbsorbed     = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลสรุปยอด")
+	ErrNotAbsorbed     = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลปิดสัญญา")
 	ErrBatchAlreadyCommitted = errors.New("batch ถูก commit ไปแล้ว")
 	// Correction (void+recreate) errors. ErrAlreadySuperseded fires when a bill
 	// is already linked to a replacement — chain corrections must target the
@@ -189,7 +189,7 @@ var (
 	// type-agnostic since Phase 2.1E-A — both bill types satisfy the
 	// document-replacement invariants. See project_settlement_correction_design_lock.
 	ErrAlreadySuperseded                = errors.New("บิลนี้ถูกแทนที่ด้วยใบใหม่แล้ว")
-	ErrSettlementCorrectionNotSupported = errors.New("ยังไม่รองรับการแก้ไขบิลย้ายออกใน v1")
+	ErrSettlementCorrectionNotSupported = errors.New("ยังไม่รองรับการแก้ไขบิลปิดสัญญาใน v1")
 )
 
 // --- Models ---

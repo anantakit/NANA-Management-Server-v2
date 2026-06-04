@@ -19,7 +19,7 @@ var errBatchItemContractMissing = respond.ErrConflict.WithMessage(
 )
 
 var errBatchItemAlreadyCommitted = respond.ErrConflict.WithMessage(
-	"แถวนี้ออกบิลแล้ว ไม่สามารถ replan ได้",
+	"แถวนี้สร้างบิลแล้ว ไม่สามารถ replan ได้",
 )
 
 var errBatchItemMismatch = respond.ErrNotFound.WithMessage("ไม่พบรายการในรอบบิลนี้")

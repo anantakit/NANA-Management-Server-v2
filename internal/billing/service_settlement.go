@@ -124,7 +124,7 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 			return respond.ErrBadRequest.WithMessage(ErrNotDraft.Error())
 		}
 		if !b.IsSettlement() {
-			return respond.ErrBadRequest.WithMessage("แก้ไขได้เฉพาะบิลสรุปยอด")
+			return respond.ErrBadRequest.WithMessage("แก้ไขได้เฉพาะบิลปิดสัญญา")
 		}
 
 		// Capture BEFORE snapshots for diff-based audit. Clone the override
@@ -254,7 +254,7 @@ func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUI
 		return fmt.Errorf("find bill: %w", err)
 	}
 	if !b.IsSettlement() {
-		return respond.ErrBadRequest.WithMessage("ยืนยันได้เฉพาะบิลสรุปยอด")
+		return respond.ErrBadRequest.WithMessage("สรุปยอดได้เฉพาะบิลปิดสัญญา")
 	}
 
 	// Recompute totals from source of truth
