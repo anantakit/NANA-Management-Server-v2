@@ -293,9 +293,32 @@ async function main() {
       /\d/.test(tc3FirstAmount) && /\d/.test(tc3SecondAmount),
       `${tc3FirstMode}=${tc3FirstAmount} / ${tc3SecondMode}=${tc3SecondAmount}`,
     )
+    // Mode-dependent deposit handling: PRORATED fails minMonths → forfeits
+    // deposit → owed = (dailyRate × actualMoveOut.day) + utilities + fees.
+    // FULL_MONTH passes minMonths → returns deposit → owed = monthly_rent
+    // + utilities + fees − deposit. Utilities + fees cancel in the diff,
+    // so the delta is (dailyRate × day) − (monthly_rent − deposit).
+    //
+    // TC3 fixture: room B201 (rent ฿2,500 / deposit ฿2,000), actualOffset = 0
+    // (today), PRORATE_DAILY_RATE = ฿100. The delta CAN equal 0 on the
+    // calendar day where 100 × day == 2,500 − 2,000 = 500 (i.e. day 5).
+    // The original assertion "amounts differ" tripped exactly then; mode
+    // semantics still flip — they just happen to produce the same owed
+    // total. Assert the formula, not the inequality.
+    const tc3Today = new Date()
+    const tc3Day = tc3Today.getUTCDate()
+    const TC3_DAILY_RATE = 100
+    const TC3_MONTHLY_RENT = 2500
+    const TC3_DEPOSIT = 2000
+    const expectedDelta = TC3_DAILY_RATE * tc3Day - (TC3_MONTHLY_RENT - TC3_DEPOSIT)
+    const parse = (s) => Number(String(s).replace(/[^\d.-]/g, ''))
+    const tc3Prorated = tc3FirstMode === 'PRORATED' ? parse(tc3FirstAmount) : parse(tc3SecondAmount)
+    const tc3FullMonth = tc3FirstMode === 'PRORATED' ? parse(tc3SecondAmount) : parse(tc3FirstAmount)
+    const observedDelta = tc3Prorated - tc3FullMonth
     check(
-      'Outcome amount differs across modes (PRORATED fails / FULL_MONTH passes minMonths)',
-      tc3FirstAmount !== tc3SecondAmount,
+      'Mode delta matches formula (dailyRate × day − (monthly_rent − deposit))',
+      Math.abs(observedDelta - expectedDelta) < 0.01,
+      `expected=${expectedDelta} observed=${observedDelta} day=${tc3Day} PRORATED=${tc3Prorated} FULL=${tc3FullMonth}`,
     )
 
     await closeDrawer(page)

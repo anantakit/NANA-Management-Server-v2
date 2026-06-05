@@ -79,7 +79,29 @@ async function login(page) {
   await page.waitForFunction(() => !window.location.pathname.includes('/login'), { timeout: 10000 })
 }
 
-/** Open BillEditDrawer for a given room (act-mode CTA → "แก้ไขบิล"). */
+/**
+ * Locate a BillList row by its room number. Returns a Playwright locator
+ * for the row body (clickable div). Survives the 2026-05-29 density
+ * refactor where DRAFT/PAID/VOID rows dropped the labelled CTA button
+ * in favour of a row-body-click entry path (only FINALIZED unpaid +
+ * settlement-collect/refund rows now render a verb CTA — see
+ * `feedback_billlist_chrome` + `BillRow/index.tsx getRowCta`).
+ *
+ * Strategy: scope to a bill section, find the room-number span by exact
+ * text, then walk up to the row container. We anchor on the `group`
+ * Tailwind class because BillRow uses `group-hover:` for its chevron;
+ * removing it would require a broader row-chrome refactor and would
+ * fail loudly here.
+ */
+function billRowByRoom(page, roomNumber) {
+  return page
+    .locator('section[aria-label^="บิล "]')
+    .getByText(roomNumber, { exact: true })
+    .first()
+    .locator('xpath=ancestor::div[contains(@class, "group")][1]')
+}
+
+/** Open BillEditDrawer for a given room (row click → BillDrawer → แก้ไขบิล). */
 async function openEditDrawer(page, roomNumber) {
   // Close any stale drawer first — defensive against scenario chains.
   const stale = page.locator('[role="dialog"]')
@@ -88,19 +110,10 @@ async function openEditDrawer(page, roomNumber) {
     await page.waitForTimeout(300)
   }
 
-  // Row CTA opens BillDrawer in act mode. aria-label format:
-  // `${rowCtaLabel} บิลห้อง ${roomNumber}` — for DRAFT MONTHLY the label
-  // is "ดูรายละเอียด" (per features/bills/domain/settlement.ts getRowCta).
-  //
-  // BillRow renders TWO RowPrimaryButton instances per row: mobile layout
-  // (sm:hidden) + desktop layout (hidden sm:flex). Both share the same
-  // aria-label, so we must filter by the Playwright `:visible` pseudo so
-  // the click targets whichever variant is currently visible at the
-  // active viewport. `.first()` defeats strict mode after the filter.
-  await page
-    .locator(`[aria-label="ดูรายละเอียด บิลห้อง ${roomNumber}"]:visible`)
-    .first()
-    .click({ timeout: 8000 })
+  // Row body click opens BillDrawer in view mode. The drawer still
+  // surfaces "แก้ไขบิล" for DRAFT MONTHLY bills regardless of open mode,
+  // so view-mode entry is sufficient for the edit flow.
+  await billRowByRoom(page, roomNumber).click({ timeout: 8000 })
 
   const dialog = page.locator('[role="dialog"]')
   await dialog.waitFor({ state: 'visible', timeout: 5000 })
@@ -132,28 +145,43 @@ async function openEditDrawer(page, roomNumber) {
   )
 }
 
+/**
+ * Wait until every Sheet/Dialog has fully detached. The REPLACE pattern
+ * (BillDrawer → BillEditDrawer) keeps the outgoing drawer mounted for
+ * ~200ms during slide-out, so during scenario chains there can briefly
+ * be TWO `[role="dialog"]` nodes — a single Playwright locator would
+ * hit strict-mode then. waitForFunction polls until count === 0.
+ */
+async function waitForAllDialogsClosed(page, timeout = 8000) {
+  await page.waitForFunction(
+    () => document.querySelectorAll('[role="dialog"]').length === 0,
+    null,
+    { timeout },
+  )
+}
+
 /** Click the dialog's primary save button + wait for it to close. */
 async function saveDrawer(page) {
-  const dialog = page.locator('[role="dialog"]')
-  // Exact "บันทึก" to defeat sidebar's "บันทึกมิเตอร์" + cancel button
-  // "ยกเลิก". `getByRole` is scoped to the dialog so multiple sheets
-  // can't fight each other either.
-  await dialog
+  // .last() targets the currently-active drawer when an outgoing
+  // REPLACE sibling is still in the DOM (translate-*-full, mid-animation).
+  // Exact "บันทึก" defeats sidebar's "บันทึกมิเตอร์" + the cancel
+  // button "ยกเลิก".
+  await page
+    .locator('[role="dialog"]')
+    .last()
     .getByRole('button', { name: 'บันทึก', exact: true })
     .click({ timeout: 5000 })
-  // Drawer closes via onClose() after mutateAsync resolves. The Sheet
-  // animates out over 200ms — wait for the dialog to fully detach so
-  // re-open in the next scenario doesn't hit a stale node.
-  await dialog.waitFor({ state: 'detached', timeout: 8000 })
+  await waitForAllDialogsClosed(page)
 }
 
 /** Cancel out of the edit drawer (no persistence). */
 async function cancelDrawer(page) {
-  const dialog = page.locator('[role="dialog"]')
-  await dialog
+  await page
+    .locator('[role="dialog"]')
+    .last()
     .getByRole('button', { name: 'ยกเลิก', exact: true })
     .click({ timeout: 5000 })
-  await dialog.waitFor({ state: 'detached', timeout: 5000 })
+  await waitForAllDialogsClosed(page, 5000)
 }
 
 function fail(msg) {
@@ -180,12 +208,16 @@ function fail(msg) {
   await page.waitForTimeout(1200)
 
   // ── Fail-fast: verify seeded rows are visible (Plan C) ─────────────
+  // DRAFT rows have no labelled CTA — locate the row body via billRowByRoom
+  // (same path the scenarios use to open the drawer).
   for (const room of [ROOM_CLEAN, ROOM_PRE_OVERRIDDEN]) {
-    const cta = page.locator(`[aria-label="ดูรายละเอียด บิลห้อง ${room}"]`)
-    if ((await cta.count()) === 0) {
+    const count = await billRowByRoom(page, room).count()
+    if (count === 0) {
+      await page.screenshot({ path: `/tmp/bill-edit-FAIL-${room}.png`, fullPage: true })
       fail(
         `expected DRAFT MONTHLY row for ${room} on /bills — seed fixture missing or BillList not surfacing it. ` +
-          `Make sure seed_dev_smoke.go TC26/TC27 ran for the current billing month.`,
+          `Make sure seed_dev_smoke.go TC26/TC27 ran for the current billing month, and that the BillList ` +
+          `view chip default ("บิลรายเดือน") still includes DRAFT bills.`,
       )
     }
   }

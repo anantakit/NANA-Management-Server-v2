@@ -194,10 +194,17 @@ async function runTCD13(page, fixtures) {
     `got ${total}`,
   ))
 
-  // Net amount
+  // Net amount — the UI's "ยอดสุทธิ" line shows the amount the tenant
+  // OWES, clamped at 0 (refund is rendered on a separate "คืนประกัน"
+  // breakdown line, not folded into the net). Calendar-sensitive: TC4
+  // actualMoveOut = today - 4 days; when that lands early in the month
+  // (small day-of-month), proRateRent × ฿100/day is below the gap
+  // between deposit and other charges and the outcome flips to refund —
+  // expected net becomes 0, not a negative number.
   const net = await getNetAmount(page)
-  track('D13.6', check(`Net = ฿${exp.netBaht}`,
-    Math.abs(net - exp.netBaht) < 0.01,
+  const expectedNetOwedBaht = Math.max(0, exp.totalBaht - exp.depositBaht)
+  track('D13.6', check(`Net owed = ฿${expectedNetOwedBaht}`,
+    Math.abs(net - expectedNetOwedBaht) < 0.01,
     `got ${net}`,
   ))
 
@@ -214,7 +221,6 @@ async function runTCD14(page, fixtures) {
   await goToSettlement(page, fx.notice_id)
 
   const totalBefore = await getChargesSubtotal(page)
-  const netBefore = await getNetAmount(page)
   track('D14.1', check('Baseline total is numeric', !isNaN(totalBefore), `${totalBefore}`))
 
   // Add preset: ค่ากุญแจและคีการ์ด ฿250
@@ -236,13 +242,18 @@ async function runTCD14(page, fixtures) {
   const totalAfter = await getChargesSubtotal(page)
   const netAfter = await getNetAmount(page)
   const expectedTotal = totalBefore + 250
-  const expectedNet = netBefore + 250
+  // "Net" on the UI is max(0, charges − deposit) — adding 250 to charges
+  // does NOT linearly add 250 to net when the baseline sits inside the
+  // refund zone. expectedNet must mirror the formula, not extrapolate
+  // from netBefore. TC4 fixture has DEPOSIT = ฿2,000 (B202 fan base).
+  const DEPOSIT_BAHT_D14 = 2000
+  const expectedNet = Math.max(0, totalBefore + 250 - DEPOSIT_BAHT_D14)
 
   track('D14.2', check(`Total: ${totalBefore} + 250 = ${expectedTotal}`,
     Math.abs(totalAfter - expectedTotal) < 0.01,
     `got ${totalAfter}`,
   ))
-  track('D14.3', check(`Net: ${netBefore} + 250 = ${expectedNet}`,
+  track('D14.3', check(`Net owed = max(0, ${totalBefore + 250} − ${DEPOSIT_BAHT_D14}) = ${expectedNet}`,
     Math.abs(netAfter - expectedNet) < 0.01,
     `got ${netAfter}`,
   ))

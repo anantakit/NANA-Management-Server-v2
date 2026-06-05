@@ -304,11 +304,27 @@ async function runTCD03(page, fixtures) {
     `before=${subtotalBefore} after=${subtotalAfter}`,
   ))
 
-  // Full month rent should be higher than prorated
+  // The only thing rent mode changes is the rent line; utilities + fees are
+  // shared. So |delta| must equal |dailyRate × moveOut.day - monthly_rent|,
+  // not satisfy any inequality. The original direction assertion
+  // (FULL > PRORATED) was wrong: when actualMoveOut lands late in the month,
+  // dailyRate × day exceeds monthly_rent and PRORATED runs higher.
+  //
+  // TC4 fixture (seed_dev_smoke.go): B202 base rent = ฿2,500, dailyRate = ฿100,
+  // actualOffset = -4 → moveOut = today - 4 days (Go UTC). Mirror the Go side
+  // via getUTC* so the smoke does not drift across the local-vs-UTC midnight.
+  const tcd03Today = new Date()
+  const tcd03MoveOut = new Date(Date.UTC(
+    tcd03Today.getUTCFullYear(), tcd03Today.getUTCMonth(), tcd03Today.getUTCDate() - 4,
+  ))
+  const TCD03_DAILY_RATE_BAHT = 100
+  const TCD03_MONTHLY_RENT_BAHT = 2500
+  const expectedDelta = Math.abs(TCD03_DAILY_RATE_BAHT * tcd03MoveOut.getUTCDate() - TCD03_MONTHLY_RENT_BAHT)
+  const observedDelta = Math.abs(subtotalAfter - subtotalBefore)
   track('D03.2', check(
-    'FULL_MONTH subtotal > PRORATED subtotal',
-    subtotalAfter > subtotalBefore,
-    `PRORATED=${subtotalBefore} FULL_MONTH=${subtotalAfter}`,
+    'Mode delta matches fixture formula |dailyRate × moveOut.day − monthly_rent|',
+    observedDelta === expectedDelta,
+    `expected=${expectedDelta} observed=${observedDelta} day=${tcd03MoveOut.getUTCDate()} PRORATED=${subtotalBefore} FULL_MONTH=${subtotalAfter}`,
   ))
 
   // Net amount should also change
