@@ -72,6 +72,9 @@ func Run(db *gorm.DB, env string) error {
 		if err := seedDevSmoke(db); err != nil {
 			return fmt.Errorf("seed dev smoke: %w", err)
 		}
+		if err := seedDevReconciliationFixtures(db); err != nil {
+			return fmt.Errorf("seed dev reconciliation fixtures: %w", err)
+		}
 	}
 
 	slog.Info("seed data completed")
