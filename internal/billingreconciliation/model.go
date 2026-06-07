@@ -37,7 +37,39 @@ const (
 	ReasonContractNotStarted  ReasonCode = "CONTRACT_NOT_STARTED"
 	ReasonMissingMeterReading ReasonCode = "MISSING_METER_READING"
 	ReasonNewTenantMidCycle   ReasonCode = "NEW_TENANT_MID_CYCLE"
+	// Phase 1B reasons — surface only on rooms that were PD-origin
+	// (NEW_TENANT_MID_CYCLE) and now carry an operator decision.
+	ReasonIncludedByOperator ReasonCode = "INCLUDED_BY_OPERATOR"
+	ReasonSkippedByOperator  ReasonCode = "SKIPPED_BY_OPERATOR"
 )
+
+// DecisionState is the operator's per-room choice for one billing month.
+// Storage is INCLUDE / SKIP / absence — there is no UNDECIDED enum value
+// because the row's existence carries that signal (no row = Undecided).
+// Pre-spec walk locks this as the state grammar.
+type DecisionState string
+
+const (
+	DecisionInclude DecisionState = "INCLUDE"
+	DecisionSkip    DecisionState = "SKIP"
+)
+
+// Decision is the persisted row from `room_billing_decisions`. The struct
+// doubles as the domain object the service passes around — there is no
+// derived state to compute, so a separate domain type would only echo
+// the GORM struct (per backend rules: GORM model = domain).
+type Decision struct {
+	ID           uuid.UUID     `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	RoomID       uuid.UUID     `gorm:"type:uuid;not null"`
+	BillingMonth string        `gorm:"type:varchar(7);not null"`
+	Decision     DecisionState `gorm:"type:varchar(20);not null"`
+	DecidedAt    time.Time     `gorm:"not null"`
+	DecidedBy    *uuid.UUID    `gorm:"type:uuid"`
+	CreatedAt    time.Time     `gorm:"not null;default:now()"`
+	UpdatedAt    time.Time     `gorm:"not null;default:now()"`
+}
+
+func (Decision) TableName() string { return "room_billing_decisions" }
 
 // --- Projection types (internal, mapped to DTO at the boundary) ---
 
@@ -72,13 +104,27 @@ type AnomalyFlags struct {
 	Water       bool
 }
 
+// DecisionAttribution is the inline "เพิ่มโดยคุณ · 15 มิ.ย." stamp on a
+// decided row — joined from `users` at read time so the row carries its
+// own attribution (per walk lock: no separate audit viewer). Nil when the
+// room has no decision row for the month.
+type DecisionAttribution struct {
+	State     DecisionState
+	DecidedAt time.Time
+	// DecidedByName is the display name (auth.User.Username; FullName falls
+	// back when present). Nullable to tolerate ON DELETE SET NULL — a row
+	// whose actor was removed still surfaces "ระบบ"-style "—" attribution.
+	DecidedByName *string
+}
+
 // RoomClassification = one row in the reconciliation report.
 type RoomClassification struct {
-	Room    RoomCandidate
-	Bucket  Bucket
-	Reason  ReasonCode // empty for READY
-	Bill    *BillSnapshot
-	Anomaly *AnomalyFlags
+	Room        RoomCandidate
+	Bucket      Bucket
+	Reason      ReasonCode // empty for READY
+	Bill        *BillSnapshot
+	Anomaly     *AnomalyFlags
+	Attribution *DecisionAttribution
 }
 
 // Summary mirrors the math invariant. PD as a category disappears from the
@@ -111,14 +157,26 @@ type Report struct {
 //     (data inconsistency — OCCUPIED room without an active contract)
 //  4. Pending move-out for this month              → NB / MOVE_OUT_PENDING
 //  5. Contract.StartDate > endOfMonth              → NB / CONTRACT_NOT_STARTED
-//  6. Contract.StartDate within billing window     → PD / NEW_TENANT_MID_CYCLE
+//  6. Contract.StartDate within billing window:
+//     6a. decision = SKIP    → NB    / SKIPPED_BY_OPERATOR     (Phase 1B)
+//     6b. decision = INCLUDE → fall through (meter check still applies)
+//     6c. decision = none    → PD    / NEW_TENANT_MID_CYCLE
 //  7. No monthly meter reading                     → AR / MISSING_METER_READING
-//  8. Else                                         → READY / ""
+//  8. Else:
+//     8a. carries INCLUDE decision (was mid-cycle) → READY / INCLUDED_BY_OPERATOR
+//     8b. otherwise                                 → READY / ""
 //
 // Order rationale: PD (mid-cycle tenant) comes BEFORE missing-meter so the
 // classification stays a decision problem first, a data problem second — a
 // new tenant operator never decided to include should not be hidden behind
-// a meter gap.
+// a meter gap. Walk-lock invariant (Phase 1B): "Rebucket rule: PD + INCLUDE
+// → READY (if meter present) / AR (if meter missing). PD + SKIP → NB."
+// INCLUDE never forces past the meter check — the data gap stays an
+// honest AR row that's actionable by the operator.
+//
+// Scope guard (walk lock): decisions only carry meaning on PD-origin rows.
+// If a row is already READY/AR/NB on the raw rules and somehow has a stale
+// decision row, the decision is silently ignored — see step 6 entry guard.
 //
 // Pre-existing bills are evidence only — passed in the response, never used
 // to shift the bucket. Lock from session 2026-06-06.
@@ -127,6 +185,7 @@ func classifyRoom(
 	startOfMonth, endOfMonth time.Time,
 	hasPendingMoveOut bool,
 	hasMeter bool,
+	decision DecisionState, // empty string = Undecided / no row
 ) (Bucket, ReasonCode) {
 	if c.ContractID == nil {
 		switch c.RoomStatus {
@@ -144,15 +203,52 @@ func classifyRoom(
 	if c.ContractStartDate != nil && c.ContractStartDate.After(endOfMonth) {
 		return BucketNotBillable, ReasonContractNotStarted
 	}
-	if c.ContractStartDate != nil &&
+	isMidCycle := c.ContractStartDate != nil &&
 		!c.ContractStartDate.Before(startOfMonth) &&
-		!c.ContractStartDate.After(endOfMonth) {
-		return BucketPendingDecision, ReasonNewTenantMidCycle
+		!c.ContractStartDate.After(endOfMonth)
+	if isMidCycle {
+		switch decision {
+		case DecisionSkip:
+			return BucketNotBillable, ReasonSkippedByOperator
+		case DecisionInclude:
+			// fall through — meter check still applies, READY case carries
+			// the INCLUDED_BY_OPERATOR reason so the row reads as
+			// operator-resolved rather than a generic ready.
+		default:
+			return BucketPendingDecision, ReasonNewTenantMidCycle
+		}
 	}
 	if !hasMeter {
 		return BucketActionRequired, ReasonMissingMeterReading
 	}
+	if isMidCycle && decision == DecisionInclude {
+		return BucketReady, ReasonIncludedByOperator
+	}
 	return BucketReady, ""
+}
+
+// rawIsPDOrigin answers "would this room land in PD without an operator
+// decision?". Cheap pure check that lets the service decide whether to
+// surface decision attribution on the row: attribution only matters when
+// the raw rules would have asked the operator to decide.
+//
+// Mirrors steps 1–6 of classifyRoom — kept narrowly here so the predicate
+// stays a single expression instead of inverting a classifier call. If
+// classifyRoom's rule order ever changes, both must move together.
+func rawIsPDOrigin(c RoomCandidate, startOfMonth, endOfMonth time.Time, hasPendingMoveOut bool) bool {
+	if c.ContractID == nil {
+		return false
+	}
+	if hasPendingMoveOut {
+		return false
+	}
+	if c.ContractStartDate == nil {
+		return false
+	}
+	if c.ContractStartDate.After(endOfMonth) {
+		return false
+	}
+	return !c.ContractStartDate.Before(startOfMonth)
 }
 
 // --- Month helpers ---

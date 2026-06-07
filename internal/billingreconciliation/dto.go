@@ -53,6 +53,12 @@ type RoomReconcileItem struct {
 	// Anomaly = inline trust flag. Null when there's no meter reading
 	// (e.g. ACTION_REQUIRED rows with reason MISSING_METER_READING).
 	Anomaly *AnomalyEvidence `json:"anomaly"`
+
+	// Decision = inline operator attribution. Non-null only on rows whose
+	// underlying classification was PD-origin (NEW_TENANT_MID_CYCLE) AND
+	// where the operator has recorded INCLUDE / SKIP. Stale decisions on
+	// non-PD rows are silently dropped at the service layer (scope guard).
+	Decision *DecisionEvidence `json:"decision"`
 }
 
 type BillEvidence struct {
@@ -64,4 +70,45 @@ type BillEvidence struct {
 type AnomalyEvidence struct {
 	Electricity bool `json:"electricity"`
 	Water       bool `json:"water"`
+}
+
+// --- Phase 1B decision DTOs ---
+
+// DecisionEvidence is the per-row attribution shown inline on a decided row
+// ("เพิ่มโดยคุณ · 15 มิ.ย."). Null when the room has no decision.
+type DecisionEvidence struct {
+	State         string  `json:"state"`             // "INCLUDE" | "SKIP"
+	DecidedAt     string  `json:"decided_at"`        // RFC3339
+	DecidedByName *string `json:"decided_by_name"`   // username/full_name; nil if actor deleted
+}
+
+// DecisionPathParams carries the room+month path params. Validator runs at
+// bind time so we get the same Thai-language 400 surface as elsewhere.
+type DecisionPathParams struct {
+	RoomID       string `query:"-" validate:"required,uuid"`
+	BillingMonth string `query:"-" validate:"required"`
+}
+
+// SetDecisionRequest is the PUT body. ApartmentID is required so the
+// service can scope the room lookup (PD-origin guard reads from there).
+type SetDecisionRequest struct {
+	ApartmentID string `json:"apartment_id" validate:"required,uuid"`
+	Decision    string `json:"decision" validate:"required,oneof=INCLUDE SKIP"`
+}
+
+// DeleteDecisionRequest mirrors SetDecisionRequest's apartment scope —
+// reversal-boundary guard needs the apartment to re-classify the room.
+type DeleteDecisionRequest struct {
+	ApartmentID string `json:"apartment_id" validate:"required,uuid"`
+}
+
+// DecisionResponse is the GET payload (also returned on PUT for
+// optimistic-update use on the FE). Carries the same attribution shape as
+// the inline `DecisionEvidence` so the FE can reuse one renderer.
+type DecisionResponse struct {
+	RoomID        string  `json:"room_id"`
+	BillingMonth  string  `json:"billing_month"`
+	State         string  `json:"state"`
+	DecidedAt     string  `json:"decided_at"`
+	DecidedByName *string `json:"decided_by_name"`
 }

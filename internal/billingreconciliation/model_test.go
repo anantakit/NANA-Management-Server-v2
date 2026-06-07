@@ -26,6 +26,7 @@ func TestClassifyRoom(t *testing.T) {
 		room           RoomCandidate
 		pendingMoveOut bool
 		hasMeter       bool
+		decision       DecisionState
 		wantBucket     Bucket
 		wantReason     ReasonCode
 	}{
@@ -149,9 +150,116 @@ func TestClassifyRoom(t *testing.T) {
 		},
 	}
 
+	// Phase 1B decision-aware cases. Cover both rebucket targets (INCLUDE
+	// → READY, SKIP → NB), the AR fallback when INCLUDE meets a missing
+	// meter, and the silent-ignore guard when a decision sits on a non-PD
+	// row (scope = PD-origin only, per walk lock).
+	cases = append(cases,
+		struct {
+			name           string
+			room           RoomCandidate
+			pendingMoveOut bool
+			hasMeter       bool
+			decision       DecisionState
+			wantBucket     Bucket
+			wantReason     ReasonCode
+		}{
+			name: "mid-cycle + INCLUDE + meter present → READY / INCLUDED_BY_OPERATOR",
+			room: RoomCandidate{
+				RoomStatus:        "OCCUPIED",
+				ContractID:        &contractID,
+				ContractStartDate: mkDate("2026-06-15"),
+			},
+			hasMeter:   true,
+			decision:   DecisionInclude,
+			wantBucket: BucketReady,
+			wantReason: ReasonIncludedByOperator,
+		},
+		struct {
+			name           string
+			room           RoomCandidate
+			pendingMoveOut bool
+			hasMeter       bool
+			decision       DecisionState
+			wantBucket     Bucket
+			wantReason     ReasonCode
+		}{
+			name: "mid-cycle + INCLUDE + meter missing → AR / MISSING_METER_READING (operator intent honored, data gap still actionable)",
+			room: RoomCandidate{
+				RoomStatus:        "OCCUPIED",
+				ContractID:        &contractID,
+				ContractStartDate: mkDate("2026-06-15"),
+			},
+			hasMeter:   false,
+			decision:   DecisionInclude,
+			wantBucket: BucketActionRequired,
+			wantReason: ReasonMissingMeterReading,
+		},
+		struct {
+			name           string
+			room           RoomCandidate
+			pendingMoveOut bool
+			hasMeter       bool
+			decision       DecisionState
+			wantBucket     Bucket
+			wantReason     ReasonCode
+		}{
+			name: "mid-cycle + SKIP → NB / SKIPPED_BY_OPERATOR (meter state irrelevant)",
+			room: RoomCandidate{
+				RoomStatus:        "OCCUPIED",
+				ContractID:        &contractID,
+				ContractStartDate: mkDate("2026-06-15"),
+			},
+			hasMeter:   false,
+			decision:   DecisionSkip,
+			wantBucket: BucketNotBillable,
+			wantReason: ReasonSkippedByOperator,
+		},
+		struct {
+			name           string
+			room           RoomCandidate
+			pendingMoveOut bool
+			hasMeter       bool
+			decision       DecisionState
+			wantBucket     Bucket
+			wantReason     ReasonCode
+		}{
+			name: "stale INCLUDE on a non-mid-cycle room is silently ignored (scope = PD-origin only)",
+			room: RoomCandidate{
+				RoomStatus:        "OCCUPIED",
+				ContractID:        &contractID,
+				ContractStartDate: mkDate("2026-03-01"),
+			},
+			hasMeter:   true,
+			decision:   DecisionInclude,
+			wantBucket: BucketReady,
+			wantReason: "", // not INCLUDED_BY_OPERATOR — the row was never PD
+		},
+		struct {
+			name           string
+			room           RoomCandidate
+			pendingMoveOut bool
+			hasMeter       bool
+			decision       DecisionState
+			wantBucket     Bucket
+			wantReason     ReasonCode
+		}{
+			name: "move-out beats SKIP decision (raw rule order preserved)",
+			room: RoomCandidate{
+				RoomStatus:        "OCCUPIED",
+				ContractID:        &contractID,
+				ContractStartDate: mkDate("2026-06-10"),
+			},
+			pendingMoveOut: true,
+			decision:       DecisionSkip,
+			wantBucket:     BucketNotBillable,
+			wantReason:     ReasonMoveOutPending,
+		},
+	)
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotBucket, gotReason := classifyRoom(tc.room, startOfMonth, endOfMonth, tc.pendingMoveOut, tc.hasMeter)
+			gotBucket, gotReason := classifyRoom(tc.room, startOfMonth, endOfMonth, tc.pendingMoveOut, tc.hasMeter, tc.decision)
 			if gotBucket != tc.wantBucket {
 				t.Errorf("bucket: got %q, want %q", gotBucket, tc.wantBucket)
 			}
