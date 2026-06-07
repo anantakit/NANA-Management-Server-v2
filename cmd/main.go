@@ -13,6 +13,7 @@ import (
 	"nana/internal/auth"
 	"nana/internal/billing"
 	"nana/internal/billingconfig"
+	"nana/internal/billingreconciliation"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
 	"nana/internal/moveout"
@@ -127,6 +128,11 @@ func main() {
 	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, billService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
+	// Wire dependencies — Billing Reconciliation (Phase 1A: read-only audit)
+	reconRepo := billingreconciliation.NewRepository(db)
+	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billRepo)
+	reconHandler := billingreconciliation.NewHandler(reconService)
+
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:       "Nana Rental Management",
@@ -200,6 +206,7 @@ func main() {
 	bcHandler.RegisterRoutes(admin.Group("/apartments/:id/billing-configs"))
 	moveOutHandler.RegisterRoutes(admin.Group("/move-out-notices"))
 	billHandler.RegisterRoutes(admin.Group("/bills"))
+	reconHandler.RegisterRoutes(admin.Group("/billing-reconciliation"))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
