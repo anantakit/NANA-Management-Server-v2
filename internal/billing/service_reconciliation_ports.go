@@ -115,11 +115,16 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 // surface them as FAILED rows.
 //
 // Categories:
-//   - ErrBillAlreadyExists → ErrAlreadyBilled (race with another commit)
+//   - ErrBillAlreadyExists                       → ErrAlreadyBilled
+//   - Postgres unique-violation on idx_bills_unique_monthly
+//     (DRAFT-vs-DRAFT collision — CreateMonthlyBill's application-level
+//     duplicate check ignores DRAFT bills, so the partial unique index is
+//     the only guard for concurrent DRAFT creates)
+//                                                → ErrAlreadyBilled
 //   - state-change invariant violations
 //     (meter type/room/month mismatch, contract not active, contract not
-//     found, meter not found) → ErrLostReady
-//   - anything else → propagated verbatim
+//     found, meter not found)                    → ErrLostReady
+//   - anything else                              → propagated verbatim
 func classifyCreateMonthlyBillError(err error) error {
 	switch {
 	case errors.Is(err, ErrBillAlreadyExists):
@@ -131,6 +136,8 @@ func classifyCreateMonthlyBillError(err error) error {
 		errors.Is(err, ErrMeterRoomMismatch),
 		errors.Is(err, ErrMeterMonthMismatch):
 		return billingreconciliation.ErrLostReady
+	case isDuplicateBillError(err):
+		return billingreconciliation.ErrAlreadyBilled
 	}
 	return err
 }
