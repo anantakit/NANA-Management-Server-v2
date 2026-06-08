@@ -93,9 +93,12 @@ type CreatedBill struct {
 // Anti-promotion: there is no batch/session/run object across this port —
 // fan-out is a service-level loop that calls this method N times.
 //
-// Errors propagate verbatim from the billing side. Sentinel mapping
-// (LOST_READY_BETWEEN_PREVIEW_AND_COMMIT, ALREADY_BILLED_BY_OTHER) is the
-// reconciliation service's responsibility (BE #2).
+// Error contract: the adapter classifies billing-side sentinels (and the
+// PG unique-violation on idx_bills_unique_monthly) into the two port-level
+// SKIPPED outcomes — `ErrAlreadyBilled` and `ErrLostReady` defined above.
+// System errors and unrecognized AppErrors propagate unchanged for the
+// reconciliation service to surface as FAILED rows. Classification lives
+// on the adapter so the consumer doesn't need to import billing.
 //
 // Implemented by billing.BillingService (methods in service_reconciliation_ports.go),
 // wired in cmd/main.go.
