@@ -46,12 +46,19 @@ type CreatedBill struct {
 
 // BillsCommander creates a monthly bill for one (contract, billing_month)
 // pair on behalf of the reconciliation workspace's per-row ออกบิล commit.
-// Single-row semantics: one call = one bill, one TX. Batch fan-out lives at
-// the reconciliation service layer (BE #2), not here.
+// Single-row semantics: one call = one bill, one TX.
+//
+// Transaction ownership: the implementation owns its TX (delegates to
+// billing.Service.CreateMonthlyBill, which runs its own RunInTx).
+// Callers MUST NOT wrap this in a parent transaction — explicit contrast
+// with moveout.BillingCommander methods, which require caller-provided
+// txCtx. Per-call TX is intentional: each row commits or skips
+// independently, matching the per-item result semantics in
+// project_reconciliation_phase1d_scenario1_locks.md (Q1 Contract A).
+// Batch fan-out lives at the reconciliation service layer (BE #2).
 //
 // Anti-promotion: there is no batch/session/run object across this port —
-// fan-out is a service-level loop that calls this method N times. See
-// project_reconciliation_phase1d_scenario1_locks.md (Q1 Contract A).
+// fan-out is a service-level loop that calls this method N times.
 //
 // Errors propagate verbatim from the billing side. Sentinel mapping
 // (LOST_READY_BETWEEN_PREVIEW_AND_COMMIT, ALREADY_BILLED_BY_OTHER) is the
