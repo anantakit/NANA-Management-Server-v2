@@ -9,6 +9,7 @@ import (
 	"regexp"
 
 	"nana/internal/billingconfig"
+	"nana/internal/billingreconciliation"
 	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
@@ -58,6 +59,11 @@ type BillingService interface {
 	PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error)
 	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
 	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
+
+	// Billing-reconciliation workspace ports (satisfies billingreconciliation.BillsQuerier
+	// + billingreconciliation.BillsCommander). Methods live in service_reconciliation_ports.go.
+	FindExistingBillsByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]*billingreconciliation.BillSnapshot, error)
+	CreateMonthlyBillForReconciliation(ctx context.Context, req billingreconciliation.CreateMonthlyBillForReconciliationRequest, actor *uuid.UUID) (*billingreconciliation.CreatedBill, error)
 }
 
 type billingService struct {

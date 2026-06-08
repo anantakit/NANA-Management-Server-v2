@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"nana/internal/billing"
 	"nana/internal/meterreading"
 	"nana/internal/moveout"
 	"nana/internal/shared/money"
@@ -44,7 +43,7 @@ type service struct {
 	repo     Repository
 	meters   meterreading.MeterReadingRepository
 	moveOuts moveout.MoveOutRepository
-	bills    billing.BillingRepository
+	bills    BillsQuerier
 }
 
 var _ Service = (*service)(nil)
@@ -53,7 +52,7 @@ func NewService(
 	repo Repository,
 	meters meterreading.MeterReadingRepository,
 	moveOuts moveout.MoveOutRepository,
-	bills billing.BillingRepository,
+	bills BillsQuerier,
 ) Service {
 	return &service{
 		repo:     repo,
@@ -110,9 +109,9 @@ func (s *service) Reconcile(ctx context.Context, q ReconciliationQuery) (*Report
 	if err != nil {
 		return nil, fmt.Errorf("find meters: %w", err)
 	}
-	billMap := map[uuid.UUID]*billing.Bill{}
+	billMap := map[uuid.UUID]*BillSnapshot{}
 	if len(contractIDs) > 0 {
-		billMap, err = s.bills.FindExistingByContractsAndMonth(ctx, contractIDs, q.BillingMonth)
+		billMap, err = s.bills.FindExistingBillsByContractsAndMonth(ctx, contractIDs, q.BillingMonth)
 		if err != nil {
 			return nil, fmt.Errorf("find existing bills: %w", err)
 		}
@@ -158,13 +157,11 @@ func (s *service) Reconcile(ctx context.Context, q ReconciliationQuery) (*Report
 		}
 
 		// Inline bill evidence — never shifts the bucket, only annotates the row.
+		// BillsQuerier already returns *BillSnapshot (cross-feature read pattern:
+		// flat projection at the boundary), so this is a direct pointer hand-off.
 		if cand.ContractID != nil {
 			if b, ok := billMap[*cand.ContractID]; ok && b != nil {
-				row.Bill = &BillSnapshot{
-					BillID:            b.ID,
-					Status:            string(b.Status),
-					TotalAmountSatang: b.TotalAmount,
-				}
+				row.Bill = b
 			}
 		}
 
@@ -331,7 +328,7 @@ func (s *service) guardWritable(ctx context.Context, apartmentID, roomID uuid.UU
 	// Reversal boundary: once a bill exists for this contract+month,
 	// decision affordance shuts down — Q9 architecture gate.
 	if cand.ContractID != nil {
-		bills, err := s.bills.FindExistingByContractsAndMonth(ctx, []uuid.UUID{*cand.ContractID}, billingMonth)
+		bills, err := s.bills.FindExistingBillsByContractsAndMonth(ctx, []uuid.UUID{*cand.ContractID}, billingMonth)
 		if err != nil {
 			return fmt.Errorf("check existing bill: %w", err)
 		}
