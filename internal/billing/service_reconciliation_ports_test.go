@@ -129,7 +129,7 @@ func TestCreateMonthlyBillForReconciliation_DelegatesToCreateMonthlyBill(t *test
 	}
 }
 
-func TestCreateMonthlyBillForReconciliation_MissingMeterReturnsAppError(t *testing.T) {
+func TestCreateMonthlyBillForReconciliation_MissingMeterMapsToLostReady(t *testing.T) {
 	c := testContract()
 	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
 		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
@@ -139,15 +139,15 @@ func TestCreateMonthlyBillForReconciliation_MissingMeterReturnsAppError(t *testi
 			ContractID:   c.ID,
 			BillingMonth: "2026-03",
 		}, nil)
-	if !errors.Is(err, ErrMeterNotFound) {
-		t.Fatalf("expected ErrMeterNotFound, got %v", err)
+	if !errors.Is(err, billingreconciliation.ErrLostReady) {
+		t.Fatalf("expected ErrLostReady (meter gone between preview and commit), got %v", err)
 	}
 	if _, ok := respond.Is(err); !ok {
 		t.Fatalf("expected AppError so reconciliation service can map → SKIPPED, got plain error %v", err)
 	}
 }
 
-func TestCreateMonthlyBillForReconciliation_PropagatesContractNotFound(t *testing.T) {
+func TestCreateMonthlyBillForReconciliation_ContractMissingMapsToLostReady(t *testing.T) {
 	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{}, // empty → ErrRecordNotFound
 		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
@@ -156,8 +156,8 @@ func TestCreateMonthlyBillForReconciliation_PropagatesContractNotFound(t *testin
 			ContractID:   uuid.New(),
 			BillingMonth: "2026-03",
 		}, nil)
-	if !errors.Is(err, ErrContractNotFound) {
-		t.Fatalf("expected ErrContractNotFound, got %v", err)
+	if !errors.Is(err, billingreconciliation.ErrLostReady) {
+		t.Fatalf("expected ErrLostReady (contract soft-deleted / not active), got %v", err)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestCreateMonthlyBillForReconciliation_BadBillingMonth(t *testing.T) {
 	}
 }
 
-func TestCreateMonthlyBillForReconciliation_PropagatesDuplicateBill(t *testing.T) {
+func TestCreateMonthlyBillForReconciliation_DuplicateMapsToAlreadyBilled(t *testing.T) {
 	c := testContract()
 	reading := testMonthlyReading(c.RoomID, "2026-03")
 
@@ -201,8 +201,8 @@ func TestCreateMonthlyBillForReconciliation_PropagatesDuplicateBill(t *testing.T
 			ContractID:   c.ID,
 			BillingMonth: "2026-03",
 		}, nil)
-	if !errors.Is(err, ErrBillAlreadyExists) {
-		t.Fatalf("expected ErrBillAlreadyExists (reconciliation maps → ALREADY_BILLED_BY_OTHER), got %v", err)
+	if !errors.Is(err, billingreconciliation.ErrAlreadyBilled) {
+		t.Fatalf("expected ErrAlreadyBilled, got %v", err)
 	}
 }
 

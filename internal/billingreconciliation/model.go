@@ -146,6 +146,78 @@ type Report struct {
 	Rooms        []RoomClassification
 }
 
+// --- Generate (1D ออกบิล) types ---
+//
+// Per-row commit outcome from the reconciliation workspace's Generate fan-out.
+// Vocabulary follows the Option A pattern (project_billing_batch_option_a.md):
+// SUCCESS = bill created; SKIPPED = business-rule guard fired before/during
+// commit; FAILED = system error.
+//
+// Locked vocabulary per project_reconciliation_phase1d_scenario1_locks.md Q1.
+
+type GenerateItemResultType string
+
+const (
+	GenerateItemSuccess GenerateItemResultType = "SUCCESS"
+	GenerateItemSkipped GenerateItemResultType = "SKIPPED"
+	GenerateItemFailed  GenerateItemResultType = "FAILED"
+)
+
+// GenerateSkipReason names the specific business-rule reason a Generate
+// attempt did NOT create a bill. Vocabulary frozen at the walk and surfaced
+// on the workspace's transient feedback line.
+type GenerateSkipReason string
+
+const (
+	// GenerateSkipLostReady — room was no longer in a billable state at
+	// commit time (meter missing/changed, contract status flipped, bucket
+	// re-classified between Reconcile and Generate). Operator-facing
+	// message: "สถานะเปลี่ยนระหว่างการตรวจสอบและการบันทึก".
+	GenerateSkipLostReady GenerateSkipReason = "LOST_READY_BETWEEN_PREVIEW_AND_COMMIT"
+
+	// GenerateSkipAlreadyBilled — a non-VOID monthly bill already exists
+	// for the (contract, billing_month). Could be a pre-existing bill
+	// (operator drove past the inline evidence on the row) or a race with
+	// another caller mid-fan-out.
+	GenerateSkipAlreadyBilled GenerateSkipReason = "ALREADY_BILLED_BY_OTHER"
+)
+
+// GenerateRequest is the per-call input to the Generate fan-out. room_ids[]
+// is the reviewed set — CTA count is contractual (Q1 Contract A): the
+// caller sends what it believes is the READY-and-not-yet-billed set,
+// service re-validates per-row and emits ≤ len(room_ids) results.
+//
+// Anti-promotion: room_ids[] is a slice on the request, not a
+// "ReviewedSet" entity. The fan-out is a service-level loop, not a batch
+// orchestration object.
+type GenerateRequest struct {
+	ApartmentID  uuid.UUID
+	BillingMonth string
+	RoomIDs      []uuid.UUID
+}
+
+// GenerateItemResult is one entry in the fan-out response — one row per
+// requested room_id (same order as the request).
+type GenerateItemResult struct {
+	RoomID       uuid.UUID
+	ResultType   GenerateItemResultType
+	BillID       *uuid.UUID         // non-nil when ResultType == GenerateItemSuccess
+	SkipReason   GenerateSkipReason // non-empty when ResultType == GenerateItemSkipped
+	ErrorCode    string             // non-empty when ResultType == GenerateItemFailed
+	ErrorMessage string             // Thai user-facing string for FAILED rows
+}
+
+// GenerateResult bundles the per-item results plus the per-call counts the
+// FE banner / toast renders. Counts mirror Items but precomputed so the
+// FE doesn't have to scan.
+type GenerateResult struct {
+	BillingMonth string
+	Items        []GenerateItemResult
+	SuccessCount int
+	SkippedCount int
+	FailedCount  int
+}
+
 // --- Pure classifier ---
 
 // classifyRoom is the pure rule that assigns one room to a bucket + reason.

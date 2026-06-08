@@ -3,7 +3,40 @@ package billingreconciliation
 import (
 	"context"
 
+	"nana/internal/shared/respond"
+
 	"github.com/google/uuid"
+)
+
+// Port-level sentinel errors returned by BillsCommander.
+// Classification responsibility lives on the billing adapter side — it
+// translates billing's internal sentinels (ErrBillAlreadyExists,
+// ErrMeterNotFound, ErrContractNotActive, ...) into one of these two
+// outcomes. Keeping the mapping at the adapter avoids forcing
+// billingreconciliation to import billing for sentinel comparison
+// (which would re-introduce the cycle this package's port direction
+// was set up to prevent).
+//
+// The reconciliation service consumes these via errors.Is and maps each
+// to the per-row GenerateSkipReason on the workspace's Generate result.
+var (
+	// ErrAlreadyBilled — a non-VOID monthly bill exists for the
+	// (contract, billing_month) the commander tried to commit. Race with
+	// another caller between Reconcile preview and Generate commit.
+	// Maps to GenerateSkipAlreadyBilled.
+	ErrAlreadyBilled = respond.New(
+		"ALREADY_BILLED_BY_OTHER", 409,
+		"ห้องนี้มีบิลเดือนนี้แล้ว",
+	)
+
+	// ErrLostReady — the room is no longer in a billable state at commit
+	// time (meter went missing, contract status changed, etc.).
+	// Catch-all "state changed between preview and commit" outcome.
+	// Maps to GenerateSkipLostReady.
+	ErrLostReady = respond.New(
+		"LOST_READY_BETWEEN_PREVIEW_AND_COMMIT", 409,
+		"ห้องไม่อยู่ในสถานะพร้อมออกบิลแล้ว",
+	)
 )
 
 // BillsQuerier reads bill evidence for reconciliation rows. Pure read; no

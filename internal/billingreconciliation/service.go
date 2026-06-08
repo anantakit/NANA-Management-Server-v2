@@ -37,13 +37,21 @@ type Service interface {
 	// boundary as Set — once a bill exists, decision moves into bill
 	// grammar (Phase 2.1 correction) and is no longer touchable here.
 	DeleteDecision(ctx context.Context, apartmentID, roomID uuid.UUID, billingMonth string) error
+
+	// Generate fans out the reviewed room_ids[] into per-row monthly-bill
+	// creates. Re-classifies each room against current truth before
+	// delegating to BillsCommander; emits SUCCESS / SKIPPED (with reason)
+	// / FAILED per row. Caller is the workspace's ออกบิล CTA — count is
+	// contractual (Q1 Contract A): len(req.RoomIDs) results returned.
+	Generate(ctx context.Context, req GenerateRequest, actor *uuid.UUID) (*GenerateResult, error)
 }
 
 type service struct {
-	repo     Repository
-	meters   meterreading.MeterReadingRepository
-	moveOuts moveout.MoveOutRepository
-	bills    BillsQuerier
+	repo      Repository
+	meters    meterreading.MeterReadingRepository
+	moveOuts  moveout.MoveOutRepository
+	bills     BillsQuerier
+	commander BillsCommander
 }
 
 var _ Service = (*service)(nil)
@@ -53,12 +61,14 @@ func NewService(
 	meters meterreading.MeterReadingRepository,
 	moveOuts moveout.MoveOutRepository,
 	bills BillsQuerier,
+	commander BillsCommander,
 ) Service {
 	return &service{
-		repo:     repo,
-		meters:   meters,
-		moveOuts: moveOuts,
-		bills:    bills,
+		repo:      repo,
+		meters:    meters,
+		moveOuts:  moveOuts,
+		bills:     bills,
+		commander: commander,
 	}
 }
 
@@ -432,6 +442,48 @@ func ToDecisionResponse(d *Decision, attr *DecisionAttribution) DecisionResponse
 	}
 	if attr != nil {
 		out.DecidedByName = attr.DecidedByName
+	}
+	return out
+}
+
+// ToGenerateResponse maps the Generate fan-out result to wire shape.
+// Pointer fields preserve omitempty semantics — SUCCESS rows omit
+// skip_reason / error_*, SKIPPED rows omit bill_id, FAILED rows omit
+// bill_id / skip_reason.
+func ToGenerateResponse(r *GenerateResult) GenerateResponse {
+	items := make([]GenerateItemPayload, 0, len(r.Items))
+	for _, it := range r.Items {
+		items = append(items, toGenerateItem(it))
+	}
+	return GenerateResponse{
+		BillingMonth: r.BillingMonth,
+		SuccessCount: r.SuccessCount,
+		SkippedCount: r.SkippedCount,
+		FailedCount:  r.FailedCount,
+		Items:        items,
+	}
+}
+
+func toGenerateItem(it GenerateItemResult) GenerateItemPayload {
+	out := GenerateItemPayload{
+		RoomID: it.RoomID.String(),
+		Result: string(it.ResultType),
+	}
+	if it.BillID != nil {
+		s := it.BillID.String()
+		out.BillID = &s
+	}
+	if it.SkipReason != "" {
+		s := string(it.SkipReason)
+		out.SkipReason = &s
+	}
+	if it.ErrorCode != "" {
+		c := it.ErrorCode
+		out.ErrorCode = &c
+	}
+	if it.ErrorMessage != "" {
+		m := it.ErrorMessage
+		out.ErrorMessage = &m
 	}
 	return out
 }

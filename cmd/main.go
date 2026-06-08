@@ -130,7 +130,7 @@ func main() {
 
 	// Wire dependencies — Billing Reconciliation (Phase 1A: read-only audit)
 	reconRepo := billingreconciliation.NewRepository(db)
-	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billService)
+	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billService, billService)
 	reconHandler := billingreconciliation.NewHandler(reconService)
 
 	// Create Fiber app

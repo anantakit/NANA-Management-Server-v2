@@ -64,12 +64,11 @@ func (s *billingService) FindExistingBillsByContractsAndMonth(
 //   - Delegate to CreateMonthlyBill so the underlying DRAFT-first behavior,
 //     duplicate guard, validation pipeline, and CREATE_DRAFT audit row stay
 //     identical to single-bill and batch paths.
-//   - Errors propagate verbatim — sentinel mapping to SKIPPED reason codes
-//     (LOST_READY_BETWEEN_PREVIEW_AND_COMMIT, ALREADY_BILLED_BY_OTHER) is
-//     the reconciliation service's job, not the adapter's.
-//
-// "No meter reading" surfaces as a 409 AppError so callers using
-// errors.Is + respond.Is can both reach a stable signal.
+//   - Classify billing-side sentinel errors into the port's two SKIPPED
+//     outcomes (ErrAlreadyBilled / ErrLostReady). The reconciliation
+//     service cannot do this classification itself because it cannot
+//     import billing (cycle would re-form). System errors propagate
+//     unchanged for the service to surface as FAILED rows.
 func (s *billingService) CreateMonthlyBillForReconciliation(
 	ctx context.Context,
 	req billingreconciliation.CreateMonthlyBillForReconciliationRequest,
@@ -81,7 +80,9 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 	c, err := s.contracts.FindByIDSimple(ctx, req.ContractID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrContractNotFound
+			// Contract disappeared between Reconcile and commit (soft-delete /
+			// race) — a LOST_READY outcome for the per-row result.
+			return nil, billingreconciliation.ErrLostReady
 		}
 		return nil, fmt.Errorf("find contract for reconciliation bill: %w", err)
 	}
@@ -91,7 +92,10 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 	}
 	reading := meters[c.RoomID]
 	if reading == nil {
-		return nil, ErrMeterNotFound
+		// Meter missing at commit — operator preview said READY, but the
+		// data behind it has since shifted (meter row deleted, anomaly
+		// re-correction, etc.).
+		return nil, billingreconciliation.ErrLostReady
 	}
 
 	bill, err := s.CreateMonthlyBill(ctx, CreateMonthlyBillRequest{
@@ -100,7 +104,33 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 		MeterReadingID: reading.ID.String(),
 	}, actor)
 	if err != nil {
-		return nil, err
+		return nil, classifyCreateMonthlyBillError(err)
 	}
 	return &billingreconciliation.CreatedBill{ID: bill.ID}, nil
+}
+
+// classifyCreateMonthlyBillError translates billing-side sentinel errors into
+// the BillsCommander port's two SKIPPED outcomes. System errors and
+// unrecognized AppErrors propagate as-is so the reconciliation service can
+// surface them as FAILED rows.
+//
+// Categories:
+//   - ErrBillAlreadyExists → ErrAlreadyBilled (race with another commit)
+//   - state-change invariant violations
+//     (meter type/room/month mismatch, contract not active, contract not
+//     found, meter not found) → ErrLostReady
+//   - anything else → propagated verbatim
+func classifyCreateMonthlyBillError(err error) error {
+	switch {
+	case errors.Is(err, ErrBillAlreadyExists):
+		return billingreconciliation.ErrAlreadyBilled
+	case errors.Is(err, ErrContractNotActive),
+		errors.Is(err, ErrContractNotFound),
+		errors.Is(err, ErrMeterNotFound),
+		errors.Is(err, ErrMeterTypeMismatch),
+		errors.Is(err, ErrMeterRoomMismatch),
+		errors.Is(err, ErrMeterMonthMismatch):
+		return billingreconciliation.ErrLostReady
+	}
+	return err
 }

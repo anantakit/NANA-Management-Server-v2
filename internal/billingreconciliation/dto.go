@@ -112,3 +112,38 @@ type DecisionResponse struct {
 	DecidedAt     string  `json:"decided_at"`
 	DecidedByName *string `json:"decided_by_name"`
 }
+
+// --- Phase 1D Generate DTOs ---
+
+// GenerateRequestBody is the POST /generate body. room_ids[] is contractual:
+// len(room_ids) == len(response.items). Validator enforces min=1 so the
+// 1D CTA can't accidentally fire an empty call.
+type GenerateRequestBody struct {
+	ApartmentID  string   `json:"apartment_id" validate:"required,uuid"`
+	BillingMonth string   `json:"billing_month" validate:"required,len=7"`
+	RoomIDs      []string `json:"room_ids" validate:"required,min=1,dive,uuid"`
+}
+
+// GenerateResponse is the JSON payload returned to the FE. Counts are
+// precomputed so the operator-facing banner / toast can render without
+// scanning items[]; items[] is included for forensics + the per-row
+// localized message the FE may choose to surface.
+type GenerateResponse struct {
+	BillingMonth string                `json:"billing_month"`
+	SuccessCount int                   `json:"success_count"`
+	SkippedCount int                   `json:"skipped_count"`
+	FailedCount  int                   `json:"failed_count"`
+	Items        []GenerateItemPayload `json:"items"`
+}
+
+// GenerateItemPayload is the per-row outcome surface. Optional fields use
+// pointers + omitempty so SUCCESS rows don't carry empty skip / error
+// strings, and SKIPPED rows don't carry empty bill_id.
+type GenerateItemPayload struct {
+	RoomID       string  `json:"room_id"`
+	Result       string  `json:"result"` // SUCCESS / SKIPPED / FAILED
+	BillID       *string `json:"bill_id,omitempty"`
+	SkipReason   *string `json:"skip_reason,omitempty"`
+	ErrorCode    *string `json:"error_code,omitempty"`
+	ErrorMessage *string `json:"error_message,omitempty"`
+}
