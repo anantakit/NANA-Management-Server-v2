@@ -23,6 +23,7 @@ import (
 type mockBillingRepo struct {
 	findAllFn                           func(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
 	listBillsByBatchIDFn                func(batchID uuid.UUID) ([]Bill, error)
+	listMonthlyBillsByApartmentMonthFn  func(apartmentID uuid.UUID, billingMonth string) ([]Bill, error)
 	updateErrByBillID                   map[uuid.UUID]error // per-bill Update failure injection
 	findByIDFn                          func(ctx context.Context, id uuid.UUID) (*Bill, error)
 	findByIDWithRelationsFn             func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
@@ -156,6 +157,12 @@ func (m *mockBillingRepo) Update(ctx context.Context, bill *Bill) error {
 func (m *mockBillingRepo) ListBillsByBatchID(_ context.Context, batchID uuid.UUID) ([]Bill, error) {
 	if m.listBillsByBatchIDFn != nil {
 		return m.listBillsByBatchIDFn(batchID)
+	}
+	return nil, nil
+}
+func (m *mockBillingRepo) ListMonthlyBillsByApartmentMonth(_ context.Context, apartmentID uuid.UUID, billingMonth string) ([]Bill, error) {
+	if m.listMonthlyBillsByApartmentMonthFn != nil {
+		return m.listMonthlyBillsByApartmentMonthFn(apartmentID, billingMonth)
 	}
 	return nil, nil
 }

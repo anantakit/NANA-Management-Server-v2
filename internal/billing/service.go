@@ -34,6 +34,13 @@ type BillingService interface {
 	PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error)
 	CommitBatch(ctx context.Context, batchID uuid.UUID) (*CommitBatchResult, error)
 	BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error)
+	// FinalizeAllByMonth bulk-finalizes every DRAFT MONTHLY bill for
+	// (apartment, billing_month) — Phase 1D shell finalize for bills created
+	// via the reconciliation Generate path (which produces bills without a
+	// Batch wrapper per service_generate.go anti-promotion doctrine). Mirrors
+	// BatchFinalizeAll's per-item TX + classify-on-error + idempotent semantics
+	// so the FE can reuse FinalizeAllModal verbatim.
+	FinalizeAllByMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string, actor *uuid.UUID) (*BatchFinalizeResult, error)
 	GetBatchByID(ctx context.Context, id uuid.UUID) (*BillGenerationBatch, error)
 	GetBatchItems(ctx context.Context, id uuid.UUID) ([]BatchItemWithTenant, error)
 	// RePlanBatchItem re-runs the planner for a single batch item and writes

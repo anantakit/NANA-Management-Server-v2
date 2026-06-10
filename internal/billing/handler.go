@@ -37,6 +37,9 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Post("/settlement/preview", h.PreviewSettlement)
 	r.Post("/settlement", h.CreateSettlement)
 	r.Post("/batch-monthly", h.BatchCreateMonthly)
+	// Must be registered before /:id/* actions so the literal "finalize-all-by-month"
+	// isn't captured as a bill UUID.
+	r.Post("/finalize-all-by-month", h.FinalizeAllByMonth)
 	r.Patch("/:id/finalize", h.Finalize)
 	r.Patch("/:id/void", h.Void)
 	r.Patch("/:id/paid", h.MarkPaid)
@@ -264,6 +267,33 @@ func (h *BillingHandler) CommitBatch(c fiber.Ctx) error {
 	}
 
 	return respond.Success(c, "สร้างบิลร่างแล้ว", ToCommitBatchResponse(result))
+}
+
+// FinalizeAllByMonth bulk-finalizes every DRAFT monthly bill scoped to
+// (apartment, billing_month). Per-month sibling of BatchFinalizeAll for
+// bills created via the reconciliation Generate path (no Batch entity).
+// Same response shape so the FE can reuse FinalizeAllModal verbatim;
+// partial failure is a 200 with failures[] populated, not an HTTP error.
+func (h *BillingHandler) FinalizeAllByMonth(c fiber.Ctx) error {
+	var req FinalizeAllByMonthRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+	apartmentID, err := uuid.Parse(req.ApartmentID)
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("apartment_id ไม่ถูกต้อง"))
+	}
+
+	result, err := h.svc.FinalizeAllByMonth(c.Context(), apartmentID, req.BillingMonth, middleware.ActorFromCtx(c))
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	msg := "ออกบิลแล้ว"
+	if result.FailCount > 0 {
+		msg = "ออกบิลบางใบไม่สำเร็จ กรุณาตรวจสอบ"
+	}
+	return respond.Success(c, msg, result)
 }
 
 // BatchFinalizeAll finalizes every DRAFT monthly bill in the given batch.

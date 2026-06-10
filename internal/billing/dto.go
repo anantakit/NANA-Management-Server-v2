@@ -27,6 +27,14 @@ type BatchCreateMonthlyBillsRequest struct {
 	BillingMonth string `json:"billing_month" validate:"required,len=7"` // YYYY-MM
 }
 
+// FinalizeAllByMonthRequest scopes a per-month bulk finalize. Companion to
+// the batch-scoped POST /batches/:id/finalize-all — used when bills were
+// created via the reconciliation Generate path (no Batch entity exists).
+type FinalizeAllByMonthRequest struct {
+	ApartmentID  string `json:"apartment_id" validate:"required,uuid"`
+	BillingMonth string `json:"billing_month" validate:"required,len=7"` // YYYY-MM
+}
+
 // MonthlyPreflightRequest is the query for GET /bills/preflight.
 // Read-only counts; no batch row created.
 type MonthlyPreflightRequest struct {

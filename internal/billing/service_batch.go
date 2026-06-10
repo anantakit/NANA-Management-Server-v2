@@ -378,6 +378,75 @@ func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID
 	return result, nil
 }
 
+// FinalizeAllByMonth bulk-finalizes every DRAFT MONTHLY bill scoped to
+// (apartment, billing_month). Doctrine note: this is the per-month sibling
+// of BatchFinalizeAll for bills created via the reconciliation Generate
+// path, which produces bills WITHOUT a Batch wrapper per the anti-promotion
+// guard in billingreconciliation/service_generate.go. The /:batchID/
+// finalize-all endpoint and this one share `finalizeBillInTx` so the
+// audit + idempotency semantics are identical — only the scope query
+// differs.
+//
+// Loop semantics mirror BatchFinalizeAll one-to-one:
+//   - already-FINALIZED rows skipped silently (idempotent re-run)
+//   - settlement rows guarded (the repo query filters MONTHLY at SQL,
+//     belt-and-suspenders here)
+//   - per-row TX so a single failure doesn't roll back successful rows
+//   - errors classified via the same classifyFinalizeError table → FE
+//     reuses FinalizeAllModal's failure grouping verbatim
+func (s *billingService) FinalizeAllByMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string, actor *uuid.UUID) (*BatchFinalizeResult, error) {
+	if !billingMonthRe.MatchString(billingMonth) {
+		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
+	}
+
+	bills, err := s.repo.ListMonthlyBillsByApartmentMonth(ctx, apartmentID, billingMonth)
+	if err != nil {
+		return nil, fmt.Errorf("list monthly bills by apartment+month: %w", err)
+	}
+
+	// Explicit empty (not nil) so the JSON serialization is consistently
+	// `"failures": []` rather than `null`.
+	result := &BatchFinalizeResult{Failures: []BatchFinalizeFailure{}}
+
+	for _, b := range bills {
+		// Defense-in-depth: the SQL already filters bill_type=MONTHLY, but
+		// keep the runtime guard to match BatchFinalizeAll's structure
+		// (Lock #9 — settlement bills must never enter this path).
+		if !b.IsMonthly() {
+			slog.Warn("FinalizeAllByMonth: skipping non-monthly bill",
+				"apartment_id", apartmentID, "billing_month", billingMonth, "bill_id", b.ID, "bill_type", b.BillType)
+			continue
+		}
+
+		// Idempotency: already-FINALIZED bills (or PAID) silently skipped.
+		// VOID excluded at the SQL layer.
+		if b.IsFinalized() {
+			continue
+		}
+
+		err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+			return s.finalizeBillInTx(txCtx, b.ID, actor)
+		})
+		if err != nil {
+			code, msg := classifyFinalizeError(err)
+			if code == FailureCodeInfraError {
+				slog.Error("FinalizeAllByMonth: bill finalize infra error",
+					"apartment_id", apartmentID, "billing_month", billingMonth, "bill_id", b.ID, "error", err)
+			}
+			result.Failures = append(result.Failures, BatchFinalizeFailure{
+				BillID:  b.ID,
+				Code:    code,
+				Message: msg,
+			})
+			continue
+		}
+		result.SuccessCount++
+	}
+
+	result.FailCount = len(result.Failures)
+	return result, nil
+}
+
 // classifyFinalizeError maps a finalizeBillInTx error to the FE-facing
 // failure code + Thai message. ErrNotDraft / ErrNoLineItems are domain
 // sentinels surfaced via errors.Is; everything else falls through to

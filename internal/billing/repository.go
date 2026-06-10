@@ -61,6 +61,17 @@ type BillingRepository interface {
 	// Batch finalize flow
 	ListBillsByBatchID(ctx context.Context, batchID uuid.UUID) ([]Bill, error)
 
+	// Per-month finalize flow (Phase 1D shell). Returns every non-VOID, non-
+	// soft-deleted MONTHLY bill for (apartment, billing_month), preloading
+	// LineItems so CanFinalize can validate ErrNoLineItems without a per-bill
+	// round-trip. Filtering for DRAFT happens at the service layer to mirror
+	// the BatchFinalizeAll idempotency semantics (already-FINALIZED rows
+	// skipped silently, settlement rows guarded). The reconciliation Generate
+	// path creates bills without a Batch wrapper per the anti-promotion
+	// doctrine (service_generate.go), so the batch-scoped finalize query
+	// can't find them — this method is the doctrine-aligned alternative.
+	ListMonthlyBillsByApartmentMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string) ([]Bill, error)
+
 	// Correction flow — row-locks the bill before void+recreate so concurrent
 	// correction attempts on the same bill serialize cleanly. Caller MUST be
 	// inside a TX (uses SELECT FOR UPDATE).
@@ -674,6 +685,34 @@ func (r *billingRepository) ListBillsByBatchID(ctx context.Context, batchID uuid
 		Joins("JOIN bill_generation_batch_items i ON i.bill_id = bills.id").
 		Where("i.batch_id = ? AND bills.bill_type = ?", batchID, BillTypeMonthly).
 		Order("i.room_floor ASC, i.room_number ASC, bills.id ASC").
+		Preload("LineItems").
+		Find(&bills).Error
+	return bills, err
+}
+
+// ListMonthlyBillsByApartmentMonth returns every non-VOID, non-soft-deleted
+// MONTHLY bill scoped to (apartment, billing_month). JOIN chain mirrors
+// baseJoinQuery (contracts → rooms → apartments) to filter by apartment_id;
+// VOID bills are excluded so a previously-voided correction doesn't
+// resurface in the finalize loop. Soft-deleted bills excluded by the
+// explicit `bills.deleted_at IS NULL` predicate. Line items preloaded so
+// the service's CanFinalize check has everything it needs in one round-trip.
+//
+// Ordering by room floor + number gives the FE failure-list a deterministic
+// order admins can scan top-to-bottom (matches BatchFinalizeAll's order).
+func (r *billingRepository) ListMonthlyBillsByApartmentMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string) ([]Bill, error) {
+	var bills []Bill
+	err := database.DB(ctx, r.db).
+		Model(&Bill{}).
+		Joins("JOIN contracts ON contracts.id = bills.contract_id AND contracts.deleted_at IS NULL").
+		Joins("JOIN rooms ON rooms.id = contracts.room_id AND rooms.deleted_at IS NULL").
+		Joins("JOIN apartments ON apartments.id = rooms.apartment_id AND apartments.deleted_at IS NULL").
+		Where("bills.deleted_at IS NULL").
+		Where("apartments.id = ?", apartmentID).
+		Where("bills.billing_month = ?", billingMonth).
+		Where("bills.bill_type = ?", BillTypeMonthly).
+		Where("bills.status <> ?", BillStatusVoid).
+		Order("rooms.floor ASC, rooms.number ASC, bills.id ASC").
 		Preload("LineItems").
 		Find(&bills).Error
 	return bills, err
