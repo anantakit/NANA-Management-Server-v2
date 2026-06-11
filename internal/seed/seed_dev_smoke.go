@@ -716,14 +716,25 @@ func CleanupSmokeData(db *gorm.DB) error {
 	}
 
 	// Delete order (respects FKs):
-	//  null out notice.settlement_bill_id → delete line items → bills
-	//    → notices → meter readings → contracts → tenants
+	//  null out notice.settlement_bill_id
+	//  null out batch_items.bill_id (bill_generation_batch_items FK)
+	//  → delete line items → bills
+	//  → delete batch items (contract_id FK) → notices
+	//  → meter readings → contracts → tenants
 	if len(contractIDs) > 0 {
 		// Null out notice → bill FK so bills can be deleted
 		if err := db.Unscoped().Model(&moveout.MoveOutNotice{}).
 			Where("contract_id IN ?", contractIDs).
 			Update("settlement_bill_id", nil).Error; err != nil {
 			return fmt.Errorf("clear smoke notice settlement_bill_id: %w", err)
+		}
+		// Null out batch_item → bill FK before deleting bills
+		if err := db.Exec(
+			`UPDATE bill_generation_batch_items SET bill_id = NULL
+			 WHERE bill_id IN (SELECT id FROM bills WHERE contract_id IN ?)`,
+			contractIDs,
+		).Error; err != nil {
+			return fmt.Errorf("clear smoke batch_items bill_id: %w", err)
 		}
 		// Bill line items
 		if err := db.Unscoped().
@@ -734,6 +745,13 @@ func CleanupSmokeData(db *gorm.DB) error {
 		// Bills
 		if err := db.Unscoped().Where("contract_id IN ?", contractIDs).Delete(&billing.Bill{}).Error; err != nil {
 			return fmt.Errorf("delete smoke bills: %w", err)
+		}
+		// Batch items referencing smoke contracts (contract_id FK)
+		if err := db.Exec(
+			`DELETE FROM bill_generation_batch_items WHERE contract_id IN ?`,
+			contractIDs,
+		).Error; err != nil {
+			return fmt.Errorf("delete smoke batch_items: %w", err)
 		}
 		// Notices
 		if err := db.Unscoped().Where("contract_id IN ?", contractIDs).Delete(&moveout.MoveOutNotice{}).Error; err != nil {
