@@ -18,6 +18,9 @@ const { chromium } = require('playwright')
 
 const FRONTEND = 'http://localhost:3001'
 const BACKEND = 'http://localhost:8080'
+const ADMIN_USER = 'admin'
+const ADMIN_PASS_FRESH = 'admin123'
+const ADMIN_PASS_POST = 'admin1234'
 
 // ─── Seed constants (must mirror canonical planner output) ────────────
 //
@@ -129,9 +132,22 @@ async function getLineAmount(page, descPrefix) {
 
 async function login(page) {
   await page.goto(`${FRONTEND}/login`)
-  await page.fill('input[name="username"]', 'admin')
-  await page.fill('input[name="password"]', 'admin123')
+  await page.fill('input[name="username"]', ADMIN_USER)
+  await page.fill('input[name="password"]', ADMIN_PASS_FRESH)
   await page.click('button[type="submit"]')
+  await page.waitForLoadState('networkidle')
+  // Retry with post-change password if fresh password was rejected (DB not reset between runs)
+  if (page.url().includes('/login')) {
+    await page.fill('input[name="password"]', ADMIN_PASS_POST)
+    await page.click('button[type="submit"]')
+    await page.waitForLoadState('networkidle')
+  }
+  if (page.url().includes('/change-password')) {
+    await page.fill('input[name="new_password"]', ADMIN_PASS_POST)
+    await page.fill('input[name="confirm_password"]', ADMIN_PASS_POST)
+    await page.click('button[type="submit"]')
+    await page.waitForLoadState('networkidle')
+  }
   await page.waitForFunction(() => !window.location.pathname.includes('/login'), { timeout: 10000 })
 }
 

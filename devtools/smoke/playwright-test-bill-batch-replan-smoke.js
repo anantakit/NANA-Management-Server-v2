@@ -62,6 +62,12 @@ async function login(page) {
   await page.fill('input[name="password"]', ADMIN_PASS_FRESH)
   await page.click('button[type="submit"]')
   await page.waitForLoadState('networkidle')
+  // Retry with post-change password if fresh password was rejected (DB not reset between runs)
+  if (page.url().includes('/login')) {
+    await page.fill('input[name="password"]', ADMIN_PASS_POST)
+    await page.click('button[type="submit"]')
+    await page.waitForLoadState('networkidle')
+  }
   if (page.url().includes('/change-password')) {
     await page.fill('input[name="new_password"]', ADMIN_PASS_POST)
     await page.fill('input[name="confirm_password"]', ADMIN_PASS_POST)
@@ -89,16 +95,27 @@ async function selectApartmentViaSidebar(page, apartmentName) {
 }
 
 // Trigger BatchCreateMonthlyBills via the UI: navigate to /bills/generate,
-// confirm the current month is selected, click the toolbar CTA. The page
-// redirects to /bills/batches/:id on success — wait for the URL change.
+// click the toolbar CTA, intercept the POST response to get the batch_id,
+// then navigate directly to /bills/batches/:id.
+// The page no longer auto-redirects to /bills/batches/:id — since Phase 1D
+// it navigates to /monthly-bills/:month instead. We intercept the API
+// response to get the batch_id and drive navigation ourselves.
 async function generateBatchForApartment(page) {
   await page.goto(`${FRONTEND}/bills/generate`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(500)
+
+  const responsePromise = page.waitForResponse(
+    res => res.url().includes('/api/v1/bills/batch-monthly') && res.status() === 200,
+    { timeout: 15000 },
+  )
   await page
     .getByRole('button', { name: 'คำนวณรอบบิล', exact: true })
     .click({ timeout: 8000 })
-  await page.waitForURL(/\/bills\/batches\/[0-9a-f-]+$/i, { timeout: 15000 })
-  await page.waitForLoadState('networkidle')
+  const res = await responsePromise
+  const body = await res.json()
+  const batchId = body.data.batch_id
+
+  await page.goto(`${FRONTEND}/bills/batches/${batchId}`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(500)
 }
 

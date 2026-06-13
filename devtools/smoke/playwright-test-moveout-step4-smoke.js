@@ -84,6 +84,12 @@ async function login(page) {
   await page.fill('input[name="password"]', ADMIN_PASS_FRESH)
   await page.click('button[type="submit"]')
   await page.waitForLoadState('networkidle')
+  // Retry with post-change password if fresh password was rejected (DB not reset between runs)
+  if (page.url().includes('/login')) {
+    await page.fill('input[name="password"]', ADMIN_PASS_POST)
+    await page.click('button[type="submit"]')
+    await page.waitForLoadState('networkidle')
+  }
   if (page.url().includes('/change-password')) {
     await page.fill('input[name="new_password"]', ADMIN_PASS_POST)
     await page.fill('input[name="confirm_password"]', ADMIN_PASS_POST)
