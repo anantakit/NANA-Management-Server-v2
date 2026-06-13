@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 
 	"gorm.io/gorm"
 )
@@ -29,6 +30,12 @@ func (m *gormTxManager) RunInTx(ctx context.Context, fn func(ctx context.Context
 		txCtx := context.WithValue(ctx, txKey{}, tx)
 		return fn(txCtx)
 	})
+}
+
+// IsNotFound reports whether err is gorm.ErrRecordNotFound.
+// Service-layer callers use this so they don't import gorm directly.
+func IsNotFound(err error) bool {
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 // DB returns the transactional *gorm.DB from context if present,

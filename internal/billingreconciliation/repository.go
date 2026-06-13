@@ -45,6 +45,8 @@ type Repository interface {
 	DeleteDecision(ctx context.Context, roomID uuid.UUID, billingMonth string) error
 }
 
+var errDecisionRowNotFound = errors.New("decision not found")
+
 type repository struct {
 	db *gorm.DB
 }
@@ -264,7 +266,7 @@ func (r *repository) DeleteDecision(ctx context.Context, roomID uuid.UUID, billi
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return errors.New("decision not found")
+		return errDecisionRowNotFound
 	}
 	return nil
 }

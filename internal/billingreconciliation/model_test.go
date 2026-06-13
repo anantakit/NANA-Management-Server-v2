@@ -270,6 +270,94 @@ func TestClassifyRoom(t *testing.T) {
 	}
 }
 
+// rawIsPDOrigin is the attribution gate — must agree with classifyRoom's
+// PD branch so attribution only surfaces when the row is genuinely operator-
+// facing. Any divergence is a silent correctness bug (attribution on a
+// non-PD row, or missing attribution on a real PD row).
+func TestRawIsPDOrigin(t *testing.T) {
+	start, end := parseBillingMonthRange("2026-06")
+	cid := uuid.New()
+
+	mkDate := func(s string) *time.Time {
+		v, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			t.Fatalf("bad fixture date %q: %v", s, err)
+		}
+		return &v
+	}
+
+	cases := []struct {
+		name           string
+		contractID     *uuid.UUID
+		startDate      *time.Time
+		pendingMoveOut bool
+		want           bool
+	}{
+		{
+			name:       "no contract → false",
+			contractID: nil,
+			startDate:  mkDate("2026-06-15"),
+			want:       false,
+		},
+		{
+			name:           "pending move-out beats mid-cycle → false",
+			contractID:     &cid,
+			startDate:      mkDate("2026-06-15"),
+			pendingMoveOut: true,
+			want:           false,
+		},
+		{
+			name:       "nil start date → false",
+			contractID: &cid,
+			startDate:  nil,
+			want:       false,
+		},
+		{
+			name:       "contract started prior month → false (existing tenant)",
+			contractID: &cid,
+			startDate:  mkDate("2026-05-01"),
+			want:       false,
+		},
+		{
+			name:       "contract starts on 1st of month → true (lower boundary)",
+			contractID: &cid,
+			startDate:  mkDate("2026-06-01"),
+			want:       true,
+		},
+		{
+			name:       "contract starts mid-month → true",
+			contractID: &cid,
+			startDate:  mkDate("2026-06-15"),
+			want:       true,
+		},
+		{
+			name:       "contract starts on last day of month → true (upper boundary)",
+			contractID: &cid,
+			startDate:  mkDate("2026-06-30"),
+			want:       true,
+		},
+		{
+			name:       "contract starts after end-of-month → false (next cycle)",
+			contractID: &cid,
+			startDate:  mkDate("2026-07-01"),
+			want:       false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := RoomCandidate{
+				ContractID:        tc.contractID,
+				ContractStartDate: tc.startDate,
+			}
+			got := rawIsPDOrigin(c, start, end, tc.pendingMoveOut)
+			if got != tc.want {
+				t.Errorf("rawIsPDOrigin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseBillingMonthRange(t *testing.T) {
 	start, end := parseBillingMonthRange("2026-06")
 	if !start.Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) {

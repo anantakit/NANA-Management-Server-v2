@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -36,7 +37,7 @@ import (
 // fan-out is a single in-memory loop returning a typed result. See
 // feedback_object_restraint_doctrine.md.
 func (s *service) Generate(ctx context.Context, req GenerateRequest, actor *uuid.UUID) (*GenerateResult, error) {
-	if !billingMonthRe.MatchString(req.BillingMonth) {
+	if !billingmonth.Valid(req.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 	if len(req.RoomIDs) == 0 {

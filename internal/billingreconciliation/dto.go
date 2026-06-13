@@ -28,6 +28,9 @@ type SummaryResponse struct {
 	PendingDecision int `json:"pending_decision"`
 	NotBillable     int `json:"not_billable"`
 	AnomalyCount    int `json:"anomaly_count"`
+	// Bill-world counts for unified workspace filter chips.
+	DraftCount     int `json:"draft_count"`
+	FinalizedCount int `json:"finalized_count"`
 }
 
 type ShouldBillSummary struct {

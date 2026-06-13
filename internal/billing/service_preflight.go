@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 
+	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -27,7 +28,7 @@ func (s *billingService) PreflightMonthly(ctx context.Context, req MonthlyPrefli
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("apartment_id ไม่ถูกต้อง")
 	}
-	if !billingMonthRe.MatchString(req.BillingMonth) {
+	if !billingmonth.Valid(req.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 

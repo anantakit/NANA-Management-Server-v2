@@ -2,12 +2,11 @@ package billingreconciliation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"nana/internal/meterreading"
-	"nana/internal/moveout"
-	"nana/internal/shared/money"
+	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -48,8 +47,8 @@ type Service interface {
 
 type service struct {
 	repo      Repository
-	meters    meterreading.MeterReadingRepository
-	moveOuts  moveout.MoveOutRepository
+	meters    MeterReadingQuerier
+	moveOuts  MoveOutQuerier
 	bills     BillsQuerier
 	commander BillsCommander
 }
@@ -58,8 +57,8 @@ var _ Service = (*service)(nil)
 
 func NewService(
 	repo Repository,
-	meters meterreading.MeterReadingRepository,
-	moveOuts moveout.MoveOutRepository,
+	meters MeterReadingQuerier,
+	moveOuts MoveOutQuerier,
 	bills BillsQuerier,
 	commander BillsCommander,
 ) Service {
@@ -83,7 +82,7 @@ func (s *service) Reconcile(ctx context.Context, q ReconciliationQuery) (*Report
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("apartment_id ไม่ถูกต้อง")
 	}
-	if !billingMonthRe.MatchString(q.BillingMonth) {
+	if !billingmonth.Valid(q.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 
@@ -197,6 +196,15 @@ func (s *service) Reconcile(ctx context.Context, q ReconciliationQuery) (*Report
 			summary.NotBillable++
 		}
 
+		if row.Bill != nil {
+			switch row.Bill.Status {
+			case "DRAFT":
+				summary.DraftCount++
+			case "FINALIZED", "PAID":
+				summary.FinalizedCount++
+			}
+		}
+
 		rows = append(rows, row)
 	}
 
@@ -227,7 +235,7 @@ var (
 )
 
 func (s *service) GetDecision(ctx context.Context, roomID uuid.UUID, billingMonth string) (*Decision, *DecisionAttribution, error) {
-	if !billingMonthRe.MatchString(billingMonth) {
+	if !billingmonth.Valid(billingMonth) {
 		return nil, nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 	d, attr, err := s.repo.FindDecisionByRoomMonth(ctx, roomID, billingMonth)
@@ -247,7 +255,7 @@ func (s *service) SetDecision(
 	decision DecisionState,
 	actor *uuid.UUID,
 ) (*Decision, *DecisionAttribution, error) {
-	if !billingMonthRe.MatchString(billingMonth) {
+	if !billingmonth.Valid(billingMonth) {
 		return nil, nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 	if decision != DecisionInclude && decision != DecisionSkip {
@@ -282,7 +290,7 @@ func (s *service) DeleteDecision(
 	apartmentID, roomID uuid.UUID,
 	billingMonth string,
 ) error {
-	if !billingMonthRe.MatchString(billingMonth) {
+	if !billingmonth.Valid(billingMonth) {
 		return respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 	if err := s.guardWritable(ctx, apartmentID, roomID, billingMonth); err != nil {
@@ -292,7 +300,7 @@ func (s *service) DeleteDecision(
 		// Best-effort: the guardWritable check already confirmed PD-origin,
 		// which implies a row may or may not exist. Treat "row missing" as
 		// idempotent success — operator clicked "ยกเลิกการตัดสิน" twice.
-		if err.Error() == "decision not found" {
+		if errors.Is(err, errDecisionRowNotFound) {
 			return nil
 		}
 		return fmt.Errorf("delete decision: %w", err)
@@ -349,141 +357,3 @@ func (s *service) guardWritable(ctx context.Context, apartmentID, roomID uuid.UU
 	return nil
 }
 
-// --- DTO mapping ---
-
-// ToReportResponse maps the domain report to wire format. Money normalized to
-// baht at the DTO boundary per coding-standards.md.
-func ToReportResponse(r *Report) ReportResponse {
-	items := make([]RoomReconcileItem, 0, len(r.Rooms))
-	for _, row := range r.Rooms {
-		items = append(items, toRoomItem(row))
-	}
-	return ReportResponse{
-		ApartmentID:  r.ApartmentID.String(),
-		BillingMonth: r.BillingMonth,
-		Summary: SummaryResponse{
-			Total: r.Summary.Total,
-			ShouldBill: ShouldBillSummary{
-				Total:          r.Summary.Ready + r.Summary.ActionRequired,
-				Ready:          r.Summary.Ready,
-				ActionRequired: r.Summary.ActionRequired,
-			},
-			PendingDecision: r.Summary.PendingDecision,
-			NotBillable:     r.Summary.NotBillable,
-			AnomalyCount:    r.Summary.AnomalyCount,
-		},
-		Rooms: items,
-	}
-}
-
-func toRoomItem(row RoomClassification) RoomReconcileItem {
-	item := RoomReconcileItem{
-		RoomID:     row.Room.RoomID.String(),
-		RoomNumber: row.Room.RoomNumber,
-		Floor:      row.Room.RoomFloor,
-		Bucket:     string(row.Bucket),
-	}
-	if row.Reason != "" {
-		s := string(row.Reason)
-		item.ReasonCode = &s
-	}
-	if row.Room.TenantName != "" {
-		t := row.Room.TenantName
-		item.TenantName = &t
-	}
-	if row.Room.ContractID != nil {
-		s := row.Room.ContractID.String()
-		item.ContractID = &s
-	}
-	if row.Room.ContractStartDate != nil {
-		s := row.Room.ContractStartDate.Format("2006-01-02")
-		item.ContractStartDate = &s
-	}
-	if row.Bill != nil {
-		item.Bill = &BillEvidence{
-			BillID:      row.Bill.BillID.String(),
-			Status:      row.Bill.Status,
-			TotalAmount: money.ToBaht(row.Bill.TotalAmountSatang),
-		}
-	}
-	if row.Anomaly != nil {
-		item.Anomaly = &AnomalyEvidence{
-			Electricity: row.Anomaly.Electricity,
-			Water:       row.Anomaly.Water,
-		}
-	}
-	if row.Attribution != nil {
-		item.Decision = toDecisionEvidence(row.Attribution)
-	}
-	return item
-}
-
-// toDecisionEvidence is shared by the per-row inline attribution AND by the
-// standalone GET/PUT decision response (which wraps it with room_id +
-// billing_month) — same wire shape so the FE renders attribution once.
-func toDecisionEvidence(a *DecisionAttribution) *DecisionEvidence {
-	return &DecisionEvidence{
-		State:         string(a.State),
-		DecidedAt:     a.DecidedAt.Format(time.RFC3339),
-		DecidedByName: a.DecidedByName,
-	}
-}
-
-// ToDecisionResponse maps the decision row + joined attribution to wire.
-// `d` carries id/room/month, `attr` carries the joined username — kept
-// split because GET / SetDecision both have a stored row AND a freshly
-// joined attribution and we want a single render path.
-func ToDecisionResponse(d *Decision, attr *DecisionAttribution) DecisionResponse {
-	out := DecisionResponse{
-		RoomID:       d.RoomID.String(),
-		BillingMonth: d.BillingMonth,
-		State:        string(d.Decision),
-		DecidedAt:    d.DecidedAt.Format(time.RFC3339),
-	}
-	if attr != nil {
-		out.DecidedByName = attr.DecidedByName
-	}
-	return out
-}
-
-// ToGenerateResponse maps the Generate fan-out result to wire shape.
-// Pointer fields preserve omitempty semantics — SUCCESS rows omit
-// skip_reason / error_*, SKIPPED rows omit bill_id, FAILED rows omit
-// bill_id / skip_reason.
-func ToGenerateResponse(r *GenerateResult) GenerateResponse {
-	items := make([]GenerateItemPayload, 0, len(r.Items))
-	for _, it := range r.Items {
-		items = append(items, toGenerateItem(it))
-	}
-	return GenerateResponse{
-		BillingMonth: r.BillingMonth,
-		SuccessCount: r.SuccessCount,
-		SkippedCount: r.SkippedCount,
-		FailedCount:  r.FailedCount,
-		Items:        items,
-	}
-}
-
-func toGenerateItem(it GenerateItemResult) GenerateItemPayload {
-	out := GenerateItemPayload{
-		RoomID: it.RoomID.String(),
-		Result: string(it.ResultType),
-	}
-	if it.BillID != nil {
-		s := it.BillID.String()
-		out.BillID = &s
-	}
-	if it.SkipReason != "" {
-		s := string(it.SkipReason)
-		out.SkipReason = &s
-	}
-	if it.ErrorCode != "" {
-		c := it.ErrorCode
-		out.ErrorCode = &c
-	}
-	if it.ErrorMessage != "" {
-		m := it.ErrorMessage
-		out.ErrorMessage = &m
-	}
-	return out
-}

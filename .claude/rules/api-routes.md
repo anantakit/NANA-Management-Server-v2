@@ -95,6 +95,7 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | POST | `/settlement` | Create settlement bill (DRAFT) |
 | GET | `/preflight` | Readiness counts for monthly batch (read-only; query `apartment_id` + `billing_month`). Returns total_rooms / ready_count / missing_meter_count / already_exists_count / move_out_pending_count / not_billable_count. Powers the Generate page readiness card — no batch persisted |
 | POST | `/batch-monthly` | Trigger batch monthly generation (compute snapshots, no bills yet) |
+| POST | `/finalize-all-by-month` | Bulk finalize every DRAFT monthly bill for (apartment_id, billing_month) — per-month sibling of `/batches/:id/finalize-all` for bills created via the reconciliation Generate path (no Batch entity). Same response shape: `{success_count, fail_count, failures[]}`. Already-FINALIZED or PAID bills silently skipped (idempotent). |
 | PATCH | `/:id/finalize` | Transition DRAFT → FINALIZED (works for both MONTHLY and SETTLEMENT drafts) |
 | PATCH | `/:id/void` | Void bill (DRAFT/FINALIZED → VOID, requires reason) |
 | PATCH | `/:id/paid` | Mark bill as paid (FINALIZED → PAID) |

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"nana/internal/shared/bind"
+	"nana/internal/shared/middleware"
 	"nana/internal/shared/respond"
 
 	"github.com/gofiber/fiber/v3"
@@ -76,10 +77,7 @@ func (h *Handler) SetDecision(c fiber.Ctx) error {
 	// actor optional — `decided_by` is ON DELETE SET NULL, and the seed
 	// admin path in dev tools sometimes lacks a userID Local. The DB will
 	// happily accept NULL; the attribution joins surface "—" on the FE.
-	var actor *uuid.UUID
-	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
-		actor = &uid
-	}
+	actor := middleware.ActorFromCtx(c)
 
 	d, attr, err := h.svc.SetDecision(c.Context(), apartmentID, roomID, billingMonth, DecisionState(req.Decision), actor)
 	if err != nil {
@@ -110,10 +108,7 @@ func (h *Handler) Generate(c fiber.Ctx) error {
 
 	// Actor optional — matches the decision endpoints' tolerance for dev
 	// fixture paths that lack a userID Local.
-	var actor *uuid.UUID
-	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
-		actor = &uid
-	}
+	actor := middleware.ActorFromCtx(c)
 
 	result, err := h.svc.Generate(c.Context(), GenerateRequest{
 		ApartmentID:  apartmentID,

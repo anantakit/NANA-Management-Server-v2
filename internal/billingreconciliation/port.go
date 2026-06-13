@@ -3,10 +3,27 @@ package billingreconciliation
 import (
 	"context"
 
+	"nana/internal/meterreading"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
+
+// MeterReadingQuerier is the minimal read port billingreconciliation needs
+// from meterreading — scoped to the one method used by Reconcile + guardWritable.
+// Narrower than meterreading.MeterReadingRepository (breaks the import cycle:
+// meterreading imports nothing from here; billing imports billingreconciliation).
+type MeterReadingQuerier interface {
+	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]*meterreading.MeterReading, error)
+}
+
+// MoveOutQuerier is the minimal read port billingreconciliation needs from
+// moveout — scoped to the one method used by Reconcile + guardWritable.
+// Returns map[uuid.UUID]bool (room_id → hasPending) so moveout is not
+// imported here (no moveout domain type crosses the port).
+type MoveOutQuerier interface {
+	FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
+}
 
 // Port-level sentinel errors returned by BillsCommander.
 // Classification responsibility lives on the billing adapter side — it

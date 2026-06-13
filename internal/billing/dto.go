@@ -94,6 +94,7 @@ type BatchFinalizeFailure struct {
 // Bills already FINALIZED before this call are SILENT — they neither
 // increment success_count nor appear in failures (idempotency).
 type BatchFinalizeResult struct {
+	TotalCount   int                    `json:"total_count"`
 	SuccessCount int                    `json:"success_count"`
 	FailCount    int                    `json:"fail_count"`
 	Failures     []BatchFinalizeFailure `json:"failures"`

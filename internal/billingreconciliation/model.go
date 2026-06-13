@@ -1,7 +1,6 @@
 package billingreconciliation
 
 import (
-	"regexp"
 	"strconv"
 	"time"
 
@@ -129,6 +128,8 @@ type RoomClassification struct {
 
 // Summary mirrors the math invariant. PD as a category disappears from the
 // UI once empty (see direction doc § Math Invariant) — value still reported.
+// DraftCount + FinalizedCount track bill-world state for the unified workspace
+// filter chips (rooms whose bill.status == DRAFT or FINALIZED/PAID).
 type Summary struct {
 	Total           int
 	Ready           int
@@ -136,6 +137,8 @@ type Summary struct {
 	PendingDecision int
 	NotBillable     int
 	AnomalyCount    int
+	DraftCount      int // rooms with an existing DRAFT bill
+	FinalizedCount  int // rooms with a FINALIZED or PAID bill
 }
 
 // Report is the full reconciliation payload returned by the service.
@@ -324,8 +327,6 @@ func rawIsPDOrigin(c RoomCandidate, startOfMonth, endOfMonth time.Time, hasPendi
 }
 
 // --- Month helpers ---
-
-var billingMonthRe = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])$`)
 
 // parseBillingMonthRange converts "YYYY-MM" to first/last day of that month
 // at 00:00 UTC. Matches billing/service_batch.go semantics intentionally —

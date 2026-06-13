@@ -291,6 +291,97 @@ func TestBatchFinalizeAll_EmptyBatch_ReturnsZeros(t *testing.T) {
 	}
 }
 
+// --- FinalizeAllByMonth ---
+//
+// Sibling of BatchFinalizeAll for reconciliation-path bills (no Batch wrapper).
+// Core loop semantics are identical; only the scope query differs.
+
+// newFinalizeByMonthService wires a service whose repo returns the given bills
+// from ListMonthlyBillsByApartmentMonth. Uses the same FindByID + Update +
+// audit mocks as newBatchFinalizeService.
+func newFinalizeByMonthService(bills []Bill) (BillingService, *mockBillingRepo, *mockBillAuditRepo) {
+	byID := make(map[uuid.UUID]*Bill, len(bills))
+	for i := range bills {
+		byID[bills[i].ID] = &bills[i]
+	}
+	repo := &mockBillingRepo{}
+	repo.listMonthlyBillsByApartmentMonthFn = func(_ uuid.UUID, _ string) ([]Bill, error) {
+		return bills, nil
+	}
+	repo.findByIDFn = func(_ context.Context, id uuid.UUID) (*Bill, error) {
+		if b, ok := byID[id]; ok {
+			return b, nil
+		}
+		return nil, errBillFinalizeNotFound
+	}
+	audit := &mockBillAuditRepo{}
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	return svc, repo, audit
+}
+
+func TestFinalizeAllByMonth_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing.T) {
+	id1, id2 := uuid.New(), uuid.New()
+	bills := []Bill{finalizeFixture(id1), finalizeFixture(id2)}
+	svc, repo, audit := newFinalizeByMonthService(bills)
+
+	actor := uuid.New()
+	result, err := svc.FinalizeAllByMonth(context.Background(), uuid.New(), "2026-06", &actor)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.TotalCount != 2 {
+		t.Errorf("TotalCount = %d, want 2", result.TotalCount)
+	}
+	if result.SuccessCount != 2 {
+		t.Errorf("SuccessCount = %d, want 2", result.SuccessCount)
+	}
+	if result.FailCount != 0 {
+		t.Errorf("FailCount = %d, want 0", result.FailCount)
+	}
+	if len(repo.updatedBills) != 2 {
+		t.Errorf("Update call count = %d, want 2", len(repo.updatedBills))
+	}
+	finalizeAuditCount := 0
+	for _, log := range audit.logs {
+		if log.Action == AuditFinalize {
+			finalizeAuditCount++
+		}
+	}
+	if finalizeAuditCount != 2 {
+		t.Errorf("FINALIZE audit count = %d, want 2 (lock #10)", finalizeAuditCount)
+	}
+}
+
+func TestFinalizeAllByMonth_TotalCount_IncludesSilentlySkippedBills(t *testing.T) {
+	draftID := uuid.New()
+	finalizedFixture := finalizeFixture(uuid.New())
+	finalizedFixture.Status = BillStatusFinalized
+	paidFixture := finalizeFixture(uuid.New())
+	paidFixture.Status = BillStatusPaid
+
+	bills := []Bill{finalizeFixture(draftID), finalizedFixture, paidFixture}
+	svc, _, _ := newFinalizeByMonthService(bills)
+
+	result, err := svc.FinalizeAllByMonth(context.Background(), uuid.New(), "2026-06", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.TotalCount != 3 {
+		t.Errorf("TotalCount = %d, want 3 (includes finalized+paid skips)", result.TotalCount)
+	}
+	if result.SuccessCount != 1 {
+		t.Errorf("SuccessCount = %d, want 1 (only the draft)", result.SuccessCount)
+	}
+}
+
+func TestFinalizeAllByMonth_InvalidMonth_Returns400(t *testing.T) {
+	svc, _, _ := newFinalizeByMonthService(nil)
+	_, err := svc.FinalizeAllByMonth(context.Background(), uuid.New(), "bad-month", nil)
+	if err == nil {
+		t.Fatal("expected error for invalid billing_month, got nil")
+	}
+}
+
 // classifyFinalizeError unit test — locks the sentinel→code mapping so a
 // future refactor that drops errors.Is fails loud here.
 func TestClassifyFinalizeError(t *testing.T) {

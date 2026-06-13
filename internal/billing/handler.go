@@ -238,12 +238,7 @@ func (h *BillingHandler) BatchCreateMonthly(c fiber.Ctx) error {
 		return err
 	}
 
-	var createdBy *uuid.UUID
-	if uid, ok := c.Locals("userID").(uuid.UUID); ok {
-		createdBy = &uid
-	}
-
-	result, err := h.svc.BatchCreateMonthlyBills(c.Context(), req, createdBy)
+	result, err := h.svc.BatchCreateMonthlyBills(c.Context(), req, middleware.ActorFromCtx(c))
 	if err != nil {
 		return respond.Error(c, err)
 	}

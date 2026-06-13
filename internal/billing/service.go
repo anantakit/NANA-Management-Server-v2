@@ -6,19 +6,16 @@ import (
 	"fmt"
 	"time"
 
-	"regexp"
-
 	"nana/internal/billingconfig"
 	"nana/internal/billingreconciliation"
 	"nana/internal/moveout"
+	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
-
-var billingMonthRe = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])$`)
 
 type BillingService interface {
 	List(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
@@ -239,9 +236,7 @@ func (s *billingService) lookupLatePenaltyReference(ctx context.Context, b *Bill
 // CreateMonthlyBill generates a DRAFT monthly bill from a single contract +
 // meter reading. Same DRAFT-first semantics as the batch path
 // (commitOneItem) — admin then reviews + optionally edits + explicitly
-// finalizes via PATCH /:id/finalize. Pre-existing finalize-on-create
-// behavior removed 2026-05-21 after FE audit confirmed no callers depended
-// on immediate-FINALIZED response.
+// finalizes via PATCH /:id/finalize.
 //
 // Monthly = ค่าห้องเดือนถัดไป (advance) + ค่าน้ำไฟเดือนนี้ (meter)
 //
@@ -253,7 +248,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	if err != nil {
 		return nil, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง")
 	}
-	if !billingMonthRe.MatchString(req.BillingMonth) {
+	if !billingmonth.Valid(req.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 	meterID, err := uuid.Parse(req.MeterReadingID)
@@ -422,166 +417,6 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 		return nil, fmt.Errorf("void bill: %w", err)
 	}
 	return s.repo.FindByIDWithRelations(ctx, id)
-}
-
-// CorrectBill executes the void+recreate correction flow on a FINALIZED bill.
-// Atomicity invariants (single TX):
-//
-//   1. Row-lock the old bill first — gates the double-correction race so two
-//      concurrent POST /:id/correct calls serialize on the lock.
-//   2. CanCorrect() blocks PAID / DRAFT / VOID / already-superseded —
-//      document-replacement invariants, single source of truth in the
-//      domain layer.
-//   3. Dispatch by bill_type. This endpoint is MONTHLY-only by design;
-//      SETTLEMENT correction is routed via the move-out workflow
-//      (POST /move-out-notices/:id/correct-settlement, Phase 2.1E-B+).
-//      The switch's default rejects SETTLEMENT with the Thai sentinel.
-//   4. Old bill: MarkSupersededByCorrection sets status=VOID +
-//      void_reason=CORRECTION + superseded_by_bill_id=newID, all atomic.
-//   5. New bill: regenerated DRAFT from contract + meter source-of-truth
-//      (no override/manual carryover — fresh recalculation).
-//   6. Emit SUPERSEDE on old + CREATE_FROM_CORRECTION on new in the same
-//      TX. Audit failure rolls back the entire correction.
-//
-// Returns the new DRAFT bill with relations. Caller (handler) presents it
-// for further editing via UpdateMonthlyDraft + FinalizeBill.
-func (s *billingService) CorrectBill(ctx context.Context, id uuid.UUID, req CorrectBillRequest, actor *uuid.UUID) (*BillWithRelations, error) {
-	var newBillID uuid.UUID
-
-	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		old, err := s.repo.LockBillForCorrection(txCtx, id)
-		if err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return ErrBillNotFound
-			}
-			return fmt.Errorf("lock bill for correction: %w", err)
-		}
-
-		if err := old.CanCorrect(); err != nil {
-			return respond.ErrBadRequest.WithMessage(err.Error())
-		}
-
-		switch old.BillType {
-		case BillTypeMonthly:
-			nid, err := s.correctMonthlyBillInTx(txCtx, old, req, actor)
-			if err != nil {
-				return err
-			}
-			newBillID = nid
-			return nil
-		default:
-			// SETTLEMENT correction is routed via the move-out workflow
-			// (POST /move-out-notices/:id/correct-settlement, Phase 2.1E-B+),
-			// not this billing /bills/:id/correct endpoint. The billing
-			// dispatcher is MONTHLY-only by design — domain CanCorrect (since
-			// Phase 2.1E-A) accepts SETTLEMENT, so the endpoint routing IS
-			// the gate here. See project_settlement_correction_design_lock.
-			return respond.ErrBadRequest.WithMessage(ErrSettlementCorrectionNotSupported.Error())
-		}
-	}); err != nil {
-		if _, ok := respond.Is(err); ok {
-			return nil, err
-		}
-		return nil, fmt.Errorf("correct bill: %w", err)
-	}
-	return s.repo.FindByIDWithRelations(ctx, newBillID)
-}
-
-// correctMonthlyBillInTx is the MONTHLY-specific arm of CorrectBill. Caller
-// must hold a row-lock on `old` and have validated CanCorrect(). Returns the
-// new DRAFT bill ID for the outer fetch-with-relations.
-//
-// Regenerate (not clone): old line items + overrides are intentionally NOT
-// copied. The new DRAFT is rebuilt from the contract + current monthly meter
-// reading — fresh recalculation per the architecture lock. Admin re-applies
-// any overrides via UpdateMonthlyDraft on the new DRAFT if needed.
-//
-// Contract IsActive guard is intentionally absent — the original bill may
-// be on an ENDED contract (e.g. post-move-out correction window). The bill
-// already exists, so correction must work regardless of contract status.
-func (s *billingService) correctMonthlyBillInTx(
-	txCtx context.Context,
-	old *Bill,
-	req CorrectBillRequest,
-	actor *uuid.UUID,
-) (uuid.UUID, error) {
-	previousStatus := string(old.Status)
-
-	c, err := s.contracts.FindByIDSimple(txCtx, old.ContractID)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return uuid.Nil, ErrContractNotFound
-		}
-		return uuid.Nil, fmt.Errorf("find contract: %w", err)
-	}
-
-	// Look up the monthly meter reading for the same (room, billing_month)
-	// the old bill targeted. If admin re-recorded the meter, regeneration
-	// picks up the corrected values. If no meter exists for that month
-	// today, correction can't proceed — admin must record meter first.
-	readings, err := s.meters.FindMonthlyByRoomsAndMonth(txCtx, []uuid.UUID{c.RoomID}, old.BillingMonth)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("find meter for correction: %w", err)
-	}
-	reading, ok := readings[c.RoomID]
-	if !ok || reading == nil {
-		return uuid.Nil, ErrMeterNotFound
-	}
-
-	snapshot := computeMonthlyBillSnapshot(old.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
-
-	// Pre-generate the new bill's ID so both the SUPERSEDE link (set on
-	// old NOW) and the CREATE_FROM_CORRECTION audit can reference it.
-	// BatchID stays nil — corrected bill is a manual artifact, not part of
-	// the original batch run (batch_item keeps pointing at the old bill;
-	// FE walks superseded_by chain to find latest).
-	newBill := Bill{
-		ID:           uuid.New(),
-		ContractID:   old.ContractID,
-		BillingMonth: old.BillingMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusDraft,
-		LineItems:    snapshot.ToLineItems(uuid.Nil),
-		TotalAmount:  snapshot.TotalAmount,
-	}
-
-	// Persist order MATTERS: void+supersede old FIRST, then create new.
-	// The partial UNIQUE INDEX idx_bills_unique_monthly allows only one
-	// non-VOID monthly bill per (contract_id, billing_month), so creating
-	// the new DRAFT while the old is still FINALIZED would 500 on a
-	// constraint violation.
-	//
-	// The supersede FK on old → newBill.ID is set BEFORE newBill exists in
-	// the DB; migration 00032 makes that FK DEFERRABLE INITIALLY DEFERRED,
-	// so the check fires at COMMIT (when newBill exists) rather than at
-	// statement time.
-	if err := old.MarkSupersededByCorrection(newBill.ID); err != nil {
-		// Domain re-checks CanCorrect — under correct caller usage this
-		// can't fire, but stay defensive in case lock semantics change.
-		return uuid.Nil, respond.ErrBadRequest.WithMessage(err.Error())
-	}
-	if err := s.repo.Update(txCtx, old); err != nil {
-		return uuid.Nil, fmt.Errorf("supersede old bill: %w", err)
-	}
-	if err := s.repo.Create(txCtx, &newBill); err != nil {
-		return uuid.Nil, fmt.Errorf("create corrected bill: %w", err)
-	}
-
-	if err := s.recordAudit(txCtx, old.ID, AuditSupersede, actor, AuditSupersedePayload{
-		PreviousStatus:   previousStatus,
-		NewBillID:        newBill.ID,
-		CorrectionReason: req.CorrectionReason,
-	}); err != nil {
-		return uuid.Nil, err
-	}
-	if err := s.recordAudit(txCtx, newBill.ID, AuditCreateFromCorrection, actor, AuditCreateFromCorrectionPayload{
-		SupersededBillID: old.ID,
-		CorrectionReason: req.CorrectionReason,
-	}); err != nil {
-		return uuid.Nil, err
-	}
-	return newBill.ID, nil
 }
 
 func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {

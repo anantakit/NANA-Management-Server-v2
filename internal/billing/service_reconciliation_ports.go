@@ -6,10 +6,11 @@ import (
 	"fmt"
 
 	"nana/internal/billingreconciliation"
+	"nana/internal/shared/billingmonth"
+	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // Cross-feature adapter methods that let billing.BillingService satisfy the
@@ -74,12 +75,12 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 	req billingreconciliation.CreateMonthlyBillForReconciliationRequest,
 	actor *uuid.UUID,
 ) (*billingreconciliation.CreatedBill, error) {
-	if !billingMonthRe.MatchString(req.BillingMonth) {
+	if !billingmonth.Valid(req.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 	c, err := s.contracts.FindByIDSimple(ctx, req.ContractID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if database.IsNotFound(err) {
 			// Contract disappeared between Reconcile and commit (soft-delete /
 			// race) — a LOST_READY outcome for the per-row result.
 			return nil, billingreconciliation.ErrLostReady
