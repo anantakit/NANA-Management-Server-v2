@@ -231,7 +231,17 @@ async function login(page) {
       })
       .filter((b) => {
         const rr = b.getBoundingClientRect()
-        return rr.width > 0 && rr.height > 0
+        // Must have non-zero size AND be within the visible viewport —
+        // elements below the fold have valid rects but elementFromPoint
+        // returns null for coordinates outside the viewport bounds.
+        return (
+          rr.width > 0 &&
+          rr.height > 0 &&
+          rr.top >= 0 &&
+          rr.bottom <= window.innerHeight &&
+          rr.left >= 0 &&
+          rr.right <= window.innerWidth
+        )
       })
     if (ctaButtons.length === 0) {
       return { ok: false, reason: 'no row CTA button visible at viewport' }

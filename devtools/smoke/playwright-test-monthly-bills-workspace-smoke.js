@@ -261,11 +261,11 @@ async function readChipCount(chip) {
     // ── F: Finalize CTA ───────────────────────────────────────────────
     console.log('\n🧪 F — Finalize CTA: visible, enabled, count matches DRAFT chip')
 
-    const finalizeCta = page.getByRole('button', { name: /ยืนยันบิลทั้งหมด \d+ ใบ/ }).first()
+    const finalizeCta = page.getByRole('button', { name: /ยืนยันบิล \d+ ใบ/ }).first()
     await finalizeCta.waitFor({ state: 'visible', timeout: 5000 })
     const ctaLabel = (await finalizeCta.innerText()).trim()
 
-    // Extract N from "ยืนยันบิลทั้งหมด N ใบ"
+    // Extract N from "ยืนยันบิล N ใบ"
     const ctaCountMatch = ctaLabel.match(/(\d+)/)
     if (!ctaCountMatch) throw new Error(`Cannot parse count from CTA label: "${ctaLabel}"`)
     const ctaCount = Number(ctaCountMatch[1])
@@ -276,7 +276,7 @@ async function readChipCount(chip) {
     console.log(`  CTA: "${ctaLabel}" — count matches DRAFT chip ✅`)
 
     const ctaDisabled = await finalizeCta.isDisabled()
-    if (ctaDisabled) throw new Error('"ยืนยันบิลทั้งหมด" CTA is disabled — expected enabled')
+    if (ctaDisabled) throw new Error('"ยืนยันบิล N ใบ" CTA is disabled — expected enabled')
     console.log('  CTA enabled ✅')
 
     await page.screenshot({ path: '/tmp/workspace-smoke-F-finalize-cta.png', fullPage: true })
