@@ -82,6 +82,15 @@ type BillingRepository interface {
 	// the replacement side of a correction chain. Single-row indexed lookup
 	// — used by GetByID to surface the reverse link on the BillDrawer.
 	FindCorrectedFromBillID(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error)
+
+	// Payment flow — row-locks the bill before recording payment so concurrent
+	// payment attempts serialize cleanly. Caller MUST be inside a TX.
+	LockBillForPayment(ctx context.Context, billID uuid.UUID) (*Bill, error)
+
+	// FindPaymentsByBillIDs batch-loads payment records for a set of bill IDs.
+	// Returns a map keyed by bill_id so list callers can merge without N+1.
+	// Bills without a payment record are absent from the map (not an error).
+	FindPaymentsByBillIDs(ctx context.Context, billIDs []uuid.UUID) (map[uuid.UUID]*BillPaymentRecord, error)
 }
 
 type billingRepository struct {
@@ -173,6 +182,28 @@ func (r *billingRepository) FindAll(ctx context.Context, params BillListParams) 
 			ApartmentID:   row.ApartmentID,
 		}
 	}
+
+	// Batch-load payment data for PAID bills — one query, no N+1.
+	var paidIDs []uuid.UUID
+	for _, b := range result {
+		if b.IsPaid() {
+			paidIDs = append(paidIDs, b.ID)
+		}
+	}
+	if len(paidIDs) > 0 {
+		payments, err := r.FindPaymentsByBillIDs(ctx, paidIDs)
+		if err != nil {
+			return nil, 0, fmt.Errorf("load payment data for list: %w", err)
+		}
+		for i := range result {
+			if pr, ok := payments[result[i].ID]; ok {
+				result[i].PaidAt = &pr.PaidAt
+				m := pr.Method
+				result[i].PaymentMethod = &m
+			}
+		}
+	}
+
 	return result, total, nil
 }
 
@@ -223,13 +254,30 @@ func (r *billingRepository) FindByIDWithRelations(ctx context.Context, id uuid.U
 		return nil, err
 	}
 
-	return &BillWithRelations{
+	bwr := &BillWithRelations{
 		Bill:          b,
 		TenantName:    rel.TenantName,
 		RoomNumber:    rel.RoomNumber,
 		ApartmentName: rel.ApartmentName,
 		ApartmentID:   rel.ApartmentID,
-	}, nil
+	}
+
+	// Attach payment data for PAID bills (single-row lookup, no N+1).
+	if b.IsPaid() {
+		payments, err := r.FindPaymentsByBillIDs(ctx, []uuid.UUID{b.ID})
+		if err != nil {
+			return nil, fmt.Errorf("load payment data for bill %s: %w", b.ID, err)
+		}
+		if pr, ok := payments[b.ID]; ok {
+			bwr.PaidAt = &pr.PaidAt
+			m := pr.Method
+			bwr.PaymentMethod = &m
+			n := pr.Note
+			bwr.PaymentNote = &n
+		}
+	}
+
+	return bwr, nil
 }
 
 func (r *billingRepository) FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error) {
@@ -763,6 +811,44 @@ func (r *billingRepository) CreateLineItems(ctx context.Context, items []BillLin
 		return nil
 	}
 	return database.DB(ctx, r.db).Create(&items).Error
+}
+
+// LockBillForPayment acquires a row-level lock (SELECT FOR UPDATE) on the bill.
+// Must be called inside a transaction. No line-item preload — payment only
+// needs the bill status and total_amount for validation.
+func (r *billingRepository) LockBillForPayment(ctx context.Context, billID uuid.UUID) (*Bill, error) {
+	var b Bill
+	err := database.DB(ctx, r.db).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", billID).
+		First(&b).Error
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// FindPaymentsByBillIDs batch-loads payment display data for a set of bill IDs.
+// Returns a map keyed by bill_id. Bills without a payment record are absent.
+// Empty input returns an empty map with no DB hit.
+func (r *billingRepository) FindPaymentsByBillIDs(ctx context.Context, billIDs []uuid.UUID) (map[uuid.UUID]*BillPaymentRecord, error) {
+	out := make(map[uuid.UUID]*BillPaymentRecord, len(billIDs))
+	if len(billIDs) == 0 {
+		return out, nil
+	}
+	var rows []BillPaymentRecord
+	err := database.DB(ctx, r.db).
+		Table("bill_payments").
+		Select("bill_id, paid_at, method, note").
+		Where("bill_id IN ?", billIDs).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("batch load bill payments: %w", err)
+	}
+	for i := range rows {
+		out[rows[i].BillID] = &rows[i]
+	}
+	return out, nil
 }
 
 // GetSummary returns aggregate bill counts and total amount, filtered by apartment + month.

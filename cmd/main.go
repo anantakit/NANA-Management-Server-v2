@@ -17,6 +17,7 @@ import (
 	"nana/internal/contract"
 	"nana/internal/meterreading"
 	"nana/internal/moveout"
+	"nana/internal/payment"
 	"nana/internal/room"
 	"nana/internal/seed"
 	"nana/internal/tenant"
@@ -128,6 +129,12 @@ func main() {
 	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, billService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
+	// Wire dependencies — Payment recording
+	billPaymentAdapter := billing.NewPaymentAdapter(billRepo, billAuditRepo)
+	paymentRepo := payment.NewPaymentRepository(db)
+	paymentService := payment.NewPaymentService(paymentRepo, billPaymentAdapter, txManager)
+	paymentHandler := payment.NewPaymentHandler(paymentService)
+
 	// Wire dependencies — Billing Reconciliation (Phase 1A: read-only audit)
 	reconRepo := billingreconciliation.NewRepository(db)
 	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billService, billService)
@@ -205,7 +212,9 @@ func main() {
 	meterHandler.RegisterRoutes(admin.Group("/apartments/:apartmentId/meter-readings"))
 	bcHandler.RegisterRoutes(admin.Group("/apartments/:id/billing-configs"))
 	moveOutHandler.RegisterRoutes(admin.Group("/move-out-notices"))
-	billHandler.RegisterRoutes(admin.Group("/bills"))
+	billGroup := admin.Group("/bills")
+	billHandler.RegisterRoutes(billGroup)
+	paymentHandler.RegisterRoutes(billGroup)
 	reconHandler.RegisterRoutes(admin.Group("/billing-reconciliation"))
 
 	// Graceful shutdown

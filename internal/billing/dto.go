@@ -288,6 +288,12 @@ type BillResponse struct {
 	// the Edited badge state directly off this field without inferring
 	// from missing-vs-false. FE never sees audit action names.
 	IsEdited bool `json:"is_edited"`
+
+	// Payment fields — populated only for PAID bills (nil otherwise).
+	// Source: bill_payments table via separate batch/single read.
+	PaidAt        *time.Time `json:"paid_at,omitempty"`
+	PaymentMethod *string    `json:"payment_method,omitempty"`
+	PaymentNote   *string    `json:"payment_note,omitempty"`
 }
 
 // BillListItemResponse is the per-row DTO for the bill list endpoint.
@@ -321,6 +327,9 @@ type BillListItemResponse struct {
 	// IsEdited mirrors BillResponse.IsEdited — see that field's doc.
 	// Populated by the list endpoint via a single batched audit query.
 	IsEdited bool `json:"is_edited"`
+	// Payment fields — nil for non-PAID bills. Batch-loaded, no N+1.
+	PaidAt        *time.Time `json:"paid_at,omitempty"`
+	PaymentMethod *string    `json:"payment_method,omitempty"`
 }
 
 // --- Settlement preview DTOs ---
@@ -709,6 +718,11 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 		v := money.ToBaht(b.LatePenaltyReferenceAmount)
 		resp.LatePenaltyReferenceAmount = &v
 	}
+	if b.PaidAt != nil {
+		resp.PaidAt = b.PaidAt
+		resp.PaymentMethod = b.PaymentMethod
+		resp.PaymentNote = b.PaymentNote
+	}
 	return resp
 }
 
@@ -774,25 +788,30 @@ func ToSettlementPreviewResponse(p *SettlementPreview) SettlementPreviewResponse
 }
 
 func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
-	return BillListItemResponse{
-		ID:                b.ID,
-		ContractID:        b.ContractID,
-		BillingMonth:      b.BillingMonth,
-		BillType:          string(b.BillType),
-		Status:            string(b.Status),
-		VoidReason:        b.VoidReason,
+	r := BillListItemResponse{
+		ID:                 b.ID,
+		ContractID:         b.ContractID,
+		BillingMonth:       b.BillingMonth,
+		BillType:           string(b.BillType),
+		Status:             string(b.Status),
+		VoidReason:         b.VoidReason,
 		SupersededByBillID: b.SupersededByBillID,
-		TotalAmount:       money.ToBaht(b.TotalAmount),
-		PaidAmount:        money.ToBaht(b.PaidAmount()),
-		OutstandingAmount: money.ToBaht(b.OutstandingAmount()),
-		DepositAmount:     money.ToBaht(b.DepositAmount),
-		DepositBalance:    money.ToBaht(b.DepositBalance),
-		TenantName:        b.TenantName,
-		RoomNumber:        b.RoomNumber,
-		ApartmentName:     b.ApartmentName,
-		ApartmentID:       b.ApartmentID,
-		FinalizedAt:       b.FinalizedAt,
-		CreatedAt:         b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		IsEdited:          b.IsEdited,
+		TotalAmount:        money.ToBaht(b.TotalAmount),
+		PaidAmount:         money.ToBaht(b.PaidAmount()),
+		OutstandingAmount:  money.ToBaht(b.OutstandingAmount()),
+		DepositAmount:      money.ToBaht(b.DepositAmount),
+		DepositBalance:     money.ToBaht(b.DepositBalance),
+		TenantName:         b.TenantName,
+		RoomNumber:         b.RoomNumber,
+		ApartmentName:      b.ApartmentName,
+		ApartmentID:        b.ApartmentID,
+		FinalizedAt:        b.FinalizedAt,
+		CreatedAt:          b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		IsEdited:           b.IsEdited,
 	}
+	if b.PaidAt != nil {
+		r.PaidAt = b.PaidAt
+		r.PaymentMethod = b.PaymentMethod
+	}
+	return r
 }

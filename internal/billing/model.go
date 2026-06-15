@@ -1139,6 +1139,13 @@ type BillWithRelations struct {
 	// humanized void_reason on the BillDrawer so "why was this voided"
 	// readable without DB access.
 	CorrectionReason string `gorm:"-" json:"-"`
+
+	// Payment display fields — populated from bill_payments via a separate
+	// read (FindByIDWithRelations: single row; list: batch query).
+	// All nil for DRAFT / FINALIZED / VOID bills.
+	PaidAt        *time.Time `gorm:"-" json:"-"`
+	PaymentMethod *string    `gorm:"-" json:"-"`
+	PaymentNote   *string    `gorm:"-" json:"-"`
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).
@@ -1201,6 +1208,9 @@ const (
 	AuditAddManualItem    BillAuditAction = "ADD_MANUAL_ITEM"
 	AuditRemoveManualItem BillAuditAction = "REMOVE_MANUAL_ITEM"
 	AuditUpdateNote       BillAuditAction = "UPDATE_NOTE"
+
+	// Payment lifecycle — does NOT count toward is_edited.
+	AuditRecordPayment BillAuditAction = "RECORD_PAYMENT"
 )
 
 // IsEditEvent reports whether this action contributes to the is_edited flag
@@ -1373,4 +1383,23 @@ type AuditSupersedePayload struct {
 type AuditCreateFromCorrectionPayload struct {
 	SupersededBillID uuid.UUID `json:"superseded_bill_id"`
 	CorrectionReason string    `json:"correction_reason"`
+}
+
+// AuditRecordPaymentPayload captures the payment event on a MONTHLY bill.
+// Amount is stored in satang (matches billing domain convention).
+// Method is the raw string ("CASH" or "TRANSFER") so the audit log is
+// self-describing without resolving enum constants.
+type AuditRecordPaymentPayload struct {
+	Amount int64  `json:"amount"` // satang
+	Method string `json:"method"` // "CASH" or "TRANSFER"
+}
+
+// BillPaymentRecord is a display-read projection from the bill_payments table.
+// Used only by billing endpoints (JOIN for BillResponse / BillListItemResponse).
+// Write ownership of bill_payments lives in internal/payment/.
+type BillPaymentRecord struct {
+	BillID uuid.UUID `gorm:"column:bill_id"`
+	PaidAt time.Time `gorm:"column:paid_at"`
+	Method string    `gorm:"column:method"`
+	Note   string    `gorm:"column:note"`
 }

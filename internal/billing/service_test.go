@@ -331,6 +331,17 @@ func (m *mockBillingRepo) UpdateBatchCommitStatus(_ context.Context, _ uuid.UUID
 	return nil
 }
 
+func (m *mockBillingRepo) LockBillForPayment(ctx context.Context, id uuid.UUID) (*Bill, error) {
+	if m.findByIDFn != nil {
+		return m.findByIDFn(ctx, id)
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *mockBillingRepo) FindPaymentsByBillIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]*BillPaymentRecord, error) {
+	return map[uuid.UUID]*BillPaymentRecord{}, nil
+}
+
 type mockContractQuerier struct {
 	contract *contract.Contract
 }
