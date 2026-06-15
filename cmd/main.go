@@ -185,6 +185,12 @@ func main() {
 			}
 			return c.JSON(fiber.Map{"status": "success", "message": "smoke fixtures removed"})
 		})
+		dev.Post("/smoke/reset-base-bills", func(c fiber.Ctx) error {
+			if err := seed.ResetPaymentSmokeBills(db); err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "message": "base monthly bills reset"})
+		})
 		dev.Get("/smoke/fixtures", func(c fiber.Ctx) error {
 			fixtures, err := seed.ListSmokeFixtures(db)
 			if err != nil {

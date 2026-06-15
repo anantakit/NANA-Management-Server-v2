@@ -261,3 +261,133 @@ func ensureDevMonthlyMeter(
 	}
 	return nil
 }
+
+// ResetPaymentSmokeBills resets the A101–A107 current-month MONTHLY bills to
+// their seeded state so the payment smoke test starts from a known pre-payment
+// baseline on every run. Without this, paying A101 in one run leaves it PAID
+// in subsequent runs because seedDevMonthlyBills is idempotent and skips
+// existing bills.
+//
+// Reset rules (mirror seedDevMonthlyBills initial state):
+//   A101, A102, A103, A104, A107 → FINALIZED (awaiting payment)
+//   A105, A106                   → PAID (seeded as already-paid)
+//
+// A105/A106 payment records are recreated via raw INSERT so bill_payments
+// uniqueness constraint is respected.
+func ResetPaymentSmokeBills(db *gorm.DB) error {
+	billingMonth := time.Now().UTC().Format("2006-01")
+
+	var apt apartment.Apartment
+	if err := db.Where("name = ?", "นานาคอร์ท").First(&apt).Error; err != nil {
+		return fmt.Errorf("find apartment: %w", err)
+	}
+
+	targetRooms := []string{"A101", "A102", "A103", "A104", "A105", "A106", "A107"}
+	var rooms []room.Room
+	if err := db.Where("apartment_id = ? AND number IN ?", apt.ID, targetRooms).
+		Find(&rooms).Error; err != nil {
+		return fmt.Errorf("find rooms: %w", err)
+	}
+	roomByNumber := make(map[string]room.Room, len(rooms))
+	for _, r := range rooms {
+		roomByNumber[r.Number] = r
+	}
+
+	roomIDs := make([]uuid.UUID, 0, len(rooms))
+	for _, r := range rooms {
+		roomIDs = append(roomIDs, r.ID)
+	}
+
+	var contracts []contract.Contract
+	if err := db.Where("room_id IN ? AND status = ?", roomIDs, contract.ContractStatusActive).
+		Find(&contracts).Error; err != nil {
+		return fmt.Errorf("find contracts: %w", err)
+	}
+
+	contractIDs := make([]uuid.UUID, 0, len(contracts))
+	for _, c := range contracts {
+		contractIDs = append(contractIDs, c.ID)
+	}
+	if len(contractIDs) == 0 {
+		return nil
+	}
+
+	// Find current-month bills for these contracts.
+	var bills []billing.Bill
+	if err := db.Where("contract_id IN ? AND billing_month = ? AND bill_type = ?",
+		contractIDs, billingMonth, billing.BillTypeMonthly).
+		Find(&bills).Error; err != nil {
+		return fmt.Errorf("find bills: %w", err)
+	}
+	if len(bills) == 0 {
+		// Bills don't exist yet — run seedDevMonthlyBills to create them.
+		return seedDevMonthlyBills(db)
+	}
+
+	// Build a lookup: contract_id → room_number so we know which bills to
+	// reset to FINALIZED vs PAID.
+	contractRoom := make(map[uuid.UUID]string, len(contracts))
+	roomsByID := make(map[uuid.UUID]string, len(rooms))
+	for _, r := range rooms {
+		roomsByID[r.ID] = r.Number
+	}
+	for _, c := range contracts {
+		if num, ok := roomsByID[c.RoomID]; ok {
+			contractRoom[c.ID] = num
+		}
+	}
+
+	// Rooms that should be PAID in the seeded state.
+	paidInSeed := map[string]bool{"A105": true, "A106": true}
+
+	billIDs := make([]uuid.UUID, 0, len(bills))
+	for _, b := range bills {
+		billIDs = append(billIDs, b.ID)
+	}
+
+	// Step 1: wipe all payment records for these bills.
+	// Use string IDs for the raw DELETE since GORM's Exec doesn't expand uuid slices.
+	strIDs := make([]string, 0, len(billIDs))
+	for _, id := range billIDs {
+		strIDs = append(strIDs, id.String())
+	}
+	if err := db.Exec(
+		"DELETE FROM bill_payments WHERE bill_id::text IN ?", strIDs,
+	).Error; err != nil {
+		return fmt.Errorf("delete bill_payments: %w", err)
+	}
+
+	// Step 2: reset bill status to FINALIZED for all (covers A101–A104, A107).
+	if err := db.Model(&billing.Bill{}).
+		Where("id IN ?", billIDs).
+		Update("status", billing.BillStatusFinalized).Error; err != nil {
+		return fmt.Errorf("reset to finalized: %w", err)
+	}
+
+	// Step 3: re-mark A105/A106 as PAID and recreate payment records.
+	now := time.Now().UTC()
+	for _, b := range bills {
+		roomNum := contractRoom[b.ContractID]
+		if !paidInSeed[roomNum] {
+			continue
+		}
+		// Mark bill PAID.
+		if err := db.Model(&billing.Bill{}).
+			Where("id = ?", b.ID).
+			Update("status", billing.BillStatusPaid).Error; err != nil {
+			return fmt.Errorf("mark %s paid: %w", roomNum, err)
+		}
+		// Insert payment record. ON CONFLICT DO NOTHING keeps it idempotent.
+		if err := db.Exec(`
+			INSERT INTO bill_payments (id, bill_id, amount, method, note, paid_at, created_at)
+			VALUES (uuid_generate_v4(), ?, ?, 'CASH', 'seed payment', ?, ?)
+			ON CONFLICT (bill_id) DO NOTHING`,
+			b.ID, b.TotalAmount, now, now,
+		).Error; err != nil {
+			return fmt.Errorf("insert payment for %s: %w", roomNum, err)
+		}
+	}
+
+	slog.Info("reset payment smoke bills", "billing_month", billingMonth, "count", len(bills))
+	return nil
+}
