@@ -148,19 +148,23 @@ type BillListParams struct {
 
 // BillSummaryParams filters for the summary aggregate endpoint.
 // Scoped to apartment + billing month (same as the list page's primary context).
+// BillType optionally narrows to a single bill type (e.g. "MONTHLY").
 type BillSummaryParams struct {
 	ApartmentID string `query:"apartment_id"`
 	Month       string `query:"month"`
+	BillType    string `query:"bill_type"`
 }
 
 // BillSummaryResponse returns aggregate counts and totals for a filtered bill set.
 //
 // Amount semantics (baht):
-//   - total_amount      = sum for non-VOID bills (existing — unchanged for backward compat)
-//   - pending_amount    = sum for DRAFT + FINALIZED (i.e. outstanding receivables under
-//     the current atomic 1-bill-1-payment model)
+//   - total_amount      = sum for non-VOID bills
+//   - pending_amount    = sum for FINALIZED bills only (matches pending_count — collectable AR)
 //   - paid_amount       = sum for PAID
 //   - voided_amount     = sum for VOID (kept for reconciliation; not part of AR)
+//
+// DRAFT is intentionally excluded from pending_amount: a bill cannot be collected
+// until it is FINALIZED. pending_count and pending_amount now describe the same population.
 //
 // When partial payments are introduced, pending_amount / paid_amount must be
 // recomputed from a payments table rather than derived from bill.status.
