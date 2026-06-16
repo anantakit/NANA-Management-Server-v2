@@ -9,10 +9,10 @@
 // dropping the breadcrumb from MoveOutQueue) fails loud.
 //
 // Pages covered:
-//   /bills                  (BillList — Resource-centric list)
-//   /bills/generate         (BillGenerate — Workflow tool/launcher)
-//   /move-out               (MoveOutQueue — Workflow queue/launcher)
-//   /meter-readings         (MeterReadingBatch — Workflow workspace)
+//   /bills                       (BillList — Resource-centric list)
+//   /monthly-bills/:month        (MonthlyBills workspace — replaces /bills/generate)
+//   /move-out                    (MoveOutQueue — Workflow queue/launcher)
+//   /meter-readings              (MeterReadingBatch — Workflow workspace)
 //
 // What we assert per page:
 //   - exactly one <h1> in <main> with the expected verb-neutral title
@@ -26,6 +26,7 @@ const { chromium } = require('playwright')
 
 const FRONTEND = process.env.FRONTEND || 'http://localhost:3001'
 const BACKEND = process.env.BACKEND || 'http://localhost:8080'
+const CURRENT_MONTH = new Date().toISOString().slice(0, 7) // "YYYY-MM"
 const ADMIN_USER = 'admin'
 const ADMIN_PASS_FRESH = 'admin123'
 const ADMIN_PASS_POST = 'admin1234'
@@ -97,7 +98,7 @@ async function fetchApartments(token) {
 
 const PAGES = [
   { path: '/bills', label: 'BillList', h1: 'รายการบิล', pageNoun: 'รายการบิล' },
-  { path: '/bills/generate', label: 'BillGenerate', h1: 'ออกบิล', pageNoun: 'ออกบิล' },
+  { path: `/monthly-bills/${CURRENT_MONTH}`, label: 'MonthlyBills', h1Prefix: 'ออกบิลเดือน', pageNoun: 'ออกบิล' },
   { path: '/move-out', label: 'MoveOutQueue', h1: 'คิวงานย้ายออก', pageNoun: 'ย้ายออก' },
   { path: '/meter-readings', label: 'MeterReadingBatch', h1: 'บันทึกมิเตอร์', pageNoun: 'บันทึกมิเตอร์' },
 ]
@@ -118,8 +119,11 @@ async function assertPageChrome(page, spec, apartmentName) {
   check(`${spec.label}: exactly one h1 in <main>`, h1Texts.length === 1,
     h1Texts.length === 0 ? 'no h1 found' : `found ${h1Texts.length}`)
   if (h1Texts.length === 1) {
-    check(`${spec.label}: h1 text = "${spec.h1}"`, h1Texts[0].text === spec.h1,
-      `got "${h1Texts[0].text}"`)
+    const h1Match = spec.h1Prefix
+      ? h1Texts[0].text.startsWith(spec.h1Prefix)
+      : h1Texts[0].text === spec.h1
+    const h1Desc = spec.h1Prefix ? `starts with "${spec.h1Prefix}"` : `= "${spec.h1 ?? ''}"`
+    check(`${spec.label}: h1 text ${h1Desc}`, h1Match, `got "${h1Texts[0].text}"`)
     // Sizing contract: text-lg (mobile) + sm:text-xl (desktop). Locked in
     // ToolPageHeader; any drift means someone re-introduced a bespoke h1.
     const cls = h1Texts[0].className

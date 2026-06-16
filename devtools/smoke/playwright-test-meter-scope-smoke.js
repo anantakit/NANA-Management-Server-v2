@@ -1,19 +1,13 @@
 // Meter Reading Batch — Apartment Scope Contract Smoke Test
 // ----------------------------------------------------------------------
-// Locks the *behavior contract* that Phase C (removing the page-local
-// apartment Select) must not break. This test is written BEFORE the
-// Phase C edit lands and is expected to:
+// Locks the behavior contract for MeterReadingBatchPage scope handling.
 //
-//   - CASE 1 (dirty-then-sidebar)   PASS before Phase C (current behavior)
-//                                   PASS after  Phase C
-//   - CASE 2 (deep-link precedence) PASS before Phase C
-//                                   PASS after  Phase C
-//   - CASE 3 (no dual selector)     FAIL  before Phase C (Select still exists)
-//                                   PASS after  Phase C (Select removed)
+//   - CASE 1 (dirty-then-sidebar)  sidebar switch while dirty → banner → confirm → draft preserved
+//   - CASE 3 (no dual selector)    no page-local apartment selector in <main>
 //
-// The point: CASE 1 + CASE 2 protect behavior that Phase C edits
-// AROUND but must not destroy (banner trigger logic + draft owner key
-// + deep-link precedence). CASE 3 is the actual Phase C assertion.
+// Note: CASE 2 (deep-link from bill-generate) was removed 2026-06-16 when
+// /bills/generate and MonthlyPreflightCard were deleted as part of the
+// /monthly-bills workspace migration.
 //
 // Run:  FRONTEND=http://localhost:3005 npm run smoke:meter-scope
 //       (FRONTEND defaults to http://localhost:3001 to match other smokes)
@@ -220,53 +214,6 @@ async function case1_sidebarSwitchWhileDirty(page, apartments) {
   }, { aptId: aptA.id })
 }
 
-async function case2_deepLinkPrecedence(page, apartments) {
-  console.log('\n🧪 CASE 2 — deep-link from bill-generate, sidebar mismatch → banner → confirm → correct apartment loads')
-  const [aptA, aptB] = apartments
-
-  // Set sidebar to A then open bill-generate.
-  await page.goto(`${FRONTEND}/bills/generate`, { waitUntil: 'networkidle' })
-  await selectApartmentViaSidebar(page, aptA.name)
-  await page.waitForLoadState('networkidle')
-  await page.waitForTimeout(800)
-
-  // Look for "ไปจดมิเตอร์" link (only shows when missing_meter_count > 0).
-  const goMeterBtn = page.locator('button, a', { hasText: 'ไปจดมิเตอร์' }).first()
-  const hasGoMeter = await goMeterBtn.isVisible().catch(() => false)
-  if (!hasGoMeter) {
-    check('C2 prerequisite — bill-generate shows "ไปจดมิเตอร์" link for apt A', false,
-      'no missing-meter rooms in current month for apt A — seed dependent, skipping CASE 2')
-    return
-  }
-  check('C2.1 bill-generate shows "ไปจดมิเตอร์" link', true)
-
-  await goMeterBtn.click()
-  await page.waitForLoadState('networkidle')
-  await page.waitForTimeout(800)
-  check('C2.2 navigated to /meter-readings', page.url().includes('/meter-readings'))
-
-  // Now switch sidebar to B — apartmentId is still A (from deep-link),
-  // deepLinkPending is true → banner should fire.
-  await selectApartmentViaSidebar(page, aptB.name)
-  await page.waitForTimeout(500)
-  const banner = page.locator('[role="status"]', { hasText: 'สลับเป็น' })
-  const bannerVisible = await banner.isVisible().catch(() => false)
-  check('C2.3 banner appears (deep-link A vs sidebar B mismatch)', bannerVisible)
-
-  if (bannerVisible) {
-    // Verify banner names: should say current=A and target=B.
-    const bannerText = await banner.textContent()
-    check('C2.4 banner mentions current apartment (A)', bannerText.includes(aptA.name))
-    check('C2.5 banner mentions target apartment (B)', bannerText.includes(aptB.name))
-
-    await banner.locator('button', { hasText: `สลับเป็น ${aptB.name}` }).click()
-    await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(600)
-    const bannerGone = !(await banner.isVisible().catch(() => false))
-    check('C2.6 banner clears after confirm', bannerGone)
-  }
-}
-
 async function case3_noDualSelector(page) {
   console.log('\n🧪 CASE 3 — no page-local apartment selector (dual selector eliminated)')
   await page.goto(`${FRONTEND}/meter-readings`, { waitUntil: 'networkidle' })
@@ -310,7 +257,6 @@ async function case3_noDualSelector(page) {
   await login(page)
 
   await case1_sidebarSwitchWhileDirty(page, apartments)
-  await case2_deepLinkPrecedence(page, apartments)
   await case3_noDualSelector(page)
 
   await browser.close()

@@ -64,6 +64,36 @@ async function login(page) {
   await page.screenshot({ path: '/tmp/bills-desktop.png', fullPage: true })
   console.log('desktop saved')
 
+  // ── CollectionSummaryStrip probe (P1 Collection Surface) ──
+  // Strip renders when apartment is auto-resolved (apartments[0] on fresh context).
+  // Labels: "ยังไม่จ่าย" (neutral) + "จ่ายแล้ว" (success) as span.text-sm.text-text-dim.
+  // Values: "{N} ใบ" as span.text-2xl. Subtexts: "฿X,XXX.XX" as span.text-xs.
+  // Wait up to 8 s for the summary API to resolve (strip starts in skeleton state).
+  await page.locator('text=ยังไม่จ่าย').waitFor({ timeout: 8000 }).catch(() => {})
+  const stripProbe = await page.evaluate(() => {
+    const leafTexts = Array.from(document.querySelectorAll('*'))
+      .filter((el) => el.children.length === 0)
+      .map((el) => (el.textContent || '').trim())
+    const hasPending = leafTexts.includes('ยังไม่จ่าย')
+    const hasPaid = leafTexts.includes('จ่ายแล้ว')
+    if (!hasPending || !hasPaid) {
+      return {
+        ok: false,
+        reason: `strip labels missing — ยังไม่จ่าย:${hasPending}, จ่ายแล้ว:${hasPaid}`,
+      }
+    }
+    const hasUseCount = leafTexts.some((t) => /^\d+\s*ใบ$/.test(t))
+    if (!hasUseCount) {
+      return { ok: false, reason: `no "{N} ใบ" value found — strip may still be loading` }
+    }
+    return { ok: true, reason: '"ยังไม่จ่าย" + "จ่ายแล้ว" StatCards present with ใบ count' }
+  })
+  if (!stripProbe.ok) {
+    console.error('  ❌ CollectionSummaryStrip probe FAILED:', stripProbe.reason)
+    process.exit(1)
+  }
+  console.log('  ✅ CollectionSummaryStrip probe:', stripProbe.reason)
+
   await page.setViewportSize({ width: 375, height: 812 })
   await page.waitForTimeout(500)
   await page.screenshot({ path: '/tmp/bills-mobile.png', fullPage: true })
