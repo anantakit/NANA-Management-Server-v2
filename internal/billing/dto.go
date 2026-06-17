@@ -298,6 +298,12 @@ type BillResponse struct {
 	PaidAt        *time.Time `json:"paid_at,omitempty"`
 	PaymentMethod *string    `json:"payment_method,omitempty"`
 	PaymentNote   *string    `json:"payment_note,omitempty"`
+	// Payment destination snapshot — frozen at DRAFT creation from routing
+	// rules active at the time. Nil on bills created before routing shipped.
+	// FE must read only from these fields — never re-resolve from current config.
+	PaymentBankName      *string `json:"payment_bank_name,omitempty"`
+	PaymentAccountNumber *string `json:"payment_account_number,omitempty"`
+	PaymentAccountName   *string `json:"payment_account_name,omitempty"`
 }
 
 // BillListItemResponse is the per-row DTO for the bill list endpoint.
@@ -339,6 +345,12 @@ type BillListItemResponse struct {
 	// LastDeliveredAt is nil when never delivered.
 	DeliveryCount   int     `json:"delivery_count"`
 	LastDeliveredAt *string `json:"last_delivered_at,omitempty"`
+	// Payment destination snapshot — mirrors BillResponse snapshot fields.
+	// Used by DeliveryQueueList to gate the เตรียมส่ง CTA without a
+	// separate routing-config fetch.
+	PaymentBankName      *string `json:"payment_bank_name,omitempty"`
+	PaymentAccountNumber *string `json:"payment_account_number,omitempty"`
+	PaymentAccountName   *string `json:"payment_account_name,omitempty"`
 }
 
 // --- Settlement preview DTOs ---
@@ -704,6 +716,11 @@ func ToBillResponse(b Bill) BillResponse {
 		resp.AmountDue = money.ToBaht(bd.AmountDue)
 	}
 
+	// Payment destination snapshot — pass through as-is (nil when not set)
+	resp.PaymentBankName = b.PaymentBankName
+	resp.PaymentAccountNumber = b.PaymentAccountNumber
+	resp.PaymentAccountName = b.PaymentAccountName
+
 	return resp
 }
 
@@ -827,5 +844,9 @@ func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 		s := b.LastDeliveredAt.Format("2006-01-02T15:04:05Z07:00")
 		r.LastDeliveredAt = &s
 	}
+	// Payment destination snapshot — pass through as-is (nil when not set)
+	r.PaymentBankName = b.PaymentBankName
+	r.PaymentAccountNumber = b.PaymentAccountNumber
+	r.PaymentAccountName = b.PaymentAccountName
 	return r
 }

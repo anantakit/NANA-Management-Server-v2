@@ -73,6 +73,23 @@ func (s *paymentRoutingService) Create(ctx context.Context, apartmentID uuid.UUI
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
 
+	if rule.RuleType == RuleTypeRoomRange {
+		existing, err := s.ruleRepo.FindByApartmentID(ctx, apartmentID)
+		if err != nil {
+			return nil, fmt.Errorf("check range overlaps: %w", err)
+		}
+		for _, ex := range existing {
+			if ex.RuleType != RuleTypeRoomRange || ex.RangeStart == nil || ex.RangeEnd == nil {
+				continue
+			}
+			if RangesOverlap(*rule.RangeStart, *rule.RangeEnd, *ex.RangeStart, *ex.RangeEnd) {
+				return nil, respond.ErrConflict.WithMessage(
+					fmt.Sprintf("ช่วงห้องซ้อนทับกับกฎที่มีอยู่แล้ว (%s–%s)", *ex.RangeStart, *ex.RangeEnd),
+				)
+			}
+		}
+	}
+
 	if err := s.ruleRepo.Create(ctx, &rule); err != nil {
 		if isDuplicateKeyError(err) {
 			return nil, respond.ErrConflict.WithMessage("กฎประเภทนี้มีอยู่แล้วสำหรับห้องนี้")

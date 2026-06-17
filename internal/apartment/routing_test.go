@@ -111,10 +111,40 @@ func TestSplitRoomNumber(t *testing.T) {
 	}
 }
 
-// TestResolvePaymentDestination_MultipleRanges_FirstMatchWins verifies that when
-// multiple ROOM_RANGE rules overlap, the resolver returns the first match in the
-// slice order (which mirrors FindByApartmentID ORDER BY created_at ASC).
-func TestResolvePaymentDestination_MultipleRanges_FirstMatchWins(t *testing.T) {
+// TestRangesOverlap verifies the pure overlap predicate used at rule-creation time.
+// Two ranges overlap when they share the same building prefix and their numeric
+// intervals intersect (inclusive). Adjacent ranges (A101-A110, A111-A120) do NOT overlap.
+func TestRangesOverlap(t *testing.T) {
+	cases := []struct {
+		s1, e1, s2, e2 string
+		want           bool
+		desc           string
+	}{
+		{"A101", "A120", "A110", "A130", true, "partial overlap"},
+		{"A101", "A120", "A101", "A120", true, "identical ranges"},
+		{"A101", "A120", "A105", "A110", true, "range2 inside range1"},
+		{"A101", "A120", "A100", "A101", true, "touches start"},
+		{"A101", "A120", "A120", "A130", true, "touches end"},
+		{"A101", "A110", "A111", "A120", false, "adjacent — no overlap"},
+		{"A101", "A110", "A100", "A100", false, "just below"},
+		{"A101", "A110", "A111", "A111", false, "just above"},
+		{"A101", "A120", "B101", "B120", false, "different building prefix"},
+		{"A101", "A120", "A201", "A220", false, "same prefix letter, different range"},
+	}
+	for _, c := range cases {
+		got := RangesOverlap(c.s1, c.e1, c.s2, c.e2)
+		if got != c.want {
+			t.Errorf("[%s] RangesOverlap(%q,%q,%q,%q) = %v, want %v",
+				c.desc, c.s1, c.e1, c.s2, c.e2, got, c.want)
+		}
+	}
+}
+
+// TestResolvePaymentDestination_MultipleRanges_DeterministicOrder verifies that
+// the resolver handles overlapping ranges deterministically (first in slice wins),
+// ordered by created_at ASC. Overlapping ranges are rejected at create time, but
+// the resolver remains deterministic as a defensive guarantee.
+func TestResolvePaymentDestination_MultipleRanges_DeterministicOrder(t *testing.T) {
 	acctA := ApartmentBankAccount{ID: uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001"), AccountNumber: "111"}
 	acctB := ApartmentBankAccount{ID: uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000002"), AccountNumber: "222"}
 

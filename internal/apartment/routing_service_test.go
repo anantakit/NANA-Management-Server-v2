@@ -228,3 +228,125 @@ func (s *stubRuleRepoWithAptID) FindByID(_ context.Context, id uuid.UUID) (*Paym
 func (s *stubRuleRepoWithAptID) Update(_ context.Context, _ *PaymentDestinationRule) error {
 	return nil
 }
+
+// stubRuleRepoWithExisting returns a fixed slice from FindByApartmentID so
+// Create can check for range overlaps against pre-existing rules.
+type stubRuleRepoWithExisting struct {
+	existing []PaymentDestinationRule
+	stubRuleRepo
+}
+
+func (s *stubRuleRepoWithExisting) FindByApartmentID(_ context.Context, _ uuid.UUID) ([]PaymentDestinationRule, error) {
+	return s.existing, nil
+}
+func (s *stubRuleRepoWithExisting) Create(_ context.Context, _ *PaymentDestinationRule) error {
+	return nil
+}
+
+var _ PaymentDestinationRuleRepository = (*stubRuleRepoWithExisting)(nil)
+
+func strPtr(v string) *string { return &v }
+
+// ============================================================
+// Group 2 — ROOM_RANGE overlap enforcement
+// ============================================================
+
+// TestRoutingService_Create_RangeOverlap_Rejected verifies that creating a
+// ROOM_RANGE rule whose interval overlaps an existing range is rejected with 409.
+func TestRoutingService_Create_RangeOverlap_Rejected(t *testing.T) {
+	aptA := uuid.New()
+	bankA := uuid.New()
+
+	s, e := "A101", "A120"
+	ruleRepo := &stubRuleRepoWithExisting{
+		existing: []PaymentDestinationRule{
+			{RuleType: RuleTypeRoomRange, BankAccountID: bankA, RangeStart: &s, RangeEnd: &e},
+		},
+	}
+	bankRepo := &stubBankRepo{
+		accounts: map[uuid.UUID]*ApartmentBankAccount{
+			bankA: {ID: bankA, ApartmentID: aptA},
+		},
+	}
+	apts := map[uuid.UUID]*Apartment{aptA: {ID: aptA}}
+	svc := NewPaymentRoutingService(ruleRepo, bankRepo, &stubAptRepo{apts: apts})
+
+	_, err := svc.Create(context.Background(), aptA, CreatePaymentDestinationRuleRequest{
+		BankAccountID: bankA.String(),
+		RuleType:      string(RuleTypeRoomRange),
+		RangeStart:    strPtr("A110"),
+		RangeEnd:      strPtr("A130"),
+	})
+	if err == nil {
+		t.Fatal("expected overlap rejection, got nil")
+	}
+	appErr, ok := respond.Is(err)
+	if !ok {
+		t.Fatalf("expected AppError, got %T: %v", err, err)
+	}
+	if appErr.HTTPStatus != 409 {
+		t.Errorf("expected 409, got %d", appErr.HTTPStatus)
+	}
+}
+
+// TestRoutingService_Create_AdjacentRanges_OK verifies that adjacent (non-overlapping)
+// ranges are accepted. A101-A110 and A111-A120 share no room.
+func TestRoutingService_Create_AdjacentRanges_OK(t *testing.T) {
+	aptA := uuid.New()
+	bankA := uuid.New()
+
+	s, e := "A101", "A110"
+	ruleRepo := &stubRuleRepoWithExisting{
+		existing: []PaymentDestinationRule{
+			{RuleType: RuleTypeRoomRange, BankAccountID: bankA, RangeStart: &s, RangeEnd: &e},
+		},
+	}
+	bankRepo := &stubBankRepo{
+		accounts: map[uuid.UUID]*ApartmentBankAccount{
+			bankA: {ID: bankA, ApartmentID: aptA},
+		},
+	}
+	apts := map[uuid.UUID]*Apartment{aptA: {ID: aptA}}
+	svc := NewPaymentRoutingService(ruleRepo, bankRepo, &stubAptRepo{apts: apts})
+
+	_, err := svc.Create(context.Background(), aptA, CreatePaymentDestinationRuleRequest{
+		BankAccountID: bankA.String(),
+		RuleType:      string(RuleTypeRoomRange),
+		RangeStart:    strPtr("A111"),
+		RangeEnd:      strPtr("A120"),
+	})
+	if err != nil {
+		t.Fatalf("adjacent ranges must not be rejected: %v", err)
+	}
+}
+
+// TestRoutingService_Create_DifferentBuildingRanges_OK verifies that ranges in
+// different buildings (A vs B) are not considered overlapping.
+func TestRoutingService_Create_DifferentBuildingRanges_OK(t *testing.T) {
+	aptA := uuid.New()
+	bankA := uuid.New()
+
+	s, e := "A101", "A120"
+	ruleRepo := &stubRuleRepoWithExisting{
+		existing: []PaymentDestinationRule{
+			{RuleType: RuleTypeRoomRange, BankAccountID: bankA, RangeStart: &s, RangeEnd: &e},
+		},
+	}
+	bankRepo := &stubBankRepo{
+		accounts: map[uuid.UUID]*ApartmentBankAccount{
+			bankA: {ID: bankA, ApartmentID: aptA},
+		},
+	}
+	apts := map[uuid.UUID]*Apartment{aptA: {ID: aptA}}
+	svc := NewPaymentRoutingService(ruleRepo, bankRepo, &stubAptRepo{apts: apts})
+
+	_, err := svc.Create(context.Background(), aptA, CreatePaymentDestinationRuleRequest{
+		BankAccountID: bankA.String(),
+		RuleType:      string(RuleTypeRoomRange),
+		RangeStart:    strPtr("B101"),
+		RangeEnd:      strPtr("B120"),
+	})
+	if err != nil {
+		t.Fatalf("different-building ranges must not be rejected: %v", err)
+	}
+}

@@ -113,10 +113,13 @@ func seedDevMonthlyBills(db *gorm.DB) error {
 			continue
 		}
 
-		// Idempotent — skip if this contract already has a bill for this month.
+		// Idempotent — skip if a non-VOID MONTHLY bill already exists for this
+		// contract+month. VOID bills don't block re-creation (the unique index is
+		// partial: status != 'VOID'), so we only count active ones.
 		var existing int64
 		if err := db.Model(&billing.Bill{}).
-			Where("contract_id = ? AND billing_month = ?", c.ID, billingMonth).
+			Where("contract_id = ? AND billing_month = ? AND status != ?",
+				c.ID, billingMonth, billing.BillStatusVoid).
 			Count(&existing).Error; err != nil {
 			return fmt.Errorf("check existing bill %s: %w", rm.Number, err)
 		}
@@ -312,82 +315,44 @@ func ResetPaymentSmokeBills(db *gorm.DB) error {
 		return nil
 	}
 
-	// Find current-month bills for these contracts.
-	var bills []billing.Bill
-	if err := db.Where("contract_id IN ? AND billing_month = ? AND bill_type = ?",
-		contractIDs, billingMonth, billing.BillTypeMonthly).
-		Find(&bills).Error; err != nil {
-		return fmt.Errorf("find bills: %w", err)
+	// Void ALL active (non-VOID) monthly bills for these contracts so we can
+	// re-create clean ones via seedDevMonthlyBills. This guarantees null bank
+	// snapshot fields even when a prior routing-smoke run left behind bills with
+	// frozen bank names. The partial unique index (status != 'VOID') means that
+	// once we VOID them, seedDevMonthlyBills can INSERT fresh rows.
+	var activeBillIDs []uuid.UUID
+	var activeStrIDs []string
+	var existingBills []billing.Bill
+	if err := db.Where("contract_id IN ? AND billing_month = ? AND bill_type = ? AND status != ?",
+		contractIDs, billingMonth, billing.BillTypeMonthly, billing.BillStatusVoid).
+		Find(&existingBills).Error; err != nil {
+		return fmt.Errorf("find active bills: %w", err)
 	}
-	if len(bills) == 0 {
-		// Bills don't exist yet — run seedDevMonthlyBills to create them.
-		return seedDevMonthlyBills(db)
-	}
-
-	// Build a lookup: contract_id → room_number so we know which bills to
-	// reset to FINALIZED vs PAID.
-	contractRoom := make(map[uuid.UUID]string, len(contracts))
-	roomsByID := make(map[uuid.UUID]string, len(rooms))
-	for _, r := range rooms {
-		roomsByID[r.ID] = r.Number
-	}
-	for _, c := range contracts {
-		if num, ok := roomsByID[c.RoomID]; ok {
-			contractRoom[c.ID] = num
-		}
+	for _, b := range existingBills {
+		activeBillIDs = append(activeBillIDs, b.ID)
+		activeStrIDs = append(activeStrIDs, b.ID.String())
 	}
 
-	// Rooms that should be PAID in the seeded state.
-	paidInSeed := map[string]bool{"A105": true, "A106": true}
-
-	billIDs := make([]uuid.UUID, 0, len(bills))
-	for _, b := range bills {
-		billIDs = append(billIDs, b.ID)
-	}
-
-	// Step 1: wipe all payment records for these bills.
-	// Use string IDs for the raw DELETE since GORM's Exec doesn't expand uuid slices.
-	strIDs := make([]string, 0, len(billIDs))
-	for _, id := range billIDs {
-		strIDs = append(strIDs, id.String())
-	}
-	if err := db.Exec(
-		"DELETE FROM bill_payments WHERE bill_id::text IN ?", strIDs,
-	).Error; err != nil {
-		return fmt.Errorf("delete bill_payments: %w", err)
-	}
-
-	// Step 2: reset bill status to FINALIZED for all (covers A101–A104, A107).
-	if err := db.Model(&billing.Bill{}).
-		Where("id IN ?", billIDs).
-		Update("status", billing.BillStatusFinalized).Error; err != nil {
-		return fmt.Errorf("reset to finalized: %w", err)
-	}
-
-	// Step 3: re-mark A105/A106 as PAID and recreate payment records.
-	now := time.Now().UTC()
-	for _, b := range bills {
-		roomNum := contractRoom[b.ContractID]
-		if !paidInSeed[roomNum] {
-			continue
-		}
-		// Mark bill PAID.
-		if err := db.Model(&billing.Bill{}).
-			Where("id = ?", b.ID).
-			Update("status", billing.BillStatusPaid).Error; err != nil {
-			return fmt.Errorf("mark %s paid: %w", roomNum, err)
-		}
-		// Insert payment record. ON CONFLICT DO NOTHING keeps it idempotent.
-		if err := db.Exec(`
-			INSERT INTO bill_payments (id, bill_id, amount, method, note, paid_at, created_at)
-			VALUES (uuid_generate_v4(), ?, ?, 'CASH', 'seed payment', ?, ?)
-			ON CONFLICT (bill_id) DO NOTHING`,
-			b.ID, b.TotalAmount, now, now,
+	if len(activeBillIDs) > 0 {
+		// Wipe payment records first (FK constraint).
+		if err := db.Exec(
+			"DELETE FROM bill_payments WHERE bill_id::text IN ?", activeStrIDs,
 		).Error; err != nil {
-			return fmt.Errorf("insert payment for %s: %w", roomNum, err)
+			return fmt.Errorf("delete bill_payments: %w", err)
+		}
+		// Void them so the unique index slot is freed.
+		if err := db.Model(&billing.Bill{}).
+			Where("id IN ?", activeBillIDs).
+			Update("status", billing.BillStatusVoid).Error; err != nil {
+			return fmt.Errorf("void active bills: %w", err)
 		}
 	}
 
-	slog.Info("reset payment smoke bills", "billing_month", billingMonth, "count", len(bills))
+	// Re-create from seed (idempotent INSERT … ON CONFLICT DO NOTHING).
+	if err := seedDevMonthlyBills(db); err != nil {
+		return fmt.Errorf("recreate monthly bills: %w", err)
+	}
+
+	slog.Info("reset payment smoke bills", "billing_month", billingMonth, "voided", len(activeBillIDs))
 	return nil
 }

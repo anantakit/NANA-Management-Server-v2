@@ -165,6 +165,24 @@ func destinationFrom(a ApartmentBankAccount) *PaymentDestinationInfo {
 
 // --- Range helpers ---
 
+// RangesOverlap reports whether two room ranges [start1,end1] and [start2,end2]
+// overlap (inclusive on both ends). Returns false if either range is unparseable
+// or the ranges belong to different building prefixes.
+// Used at rule-creation time to enforce unambiguous routing.
+func RangesOverlap(start1, end1, start2, end2 string) bool {
+	p1, n1s, ok1 := splitRoomNumber(start1)
+	_, n1e, ok2 := splitRoomNumber(end1)
+	p2, n2s, ok3 := splitRoomNumber(start2)
+	_, n2e, ok4 := splitRoomNumber(end2)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return false
+	}
+	if p1 != p2 {
+		return false // different building prefixes — can never overlap
+	}
+	return n1s <= n2e && n1e >= n2s
+}
+
 // ValidateRoomRange checks that start and end share a prefix and start ≤ end.
 func ValidateRoomRange(start, end string) error {
 	sp, sn, ok1 := splitRoomNumber(start)
