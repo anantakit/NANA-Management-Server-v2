@@ -109,6 +109,14 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | POST | `/batches/:id/finalize-all` | Bulk finalize every DRAFT monthly bill in the batch (per-item tx, continue-on-error). Already-FINALIZED bills are silently skipped (idempotent rerun). Returns `{success_count, fail_count, failures[]}` with per-row code (`NO_LINE_ITEMS` / `NOT_DRAFT` / `INFRA_ERROR`). Settlement bills excluded by query + service guard |
 | POST | `/batches/:id/items/:itemId/replan` | Re-evaluate one batch item against current state (reuses `loadBatchInputs` + `classifyContractForBatch` + `computeMonthlyBillSnapshot`). Rewrites `result_type` / `reason_code` / `reason_text` / `bill_id` / `computed_snapshot`. Used when state behind a SKIPPED row changes mid-batch (operator records the missing meter from BillBatchReview → MonthlyMeterDrawer). Idempotent — re-runs producing the same verdict are no-ops. 409 when batch already fully COMMITTED or item already has `bill_id`. 404 when item does not belong to the batch. Returns the updated `BatchItemResponse` with refreshed `tenant_name` + `bill_status` for in-place FE row patch |
 
+## Bill Delivery (`/api/v1/bill-deliveries`) — Admin only
+
+Append-only event log for manual LINE delivery. Delivery is NOT a bill lifecycle stage — it does not change `bill.status`. v1 channel is always `LINE_MANUAL`. List response (`GET /bills`) includes `delivery_count` + `last_delivered_at` via LEFT JOIN LATERAL.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Record one delivery event. Body: `{bill_id, note?}`. Guards: bill must be `MONTHLY` + `FINALIZED` — rejects DRAFT/PAID/VOID/SETTLEMENT with 400. Returns 201 with the delivery record. |
+
 ## Billing Reconciliation (`/api/v1/billing-reconciliation`) — Admin only
 
 Phase 1A read-only Audit + Phase 1B per-room decision storage + Phase 1D per-row ออกบิล Generate fan-out. Trust tool (not productivity tool): the operator question is "ระบบจัดห้องเข้ากลุ่มถูกไหม / ตัดสินได้และเปลี่ยนใจได้", not "ออกบิลได้เร็วแค่ไหน". Bulk is 1C.

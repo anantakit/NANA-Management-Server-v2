@@ -12,6 +12,7 @@ import (
 	"nana/internal/apartment"
 	"nana/internal/auth"
 	"nana/internal/billing"
+	"nana/internal/billdelivery"
 	"nana/internal/billingconfig"
 	"nana/internal/billingreconciliation"
 	"nana/internal/contract"
@@ -135,6 +136,11 @@ func main() {
 	paymentService := payment.NewPaymentService(paymentRepo, billPaymentAdapter, txManager)
 	paymentHandler := payment.NewPaymentHandler(paymentService)
 
+	// Wire dependencies — Bill Delivery (event log, v1 manual LINE delivery)
+	deliveryRepo := billdelivery.NewDeliveryRepository(db)
+	deliveryService := billdelivery.NewDeliveryService(deliveryRepo, billRepo)
+	deliveryHandler := billdelivery.NewDeliveryHandler(deliveryService)
+
 	// Wire dependencies — Billing Reconciliation (Phase 1A: read-only audit)
 	reconRepo := billingreconciliation.NewRepository(db)
 	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billService, billService)
@@ -221,6 +227,7 @@ func main() {
 	billGroup := admin.Group("/bills")
 	billHandler.RegisterRoutes(billGroup)
 	paymentHandler.RegisterRoutes(billGroup)
+	deliveryHandler.RegisterRoutes(admin.Group("/bill-deliveries"))
 	reconHandler.RegisterRoutes(admin.Group("/billing-reconciliation"))
 
 	// Graceful shutdown

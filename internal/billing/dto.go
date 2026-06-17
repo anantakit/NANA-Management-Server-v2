@@ -334,6 +334,11 @@ type BillListItemResponse struct {
 	// Payment fields — nil for non-PAID bills. Batch-loaded, no N+1.
 	PaidAt        *time.Time `json:"paid_at,omitempty"`
 	PaymentMethod *string    `json:"payment_method,omitempty"`
+	// Delivery fields — populated from bill_deliveries via LEFT JOIN LATERAL
+	// in FindAll (no N+1). DeliveryCount is 0 when never delivered.
+	// LastDeliveredAt is nil when never delivered.
+	DeliveryCount   int     `json:"delivery_count"`
+	LastDeliveredAt *string `json:"last_delivered_at,omitempty"`
 }
 
 // --- Settlement preview DTOs ---
@@ -816,6 +821,11 @@ func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 	if b.PaidAt != nil {
 		r.PaidAt = b.PaidAt
 		r.PaymentMethod = b.PaymentMethod
+	}
+	r.DeliveryCount = b.DeliveryCount
+	if b.LastDeliveredAt != nil {
+		s := b.LastDeliveredAt.Format("2006-01-02T15:04:05Z07:00")
+		r.LastDeliveredAt = &s
 	}
 	return r
 }

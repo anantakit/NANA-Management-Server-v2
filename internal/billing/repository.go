@@ -155,15 +155,24 @@ func (r *billingRepository) FindAll(ctx context.Context, params BillListParams) 
 
 	type joinRow struct {
 		Bill
-		TenantName    string    `gorm:"column:tenant_name"`
-		RoomNumber    string    `gorm:"column:room_number"`
-		ApartmentName string    `gorm:"column:apartment_name"`
-		ApartmentID   uuid.UUID `gorm:"column:apartment_id"`
+		TenantName      string     `gorm:"column:tenant_name"`
+		RoomNumber      string     `gorm:"column:room_number"`
+		ApartmentName   string     `gorm:"column:apartment_name"`
+		ApartmentID     uuid.UUID  `gorm:"column:apartment_id"`
+		DeliveryCount   int        `gorm:"column:delivery_count"`
+		LastDeliveredAt *time.Time `gorm:"column:last_delivered_at"`
 	}
+
+	deliveryJoin := `LEFT JOIN LATERAL (
+		SELECT COUNT(*)::int AS delivery_count, MAX(delivered_at) AS last_delivered_at
+		FROM bill_deliveries WHERE bill_id = bills.id
+	) bd ON true`
+	deliveryCols := `, bd.delivery_count, bd.last_delivered_at`
 
 	var rows []joinRow
 	err := query.
-		Select(r.selectColumns()).
+		Joins(deliveryJoin).
+		Select(r.selectColumns()+deliveryCols).
 		Order(orderClause).
 		Offset(params.Offset()).
 		Limit(params.Limit).
@@ -175,11 +184,13 @@ func (r *billingRepository) FindAll(ctx context.Context, params BillListParams) 
 	result := make([]BillWithRelations, len(rows))
 	for i, row := range rows {
 		result[i] = BillWithRelations{
-			Bill:          row.Bill,
-			TenantName:    row.TenantName,
-			RoomNumber:    row.RoomNumber,
-			ApartmentName: row.ApartmentName,
-			ApartmentID:   row.ApartmentID,
+			Bill:            row.Bill,
+			TenantName:      row.TenantName,
+			RoomNumber:      row.RoomNumber,
+			ApartmentName:   row.ApartmentName,
+			ApartmentID:     row.ApartmentID,
+			DeliveryCount:   row.DeliveryCount,
+			LastDeliveredAt: row.LastDeliveredAt,
 		}
 	}
 

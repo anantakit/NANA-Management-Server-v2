@@ -234,6 +234,12 @@ type Bill struct {
 
 func (Bill) TableName() string { return "bills" }
 
+// IsDeliverable reports whether a bill can receive a delivery event.
+// Only MONTHLY+FINALIZED bills qualify — DRAFT/PAID/VOID and SETTLEMENT do not.
+func (b *Bill) IsDeliverable() bool {
+	return b.BillType == BillTypeMonthly && b.Status == BillStatusFinalized
+}
+
 func (b *Bill) BeforeCreate(tx *gorm.DB) error {
 	if b.ID == uuid.Nil {
 		b.ID = uuid.New()
@@ -1146,6 +1152,12 @@ type BillWithRelations struct {
 	PaidAt        *time.Time `gorm:"-" json:"-"`
 	PaymentMethod *string    `gorm:"-" json:"-"`
 	PaymentNote   *string    `gorm:"-" json:"-"`
+
+	// Delivery fields — populated by FindAll via LEFT JOIN LATERAL on
+	// bill_deliveries (one SQL round-trip, no N+1). Zero/nil when the bill
+	// has no delivery records yet.
+	DeliveryCount   int        `gorm:"-" json:"-"`
+	LastDeliveredAt *time.Time `gorm:"-" json:"-"`
 }
 
 // BillSummaryRaw holds aggregate counts from the summary query (satang).
