@@ -223,7 +223,7 @@ func buildRealBillingServiceWithAudit(t *testing.T, db *gorm.DB, override BillAu
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	bcRepo := billingconfig.NewBillingConfigRepository(db)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
-	return NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txMgr)
+	return NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, nil, txMgr)
 }
 
 // buildRealMoveOutService wires the moveout service end-to-end against the

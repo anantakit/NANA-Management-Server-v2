@@ -129,7 +129,7 @@ func newCorrectionTestEnv(t *testing.T, audit BillAuditRepository) *correctionTe
 	configs := &integrationConfigStub{}
 	moveOuts := &integrationMoveOutStub{}
 	txMgr := database.NewTxManager(db)
-	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, moveOuts, txMgr)
+	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, moveOuts, nil, txMgr)
 
 	// Seed the FINALIZED MONTHLY bill that tests will correct.
 	// TotalAmount intentionally wrong (999999) so we can prove the new

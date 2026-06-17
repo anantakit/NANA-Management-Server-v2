@@ -59,6 +59,7 @@ func newCommitService(repo *mockBillingRepo) BillingService {
 		&mockMeterQuerier{},
 		&mockConfigQuerier{},
 		&mockMoveOutQuerier{},
+		nil,
 		&mockTxManager{},
 	)
 }

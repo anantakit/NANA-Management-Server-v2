@@ -39,6 +39,9 @@ func (s *deliveryService) RecordDelivery(ctx context.Context, req RecordDelivery
 	if !bill.IsDeliverable() {
 		return nil, ErrBillNotDeliverable
 	}
+	if !bill.HasPaymentDestination() {
+		return nil, ErrBillMissingPaymentDestination
+	}
 
 	d := BillDelivery{
 		BillID:      billID,

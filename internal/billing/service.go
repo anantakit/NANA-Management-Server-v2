@@ -71,13 +71,14 @@ type BillingService interface {
 }
 
 type billingService struct {
-	repo      BillingRepository
-	audit     BillAuditRepository
-	contracts ContractQuerier
-	meters    MeterReadingQuerier
-	configs   BillingConfigQuerier
-	moveOuts  MoveOutQuerier
-	tx        database.TxManager
+	repo           BillingRepository
+	audit          BillAuditRepository
+	contracts      ContractQuerier
+	meters         MeterReadingQuerier
+	configs        BillingConfigQuerier
+	moveOuts       MoveOutQuerier
+	paymentRouting PaymentRoutingQuerier
+	tx             database.TxManager
 }
 
 var _ BillingService = (*billingService)(nil)
@@ -89,16 +90,18 @@ func NewBillingService(
 	meters MeterReadingQuerier,
 	configs BillingConfigQuerier,
 	moveOuts MoveOutQuerier,
+	paymentRouting PaymentRoutingQuerier,
 	tx database.TxManager,
 ) BillingService {
 	return &billingService{
-		repo:      repo,
-		audit:     audit,
-		contracts: contracts,
-		meters:    meters,
-		configs:   configs,
-		moveOuts:  moveOuts,
-		tx:        tx,
+		repo:           repo,
+		audit:          audit,
+		contracts:      contracts,
+		meters:         meters,
+		configs:        configs,
+		moveOuts:       moveOuts,
+		paymentRouting: paymentRouting,
+		tx:             tx,
 	}
 }
 
@@ -296,6 +299,10 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	snapshot := computeMonthlyBillSnapshot(req.BillingMonth,
 		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
 
+	// Resolve payment destination outside the TX (read-only). Null when no rules configured.
+	aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+	paymentDest := s.tryResolvePaymentDestination(ctx, aptID, roomNum)
+
 	// Pre-generate the bill ID so the CREATE_DRAFT audit row can reference
 	// it inside the same TX as the bill insert. BeforeCreate skips uuid.New()
 	// when ID is already set. Note: line items in the snapshot still hold
@@ -310,6 +317,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		LineItems:    snapshot.ToLineItems(uuid.Nil),
 		TotalAmount:  snapshot.TotalAmount,
 	}
+	applyPaymentSnapshot(&bill, paymentDest)
 
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		if err := s.repo.Create(txCtx, &bill); err != nil {

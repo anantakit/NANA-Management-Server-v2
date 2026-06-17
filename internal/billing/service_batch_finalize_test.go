@@ -42,7 +42,7 @@ func newBatchFinalizeService(bills []Bill) (BillingService, *mockBillingRepo, *m
 		return nil, errBillFinalizeNotFound
 	}
 	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
 	return svc, repo, audit
 }
 
@@ -315,7 +315,7 @@ func newFinalizeByMonthService(bills []Bill) (BillingService, *mockBillingRepo, 
 		return nil, errBillFinalizeNotFound
 	}
 	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
 	return svc, repo, audit
 }
 

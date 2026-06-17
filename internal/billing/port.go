@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"nana/internal/apartment"
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
@@ -38,6 +39,13 @@ type MoveOutQuerier interface {
 	// move-outs (settlement will cover them); rooms with future-month notices
 	// still get a normal monthly bill.
 	FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
+}
+
+// PaymentRoutingQuerier resolves the payment destination for a room.
+// Implemented by apartment.PaymentRoutingService; nil destination means no rules
+// are configured — bill is created with null snapshot and blocked at delivery.
+type PaymentRoutingQuerier interface {
+	ResolveDestination(ctx context.Context, apartmentID uuid.UUID, roomNumber string) (*apartment.PaymentDestinationInfo, error)
 }
 
 // --- Batch billing projections ---

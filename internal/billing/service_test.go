@@ -342,6 +342,10 @@ func (m *mockBillingRepo) FindPaymentsByBillIDs(_ context.Context, _ []uuid.UUID
 	return map[uuid.UUID]*BillPaymentRecord{}, nil
 }
 
+func (m *mockBillingRepo) FindRoomApartmentInfo(_ context.Context, _ uuid.UUID) (uuid.UUID, string, error) {
+	return uuid.Nil, "", nil
+}
+
 type mockContractQuerier struct {
 	contract *contract.Contract
 }
@@ -555,7 +559,7 @@ func completedNotice(contractID uuid.UUID, moveOutDate time.Time) *moveout.MoveO
 }
 
 func newSvc(repo *mockBillingRepo, contracts *mockContractQuerier, meters *mockMeterQuerier, configs *mockConfigQuerier, moveOuts *mockMoveOutQuerier) BillingService {
-	return NewBillingService(repo, &mockBillAuditRepo{}, contracts, meters, configs, moveOuts, &mockTxManager{})
+	return NewBillingService(repo, &mockBillAuditRepo{}, contracts, meters, configs, moveOuts, nil, &mockTxManager{})
 }
 
 // ============================================================
@@ -1579,7 +1583,7 @@ func testContractWithRoom(floor int, roomNum string) (ContractWithRoom, *contrac
 }
 
 func batchSvc(repo *mockBillingRepo, meters *mockMeterQuerier, moveOuts *mockMoveOutQuerier) BillingService {
-	return NewBillingService(repo, &mockBillAuditRepo{}, &mockContractQuerier{}, meters, &mockConfigQuerier{}, moveOuts, &mockTxManager{})
+	return NewBillingService(repo, &mockBillAuditRepo{}, &mockContractQuerier{}, meters, &mockConfigQuerier{}, moveOuts, nil, &mockTxManager{})
 }
 
 // runBatch invokes the service and returns (batch header, items captured by the mock repo).

@@ -88,7 +88,7 @@ func newReplanEnv(t *testing.T) *replanEnv {
 	configs := &replanConfigStub{}
 	moveOuts := &replanMoveOutStub{}
 	txMgr := database.NewTxManager(db)
-	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, moveOuts, txMgr)
+	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, moveOuts, nil, txMgr)
 
 	return &replanEnv{
 		db: db, svc: svc, billRepo: billRepo,

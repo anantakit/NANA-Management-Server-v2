@@ -29,7 +29,7 @@ func TestGetBatchItems_BatchedIsEditedQuery(t *testing.T) {
 		{ID: uuid.New(), BillID: billB, Action: AuditCreateDraft}, // lifecycle, not edit
 		{ID: uuid.New(), BillID: billC, Action: AuditAddManualItem},
 	}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
 
 	got, err := svc.GetBatchItems(context.Background(), batchID)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestGetBatchItems_AllUncommitted_NoAuditQuery(t *testing.T) {
 	}
 	repo := &mockBillingRepo{createdBatchItems: items}
 	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
 
 	got, err := svc.GetBatchItems(context.Background(), batchID)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestGetBatchItems_AuditFailure_Propagates(t *testing.T) {
 	}
 	repo := &mockBillingRepo{createdBatchItems: items}
 	audit := &mockBillAuditRepo{editedErr: errBatchEditedAuditDown}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
 
 	_, err := svc.GetBatchItems(context.Background(), batchID)
 	if err == nil {
@@ -131,7 +131,7 @@ func TestGetBatchItems_PropagatesBillStatus(t *testing.T) {
 		},
 	}
 	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
 
 	got, err := svc.GetBatchItems(context.Background(), batchID)
 	if err != nil {

@@ -80,7 +80,7 @@ func newGenerateEnv(t *testing.T) *generateEnv {
 	txMgr := database.NewTxManager(db)
 
 	billSvc := billing.NewBillingService(
-		billRepo, billAudit, contractRepo, meterRepo, configRepo, moveOutRepo, txMgr,
+		billRepo, billAudit, contractRepo, meterRepo, configRepo, moveOutRepo, nil, txMgr,
 	)
 
 	reconRepo := billingreconciliation.NewRepository(db)

@@ -34,6 +34,15 @@ paths:
 | PUT | `/:accountId` | Update bank account |
 | DELETE | `/:accountId` | Soft delete bank account |
 
+## Payment Destination Rules (`/api/v1/apartments/:id/payment-destination-rules`) — Admin only
+3 rule types (APARTMENT_DEFAULT / ROOM_RANGE / ROOM_OVERRIDE). Priority: ROOM_OVERRIDE > ROOM_RANGE (first match) > APARTMENT_DEFAULT. Resolved at DRAFT bill creation time and snapshotted into bills. Bills with null destination are blocked from delivery.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List all routing rules for apartment |
+| POST | `/` | Add rule. Body: `{bank_account_id, rule_type, room_number?, range_start?, range_end?}`. Validates range prefix match + start ≤ end. Unique index prevents duplicate APARTMENT_DEFAULT or duplicate ROOM_OVERRIDE per room. |
+| PUT | `/:ruleId` | Update rule bank account (`bank_account_id` only) |
+| DELETE | `/:ruleId` | Soft delete rule |
+
 ## Rooms (`/api/v1/apartments/:id/rooms`) — Admin only
 | Method | Path | Description |
 |--------|------|-------------|

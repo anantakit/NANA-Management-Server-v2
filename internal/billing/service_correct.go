@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/apartment"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -34,6 +35,16 @@ import (
 func (s *billingService) CorrectBill(ctx context.Context, id uuid.UUID, req CorrectBillRequest, actor *uuid.UUID) (*BillWithRelations, error) {
 	var newBillID uuid.UUID
 
+	// Pre-resolve payment destination outside the correction TX (read-only pre-fetch).
+	// Routing queries on payment_destination_rules/apartment_bank_accounts must not
+	// extend the correction row-lock window. If routing is configured but the resolver
+	// returns an unexpected error, fail fast — correction must not silently produce a
+	// null-destination document when rules are configured.
+	paymentDest, err := s.resolvePaymentDestForCorrection(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("resolve payment destination for correction: %w", err)
+	}
+
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		old, err := s.repo.LockBillForCorrection(txCtx, id)
 		if err != nil {
@@ -49,7 +60,7 @@ func (s *billingService) CorrectBill(ctx context.Context, id uuid.UUID, req Corr
 
 		switch old.BillType {
 		case BillTypeMonthly:
-			nid, err := s.correctMonthlyBillInTx(txCtx, old, req, actor)
+			nid, err := s.correctMonthlyBillInTx(txCtx, old, req, actor, paymentDest)
 			if err != nil {
 				return err
 			}
@@ -90,6 +101,7 @@ func (s *billingService) correctMonthlyBillInTx(
 	old *Bill,
 	req CorrectBillRequest,
 	actor *uuid.UUID,
+	paymentDest *apartment.PaymentDestinationInfo,
 ) (uuid.UUID, error) {
 	previousStatus := string(old.Status)
 
@@ -131,6 +143,7 @@ func (s *billingService) correctMonthlyBillInTx(
 		LineItems:    snapshot.ToLineItems(uuid.Nil),
 		TotalAmount:  snapshot.TotalAmount,
 	}
+	applyPaymentSnapshot(&newBill, paymentDest)
 
 	// Persist order MATTERS: void+supersede old FIRST, then create new.
 	// The partial UNIQUE INDEX idx_bills_unique_monthly allows only one
@@ -168,4 +181,28 @@ func (s *billingService) correctMonthlyBillInTx(
 		return uuid.Nil, err
 	}
 	return newBill.ID, nil
+}
+
+// resolvePaymentDestForCorrection pre-fetches the payment destination for a bill
+// outside any transaction. Returns (nil, nil) when no rules are configured or when
+// bill/contract/room lookups fail (the TX will surface those as proper errors).
+// Returns (nil, err) only when the routing service itself fails — callers must
+// propagate that error rather than silently proceeding with a null destination.
+func (s *billingService) resolvePaymentDestForCorrection(ctx context.Context, billID uuid.UUID) (*apartment.PaymentDestinationInfo, error) {
+	if s.paymentRouting == nil {
+		return nil, nil
+	}
+	b, err := s.repo.FindByID(ctx, billID)
+	if err != nil {
+		return nil, nil // LockBillForCorrection inside TX will surface the 404
+	}
+	c, err := s.contracts.FindByIDSimple(ctx, b.ContractID)
+	if err != nil {
+		return nil, nil // TX will surface this
+	}
+	aptID, roomNum, err := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+	if err != nil {
+		return nil, nil // TX will surface this
+	}
+	return s.paymentRouting.ResolveDestination(ctx, aptID, roomNum)
 }

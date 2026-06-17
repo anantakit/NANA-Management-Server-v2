@@ -1,8 +1,11 @@
 package billing
 
 import (
+	"context"
+	"log/slog"
 	"time"
 
+	"nana/internal/apartment"
 	"nana/internal/moveout"
 
 	"github.com/google/uuid"
@@ -187,4 +190,35 @@ func effectiveMoveOutDate(moveOutDate time.Time, mode SettlementRentMode) time.T
 		return endOfMonth(moveOutDate)
 	}
 	return moveOutDate
+}
+
+// --- Payment routing helpers ---
+
+// tryResolvePaymentDestination resolves the payment destination for a room.
+// Returns nil on error or when no rules are configured — never blocks bill creation.
+func (s *billingService) tryResolvePaymentDestination(ctx context.Context, apartmentID uuid.UUID, roomNumber string) *apartment.PaymentDestinationInfo {
+	if s.paymentRouting == nil {
+		return nil
+	}
+	dest, err := s.paymentRouting.ResolveDestination(ctx, apartmentID, roomNumber)
+	if err != nil {
+		slog.Warn("payment routing resolve failed, bill will have null destination",
+			"apartment_id", apartmentID, "room_number", roomNumber, "error", err)
+		return nil
+	}
+	return dest
+}
+
+// applyPaymentSnapshot sets the three payment snapshot fields on a bill.
+// No-op when dest is nil (no rules configured).
+func applyPaymentSnapshot(bill *Bill, dest *apartment.PaymentDestinationInfo) {
+	if dest == nil {
+		return
+	}
+	bn := dest.BankName
+	an := dest.AccountNumber
+	acn := dest.AccountName
+	bill.PaymentBankName = &bn
+	bill.PaymentAccountNumber = &an
+	bill.PaymentAccountName = &acn
 }

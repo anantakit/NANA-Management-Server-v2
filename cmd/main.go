@@ -120,10 +120,15 @@ func main() {
 	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txManager)
 	meterHandler := meterreading.NewMeterReadingHandler(meterService)
 
+	// Wire dependencies — Payment Destination Routing
+	routingRuleRepo := apartment.NewPaymentDestinationRuleRepository(db)
+	routingService := apartment.NewPaymentRoutingService(routingRuleRepo, bankRepo, aptRepo)
+	routingHandler := apartment.NewPaymentRoutingHandler(routingService)
+
 	// Wire dependencies — Billing
 	billRepo := billing.NewBillingRepository(db)
 	billAuditRepo := billing.NewBillAuditRepository(db)
-	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, txManager)
+	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, routingService, txManager)
 	billHandler := billing.NewBillingHandler(billService)
 
 	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier)
@@ -216,6 +221,7 @@ func main() {
 	admin := protected.Group("", middleware.RequireRole(role.Admin))
 	aptHandler.RegisterRoutes(admin.Group("/apartments"))
 	bankHandler.RegisterRoutes(admin.Group("/apartments/:id/bank-accounts"))
+	routingHandler.RegisterRoutes(admin.Group("/apartments/:id/payment-destination-rules"))
 	presetHandler := apartment.NewPresetHandler()
 	presetHandler.RegisterRoutes(admin.Group("/apartments/:id/manual-line-item-presets"))
 	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))

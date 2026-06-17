@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"nana/internal/apartment"
 	"nana/internal/moveout"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
@@ -80,12 +81,20 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		opts.RentMode = SettlementRentMode(req.RentMode)
 	}
 
+	// Resolve payment destination outside TX (read-only). Null if no rules configured.
+	var paymentDest *apartment.PaymentDestinationInfo
+	if c, cErr := s.contracts.FindByIDSimple(ctx, contractID); cErr == nil {
+		aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+		paymentDest = s.tryResolvePaymentDestination(ctx, aptID, roomNum)
+	}
+
 	var billID uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		plan, pErr := s.prepareSettlementPlan(txCtx, contractID, moveOutDate, opts)
 		if pErr != nil {
 			return pErr
 		}
+		applyPaymentSnapshot(&plan.Bill, paymentDest)
 		result, cErr := s.commitSettlementPlan(txCtx, plan)
 		if cErr != nil {
 			return cErr
@@ -316,11 +325,21 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 		return nil, fmt.Errorf("restore absorbed bills: %w", err)
 	}
 
+	// Resolve payment destination before plan preparation (mirrors CreateSettlementBill).
+	// tryResolvePaymentDestination swallows routing errors with a warning — generate/regen
+	// paths use the soft policy; only correction paths hard-fail on routing errors.
+	var paymentDest *apartment.PaymentDestinationInfo
+	if c, cErr := s.contracts.FindByIDSimple(ctx, contractID); cErr == nil {
+		aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+		paymentDest = s.tryResolvePaymentDestination(ctx, aptID, roomNum)
+	}
+
 	// Generate fresh AUTO items with the same rent mode
 	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate, opts)
 	if err != nil {
 		return nil, err
 	}
+	applyPaymentSnapshot(&plan.Bill, paymentDest)
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
 		return nil, err

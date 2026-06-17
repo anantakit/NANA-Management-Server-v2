@@ -22,6 +22,7 @@ type BillingRepository interface {
 	FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error)
 	FindNonVoidedByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string) ([]Bill, error)
 	FindApartmentIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error)
+	FindRoomApartmentInfo(ctx context.Context, roomID uuid.UUID) (apartmentID uuid.UUID, roomNumber string, err error)
 	FindActiveContractsByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
 	FindExistingByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
 	Create(ctx context.Context, bill *Bill) error
@@ -339,6 +340,31 @@ func (r *billingRepository) FindApartmentIDByRoomID(ctx context.Context, roomID 
 		return uuid.Nil, fmt.Errorf("parse apartment_id %q: %w", raw, err)
 	}
 	return aptID, nil
+}
+
+// FindRoomApartmentInfo returns the apartment_id and room number for a given room ID.
+// Used by billing service to resolve payment routing at DRAFT creation time.
+func (r *billingRepository) FindRoomApartmentInfo(ctx context.Context, roomID uuid.UUID) (uuid.UUID, string, error) {
+	var row struct {
+		ApartmentID string `gorm:"column:apartment_id"`
+		Number      string `gorm:"column:number"`
+	}
+	err := database.DB(ctx, r.db).
+		Table("rooms").
+		Select("apartment_id", "number").
+		Where("id = ? AND deleted_at IS NULL", roomID).
+		Scan(&row).Error
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if row.ApartmentID == "" {
+		return uuid.Nil, "", gorm.ErrRecordNotFound
+	}
+	aptID, err := uuid.Parse(row.ApartmentID)
+	if err != nil {
+		return uuid.Nil, "", fmt.Errorf("parse apartment_id %q: %w", row.ApartmentID, err)
+	}
+	return aptID, row.Number, nil
 }
 
 // FindActiveContractsByApartmentID returns active contracts with room info for batch billing.

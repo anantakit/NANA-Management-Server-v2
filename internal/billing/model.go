@@ -225,6 +225,12 @@ type Bill struct {
 	// See project_billing_correction_arch_lock.md.
 	SupersededByBillID *uuid.UUID `gorm:"type:uuid;column:superseded_by_bill_id" json:"superseded_by_bill_id,omitempty"`
 
+	// Payment destination snapshot — resolved from apartment routing rules at DRAFT creation.
+	// Null for bills created before routing was configured; delivery blocks when null.
+	PaymentBankName      *string `gorm:"type:varchar(100)" json:"payment_bank_name,omitempty"`
+	PaymentAccountNumber *string `gorm:"type:varchar(50)" json:"payment_account_number,omitempty"`
+	PaymentAccountName   *string `gorm:"type:varchar(255)" json:"payment_account_name,omitempty"`
+
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
@@ -238,6 +244,12 @@ func (Bill) TableName() string { return "bills" }
 // Only MONTHLY+FINALIZED bills qualify — DRAFT/PAID/VOID and SETTLEMENT do not.
 func (b *Bill) IsDeliverable() bool {
 	return b.BillType == BillTypeMonthly && b.Status == BillStatusFinalized
+}
+
+// HasPaymentDestination reports whether payment routing has been snapshotted.
+// Bills with null destination cannot be delivered — recipient has no account to pay into.
+func (b *Bill) HasPaymentDestination() bool {
+	return b.PaymentBankName != nil
 }
 
 func (b *Bill) BeforeCreate(tx *gorm.DB) error {

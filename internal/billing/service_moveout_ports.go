@@ -29,6 +29,11 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	if err != nil {
 		return nil, err
 	}
+	// Snapshot payment destination before commit (same pattern as CreateSettlementBill).
+	if c, cErr := s.contracts.FindByIDSimple(ctx, contractID); cErr == nil {
+		aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+		applyPaymentSnapshot(&plan.Bill, s.tryResolvePaymentDestination(ctx, aptID, roomNum))
+	}
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
 		return nil, err
@@ -109,6 +114,25 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 	// Override the auto-assigned ID with the pre-generated one so the
 	// supersede link resolves. Bill.BeforeCreate respects a non-Nil ID.
 	plan.Bill.ID = newBillID
+
+	// Re-snapshot payment destination from current rules (correction = new document).
+	// Propagate all errors — correction must not silently produce a null-destination
+	// document when routing is configured but any lookup or resolver call fails.
+	if s.paymentRouting != nil {
+		c, cErr := s.contracts.FindByIDSimple(ctx, in.ContractID)
+		if cErr != nil {
+			return nil, fmt.Errorf("find contract for routing (settlement correction): %w", cErr)
+		}
+		aptID, roomNum, rErr := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+		if rErr != nil {
+			return nil, fmt.Errorf("find room info for routing (settlement correction): %w", rErr)
+		}
+		dest, destErr := s.paymentRouting.ResolveDestination(ctx, aptID, roomNum)
+		if destErr != nil {
+			return nil, fmt.Errorf("resolve payment destination for settlement correction: %w", destErr)
+		}
+		applyPaymentSnapshot(&plan.Bill, dest)
+	}
 
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
