@@ -4,9 +4,9 @@
 // Run ONLY against the local dev stack (backend :8080, frontend :3001).
 //
 // Scenarios:
-//   #2/#5  No Config / Legacy  — null snapshot → delivery blocked ("ส่งไม่ได้")
+//   #2/#5  No Config / Legacy  — null snapshot → operator warning visible, delivery still allowed
 //   #4     Rule Priority       — Override > Range > Default via API verification
-//   #1     Happy Path          — finalized bill with snapshot → delivery enabled
+//   #1     Happy Path          — finalized bill with snapshot → delivery enabled with bank details
 //   #3     Snapshot Immutability — rule change doesn't retroactively change snapshot
 //
 // Pre-state (after cleanup + seed + reset-base-bills):
@@ -111,15 +111,7 @@ async function apiPatch(token, path, body) {
   return data
 }
 
-// Find the apartment ID for นานาคอร์ท from the rooms API response.
-async function getApartmentID(token) {
-  // Infer from any room's apartment_id
-  const body = await apiGet(token, `/apartments/${APT_ID}/rooms?limit=1`)
-  return body.data?.[0]?.apartment_id
-}
-
-// Hard-code the apartment ID we verified earlier in the session.
-// Stable across seeds (apartments have fixed IDs in seed data).
+// Stable across seeds — apartments have fixed IDs in seed data.
 const APT_ID = 'afb9a3a2-f792-4dbb-9bf0-95a56346e934'
 
 function assert(cond, msg) {
@@ -225,7 +217,7 @@ async function selectApartment(page, name) {
 
     // ── Scenario #2 / #5 — No Config + Legacy Bills (UI) ─────────────────────
     console.log('\n🧪 #2 / #5 — No Config / Legacy Bills')
-    console.log('  Expected: null snapshot → "ส่งไม่ได้" badge + "ยังไม่ได้กำหนดบัญชีรับเงิน" text')
+    console.log('  Expected: null snapshot → operator warning visible, "เตรียมส่ง" available, "ส่งไม่ได้" absent')
 
     await page.goto(`${FRONTEND}/bills/delivery`, { waitUntil: 'networkidle' })
     await selectApartment(page, APARTMENT_NAME)
@@ -234,21 +226,22 @@ async function selectApartment(page, name) {
 
     // A101–A104/A107 are FINALIZED with null bank (from reset-base-bills).
     // A205/A207/B101 bills were just voided — they don't appear on the delivery page.
-    // Verify that at least one row shows "ส่งไม่ได้" badge (the <span> with that text).
-    const noDestBadge = page.locator('span', { hasText: 'ส่งไม่ได้' }).first()
-    await noDestBadge.waitFor({ state: 'visible', timeout: 8000 })
-    console.log('  "ส่งไม่ได้" badge visible on delivery page ✅')
-
-    // Verify the warning text "ยังไม่ได้กำหนดบัญชีรับเงิน" appears in a row
+    // Verify that at least one row shows the operator warning text (signal, not blocker).
     const warningText = page.locator('p', { hasText: 'ยังไม่ได้กำหนดบัญชีรับเงิน' }).first()
-    await warningText.waitFor({ state: 'visible', timeout: 5000 })
+    await warningText.waitFor({ state: 'visible', timeout: 8000 })
     console.log('  "ยังไม่ได้กำหนดบัญชีรับเงิน" warning text visible ✅')
 
-    // Verify "เตรียมส่ง" button is NOT present for any row (all visible bills have null bank)
+    // Verify "เตรียมส่ง" button IS present — missing destination is a signal, not a blocker.
     const prepareBtns = page.locator('button', { hasText: 'เตรียมส่ง' })
     const prepareBtnCount = await prepareBtns.count()
-    assert(prepareBtnCount === 0, `expected 0 "เตรียมส่ง" buttons, got ${prepareBtnCount}`)
-    console.log('  "เตรียมส่ง" button absent for all rows (0 buttons) ✅')
+    assert(prepareBtnCount > 0, `expected ≥1 "เตรียมส่ง" button for null-snapshot rows, got ${prepareBtnCount}`)
+    console.log(`  "เตรียมส่ง" button present (${prepareBtnCount} rows) ✅`)
+
+    // Verify "ส่งไม่ได้" badge is absent — removed in favour of warning-only model.
+    const noDestBadges = page.locator('span', { hasText: 'ส่งไม่ได้' })
+    const noDestBadgeCount = await noDestBadges.count()
+    assert(noDestBadgeCount === 0, `expected 0 "ส่งไม่ได้" badges, got ${noDestBadgeCount}`)
+    console.log('  "ส่งไม่ได้" badge absent ✅')
 
     await page.setViewportSize({ width: 375, height: 812 })
     await page.waitForTimeout(400)
@@ -397,15 +390,17 @@ async function selectApartment(page, name) {
     await page.waitForTimeout(1200)
     await page.screenshot({ path: '/tmp/routing-smoke-1-delivery-with-config.png', fullPage: false })
 
-    // B101 row should show "เตรียมส่ง" button (not "ส่งไม่ได้")
+    // After routing is configured, FINALIZED MONTHLY rows show "เตรียมส่ง" — both
+    // B101 (with snapshot) and A-series (null snapshot, warning-only). Verify at least
+    // one "เตรียมส่ง" is present, confirming B101 joined the delivery queue.
     const prepareBtn = page.locator('button', { hasText: 'เตรียมส่ง' }).first()
     await prepareBtn.waitFor({ state: 'visible', timeout: 8000 })
-    console.log('  "เตรียมส่ง" button visible for B101 (has payment_bank_name snapshot) ✅')
+    console.log('  "เตรียมส่ง" button visible — B101 joined delivery queue with bank snapshot ✅')
 
-    // Confirm "ส่งไม่ได้" badge also still appears — A102/A104/A107 still have null snapshots
-    const noDestBadge2 = page.locator('span', { hasText: 'ส่งไม่ได้' }).first()
-    await noDestBadge2.waitFor({ state: 'visible', timeout: 5000 })
-    console.log('  "ส่งไม่ได้" still visible for no-snapshot rows (coexistence verified) ✅')
+    // A102/A104/A107 still have null snapshots — confirm warning text remains visible (signal only)
+    const warningText2 = page.locator('p', { hasText: 'ยังไม่ได้กำหนดบัญชีรับเงิน' }).first()
+    await warningText2.waitFor({ state: 'visible', timeout: 5000 })
+    console.log('  warning text still visible for no-snapshot rows (coexistence verified) ✅')
 
     await page.setViewportSize({ width: 375, height: 812 })
     await page.waitForTimeout(400)
@@ -454,7 +449,7 @@ async function selectApartment(page, name) {
     console.log('  #2 No Config              PASS')
     console.log('  #3 Snapshot Immutability  PASS')
     console.log('  #4 Rule Priority          PASS')
-    console.log('  #5 Legacy Bills           PASS  (covered by #2: A102/A104/A107 null-snapshot)')
+    console.log('  #5 Legacy Bills           PASS  (covered by #2: null-snapshot → warning-only, delivery allowed)')
     console.log('')
     console.log('Screenshots saved to /tmp/routing-smoke-*.png')
     console.log('════════════════════════════════════════════════')

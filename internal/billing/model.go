@@ -246,12 +246,6 @@ func (b *Bill) IsDeliverable() bool {
 	return b.BillType == BillTypeMonthly && b.Status == BillStatusFinalized
 }
 
-// HasPaymentDestination reports whether payment routing has been snapshotted.
-// Bills with null destination cannot be delivered — recipient has no account to pay into.
-func (b *Bill) HasPaymentDestination() bool {
-	return b.PaymentBankName != nil
-}
-
 func (b *Bill) BeforeCreate(tx *gorm.DB) error {
 	if b.ID == uuid.Nil {
 		b.ID = uuid.New()

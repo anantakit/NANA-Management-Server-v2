@@ -1307,64 +1307,50 @@ func TestBill_MarkSupersededByCorrection(t *testing.T) {
 }
 
 // ============================================================
-// HasPaymentDestination + IsDeliverable (Group 4 domain)
+// IsDeliverable (Group 4 domain)
 // ============================================================
 
-func TestBill_HasPaymentDestination(t *testing.T) {
-	t.Run("returns true when bank name is set", func(t *testing.T) {
-		b := finalizedMonthly()
-		bn := "SCB"
-		b.PaymentBankName = &bn
-		if !b.HasPaymentDestination() {
-			t.Error("expected HasPaymentDestination() = true")
-		}
-	})
-	t.Run("returns false when bank name is nil", func(t *testing.T) {
-		b := finalizedMonthly()
-		b.PaymentBankName = nil
-		if b.HasPaymentDestination() {
-			t.Error("expected HasPaymentDestination() = false")
-		}
-	})
-}
-
-func TestBill_IsDeliverable_NullDestination(t *testing.T) {
-	// IsDeliverable checks type+status only; HasPaymentDestination is a
-	// separate guard. Verify both must be true for delivery to proceed.
-	t.Run("finalized monthly without destination is deliverable by type+status", func(t *testing.T) {
+func TestBill_IsDeliverable(t *testing.T) {
+	// IsDeliverable checks type+status only — payment destination is not a gate.
+	t.Run("finalized monthly with null destination is deliverable", func(t *testing.T) {
 		b := finalizedMonthly()
 		b.PaymentBankName = nil
 		if !b.IsDeliverable() {
-			t.Error("IsDeliverable should return true (type+status check only)")
-		}
-		if b.HasPaymentDestination() {
-			t.Error("HasPaymentDestination should return false — null destination")
+			t.Error("IsDeliverable should return true — payment destination is not a gate")
 		}
 	})
-	t.Run("finalized monthly with destination passes both guards", func(t *testing.T) {
+	t.Run("finalized monthly with destination is deliverable", func(t *testing.T) {
 		b := finalizedMonthly()
 		bn, an, acn := "SCB", "123456789", "นานา รีซอร์ท"
 		b.PaymentBankName = &bn
 		b.PaymentAccountNumber = &an
 		b.PaymentAccountName = &acn
-		if !b.IsDeliverable() || !b.HasPaymentDestination() {
-			t.Error("expected both guards to pass")
+		if !b.IsDeliverable() {
+			t.Error("expected IsDeliverable to return true")
 		}
 	})
 	t.Run("settlement bill never deliverable", func(t *testing.T) {
 		b := Bill{Status: BillStatusFinalized, BillType: BillTypeSettlement}
-		bn := "SCB"
-		b.PaymentBankName = &bn
 		if b.IsDeliverable() {
 			t.Error("settlement bill must not pass IsDeliverable")
 		}
 	})
 	t.Run("draft monthly never deliverable", func(t *testing.T) {
 		b := Bill{Status: BillStatusDraft, BillType: BillTypeMonthly}
-		bn := "SCB"
-		b.PaymentBankName = &bn
 		if b.IsDeliverable() {
 			t.Error("draft bill must not pass IsDeliverable")
+		}
+	})
+	t.Run("paid monthly never deliverable", func(t *testing.T) {
+		b := Bill{Status: BillStatusPaid, BillType: BillTypeMonthly}
+		if b.IsDeliverable() {
+			t.Error("paid bill must not pass IsDeliverable")
+		}
+	})
+	t.Run("void monthly never deliverable", func(t *testing.T) {
+		b := Bill{Status: BillStatusVoid, BillType: BillTypeMonthly}
+		if b.IsDeliverable() {
+			t.Error("void bill must not pass IsDeliverable")
 		}
 	})
 }
