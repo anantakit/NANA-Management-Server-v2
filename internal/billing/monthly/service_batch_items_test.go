@@ -1,8 +1,10 @@
-package billing
+package monthly
 
 import (
 	"context"
 	"testing"
+
+	"nana/internal/billing"
 
 	"github.com/google/uuid"
 )
@@ -13,23 +15,22 @@ import (
 func TestGetBatchItems_BatchedIsEditedQuery(t *testing.T) {
 	batchID := uuid.New()
 	billA, billB, billC := uuid.New(), uuid.New(), uuid.New()
-	items := []BillGenerationBatchItem{
-		{ID: uuid.New(), BatchID: batchID, BillID: &billA, ResultType: ResultCreated},
-		{ID: uuid.New(), BatchID: batchID, BillID: &billB, ResultType: ResultCreated},
+	items := []billing.BillGenerationBatchItem{
+		{ID: uuid.New(), BatchID: batchID, BillID: &billA, ResultType: billing.ResultCreated},
+		{ID: uuid.New(), BatchID: batchID, BillID: &billB, ResultType: billing.ResultCreated},
 		// Uncommitted item — no bill yet, IsEdited must default false without
 		// being included in the EditedBillIDs lookup.
-		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: ResultSkipped},
-		{ID: uuid.New(), BatchID: batchID, BillID: &billC, ResultType: ResultCreated},
+		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: billing.ResultSkipped},
+		{ID: uuid.New(), BatchID: batchID, BillID: &billC, ResultType: billing.ResultCreated},
 	}
-	repo := &mockBillingRepo{createdBatchItems: items}
-	audit := &mockBillAuditRepo{}
+	store := &mockStore{createdBatchItems: items}
 	// A and C have edit-class audit history; B has only lifecycle events.
-	audit.logs = []BillAuditLog{
-		{ID: uuid.New(), BillID: billA, Action: AuditUpdateOverride},
-		{ID: uuid.New(), BillID: billB, Action: AuditCreateDraft}, // lifecycle, not edit
-		{ID: uuid.New(), BillID: billC, Action: AuditAddManualItem},
+	store.logs = []billing.BillAuditLog{
+		{ID: uuid.New(), BillID: billA, Action: billing.AuditUpdateOverride},
+		{ID: uuid.New(), BillID: billB, Action: billing.AuditCreateDraft}, // lifecycle, not edit
+		{ID: uuid.New(), BillID: billC, Action: billing.AuditAddManualItem},
 	}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	svc := NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
 
 	got, err := svc.GetBatchItems(context.Background(), batchID)
 	if err != nil {
@@ -53,8 +54,8 @@ func TestGetBatchItems_BatchedIsEditedQuery(t *testing.T) {
 	}
 
 	// N+1 prevention — exactly one EditedBillIDs call regardless of item count.
-	if audit.editedQueryCalls != 1 {
-		t.Errorf("EditedBillIDs call count = %d, want 1 (single batched query per request)", audit.editedQueryCalls)
+	if store.editedQueryCalls != 1 {
+		t.Errorf("EditedBillIDs call count = %d, want 1 (single batched query per request)", store.editedQueryCalls)
 	}
 }
 
@@ -62,13 +63,12 @@ func TestGetBatchItems_BatchedIsEditedQuery(t *testing.T) {
 // Avoids a round-trip on pre-commit batch detail views.
 func TestGetBatchItems_AllUncommitted_NoAuditQuery(t *testing.T) {
 	batchID := uuid.New()
-	items := []BillGenerationBatchItem{
-		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: ResultCreated},
-		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: ResultSkipped},
+	items := []billing.BillGenerationBatchItem{
+		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: billing.ResultCreated},
+		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: billing.ResultSkipped},
 	}
-	repo := &mockBillingRepo{createdBatchItems: items}
-	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	store := &mockStore{createdBatchItems: items}
+	svc := NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
 
 	got, err := svc.GetBatchItems(context.Background(), batchID)
 	if err != nil {
@@ -79,8 +79,8 @@ func TestGetBatchItems_AllUncommitted_NoAuditQuery(t *testing.T) {
 			t.Errorf("uncommitted item leaked IsEdited=true")
 		}
 	}
-	if audit.editedQueryCalls != 0 {
-		t.Errorf("EditedBillIDs called %d times for all-uncommitted batch, want 0", audit.editedQueryCalls)
+	if store.editedQueryCalls != 0 {
+		t.Errorf("EditedBillIDs called %d times for all-uncommitted batch, want 0", store.editedQueryCalls)
 	}
 }
 
@@ -90,12 +90,11 @@ func TestGetBatchItems_AllUncommitted_NoAuditQuery(t *testing.T) {
 func TestGetBatchItems_AuditFailure_Propagates(t *testing.T) {
 	batchID := uuid.New()
 	billID := uuid.New()
-	items := []BillGenerationBatchItem{
-		{ID: uuid.New(), BatchID: batchID, BillID: &billID, ResultType: ResultCreated},
+	items := []billing.BillGenerationBatchItem{
+		{ID: uuid.New(), BatchID: batchID, BillID: &billID, ResultType: billing.ResultCreated},
 	}
-	repo := &mockBillingRepo{createdBatchItems: items}
-	audit := &mockBillAuditRepo{editedErr: errBatchEditedAuditDown}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	store := &mockStore{createdBatchItems: items, editedErr: errBatchEditedAuditDown}
+	svc := NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
 
 	_, err := svc.GetBatchItems(context.Background(), batchID)
 	if err == nil {
@@ -117,21 +116,20 @@ func (e *simpleErr) Error() string { return e.msg }
 func TestGetBatchItems_PropagatesBillStatus(t *testing.T) {
 	batchID := uuid.New()
 	billDraft, billFinalized := uuid.New(), uuid.New()
-	items := []BillGenerationBatchItem{
-		{ID: uuid.New(), BatchID: batchID, BillID: &billDraft, ResultType: ResultCreated},
-		{ID: uuid.New(), BatchID: batchID, BillID: &billFinalized, ResultType: ResultCreated},
+	items := []billing.BillGenerationBatchItem{
+		{ID: uuid.New(), BatchID: batchID, BillID: &billDraft, ResultType: billing.ResultCreated},
+		{ID: uuid.New(), BatchID: batchID, BillID: &billFinalized, ResultType: billing.ResultCreated},
 		// Uncommitted — no bill_id, no bill_status mapping should reach the response.
-		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: ResultSkipped},
+		{ID: uuid.New(), BatchID: batchID, BillID: nil, ResultType: billing.ResultSkipped},
 	}
-	repo := &mockBillingRepo{
+	store := &mockStore{
 		createdBatchItems: items,
-		batchItemBillStatuses: map[uuid.UUID]BillStatus{
-			billDraft:     BillStatusDraft,
-			billFinalized: BillStatusFinalized,
+		batchItemBillStatuses: map[uuid.UUID]billing.BillStatus{
+			billDraft:     billing.BillStatusDraft,
+			billFinalized: billing.BillStatusFinalized,
 		},
 	}
-	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	svc := NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
 
 	got, err := svc.GetBatchItems(context.Background(), batchID)
 	if err != nil {
@@ -141,9 +139,9 @@ func TestGetBatchItems_PropagatesBillStatus(t *testing.T) {
 		t.Fatalf("len(items) = %d, want 3", len(got))
 	}
 
-	expect := map[uuid.UUID]BillStatus{
-		billDraft:     BillStatusDraft,
-		billFinalized: BillStatusFinalized,
+	expect := map[uuid.UUID]billing.BillStatus{
+		billDraft:     billing.BillStatusDraft,
+		billFinalized: billing.BillStatusFinalized,
 	}
 	for _, it := range got {
 		if it.BillID == nil {
@@ -166,18 +164,18 @@ func TestGetBatchItems_PropagatesBillStatus(t *testing.T) {
 // BillStatus pointer one-for-one. Uncommitted item produces nil → JSON
 // omitempty drops the field entirely.
 func TestToBatchItemResponse_BillStatusMapping(t *testing.T) {
-	draft := BillStatusDraft
-	committed := BatchItemWithTenant{
-		BillGenerationBatchItem: BillGenerationBatchItem{ID: uuid.New(), BillID: &[]uuid.UUID{uuid.New()}[0]},
+	draft := billing.BillStatusDraft
+	committed := billing.BatchItemWithTenant{
+		BillGenerationBatchItem: billing.BillGenerationBatchItem{ID: uuid.New(), BillID: &[]uuid.UUID{uuid.New()}[0]},
 		BillStatus:              &draft,
 	}
-	uncommitted := BatchItemWithTenant{
-		BillGenerationBatchItem: BillGenerationBatchItem{ID: uuid.New(), BillID: nil},
+	uncommitted := billing.BatchItemWithTenant{
+		BillGenerationBatchItem: billing.BillGenerationBatchItem{ID: uuid.New(), BillID: nil},
 		BillStatus:              nil,
 	}
 
 	r1 := ToBatchItemResponse(committed)
-	if r1.BillStatus == nil || *r1.BillStatus != string(BillStatusDraft) {
+	if r1.BillStatus == nil || *r1.BillStatus != string(billing.BillStatusDraft) {
 		t.Errorf("committed.BillStatus = %v, want pointer to DRAFT", r1.BillStatus)
 	}
 

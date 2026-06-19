@@ -126,7 +126,7 @@ func (s *billingService) correctMonthlyBillInTx(
 		return uuid.Nil, ErrMeterNotFound
 	}
 
-	snapshot := computeMonthlyBillSnapshot(old.BillingMonth,
+	snapshot := ComputeMonthlyBillSnapshot(old.BillingMonth,
 		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
 
 	// Pre-generate the new bill's ID so both the SUPERSEDE link (set on

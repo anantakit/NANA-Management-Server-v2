@@ -1,13 +1,13 @@
 //go:build integration
 
-package billing
+package monthly
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"nana/internal/billingconfig"
+	"nana/internal/billing"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
 	"nana/internal/moveout"
@@ -35,35 +35,25 @@ import (
 // canned data effectively re-implements the planner, defeating the test.
 
 // ── Local stubs for ports the planner reaches but this flow doesn't drive ──
-
-type replanContractStub struct{ c *contract.Contract }
-
-func (s *replanContractStub) FindByIDSimple(_ context.Context, _ uuid.UUID) (*contract.Contract, error) {
-	return s.c, nil
-}
-
-type replanConfigStub struct{}
-
-func (s *replanConfigStub) FindByApartmentID(_ context.Context, _ uuid.UUID) ([]billingconfig.BillingConfig, error) {
-	return nil, nil
-}
+//
+// Monthly's MoveOutSource port only needs FindRoomIDsWithMoveOutInMonth —
+// the legacy ContractQuerier / ConfigQuerier shapes don't appear here at all
+// because the monthly service doesn't depend on them (moved out with the
+// adapter narrowing in commit 2b).
 
 type replanMoveOutStub struct{}
 
-func (s *replanMoveOutStub) FindActiveByContractID(_ context.Context, _ uuid.UUID) (*moveout.MoveOutNotice, error) {
-	return nil, gorm.ErrRecordNotFound
-}
 func (s *replanMoveOutStub) FindRoomIDsWithMoveOutInMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]bool, error) {
 	return map[uuid.UUID]bool{}, nil
 }
 
 type replanEnv struct {
-	db          *gorm.DB
-	svc         BillingService
-	billRepo    BillingRepository
-	apartmentID uuid.UUID
-	roomID      uuid.UUID
-	contractID  uuid.UUID
+	db           *gorm.DB
+	svc          Service
+	billRepo     billing.BillingRepository
+	apartmentID  uuid.UUID
+	roomID       uuid.UUID
+	contractID   uuid.UUID
 	billingMonth string
 }
 
@@ -81,15 +71,20 @@ func newReplanEnv(t *testing.T) *replanEnv {
 	tn := fixtures.SeedTenant(t, db)
 	c := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 3)
 
-	billRepo := NewBillingRepository(db)
-	auditRepo := NewBillAuditRepository(db)
-	contracts := &replanContractStub{c: c}
+	billRepo := billing.NewBillingRepository(db)
+	auditRepo := billing.NewBillAuditRepository(db)
+	adapter := billing.NewMonthlyAdapter(billRepo, auditRepo)
 	meters := meterreading.NewMeterReadingRepository(db) // real DB-backed
-	configs := &replanConfigStub{}
 	moveOuts := &replanMoveOutStub{}
 	txMgr := database.NewTxManager(db)
-	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, moveOuts, nil, txMgr)
 
+	// The MonthlyAdapter satisfies BillStore + AuditStore + BatchStore, so it
+	// is passed three times — matches the production wiring in cmd/main.go.
+	svc := NewService(adapter, adapter, adapter, meters, moveOuts, txMgr)
+
+	_ = c // keep for symmetry; contract details flow through the planner via the JOIN read
+	_ = contract.ContractStatusActive
+	_ = moveout.MoveOutStatusCompleted
 	return &replanEnv{
 		db: db, svc: svc, billRepo: billRepo,
 		apartmentID:  apt.ID,
@@ -123,7 +118,7 @@ func (e *replanEnv) seedMonthlyMeter(t *testing.T) {
 // runGenerate triggers BatchCreateMonthlyBills and returns the resulting
 // batch. The test then drills into batch.items via the repo to pick the row
 // it needs.
-func (e *replanEnv) runGenerate(t *testing.T) *BillGenerationBatch {
+func (e *replanEnv) runGenerate(t *testing.T) *billing.BillGenerationBatch {
 	t.Helper()
 	batch, err := e.svc.BatchCreateMonthlyBills(context.Background(),
 		BatchCreateMonthlyBillsRequest{ApartmentID: e.apartmentID.String(), BillingMonth: e.billingMonth},
@@ -135,7 +130,7 @@ func (e *replanEnv) runGenerate(t *testing.T) *BillGenerationBatch {
 	return batch
 }
 
-func (e *replanEnv) firstItem(t *testing.T, batchID uuid.UUID) BatchItemWithTenant {
+func (e *replanEnv) firstItem(t *testing.T, batchID uuid.UUID) billing.BatchItemWithTenant {
 	t.Helper()
 	items, err := e.billRepo.FindBatchItemsByBatchID(context.Background(), batchID)
 	if err != nil {
@@ -156,11 +151,11 @@ func TestRePlanBatchItem_FlipsSkippedToCreatedAfterMeterRecord(t *testing.T) {
 	batch := env.runGenerate(t)
 	item := env.firstItem(t, batch.ID)
 
-	if item.ResultType != ResultSkipped {
+	if item.ResultType != billing.ResultSkipped {
 		t.Fatalf("pre-condition: expected SKIPPED, got %s", item.ResultType)
 	}
-	if item.ReasonCode != ReasonMissingMeterReading {
-		t.Fatalf("pre-condition: expected reason %s, got %s", ReasonMissingMeterReading, item.ReasonCode)
+	if item.ReasonCode != billing.ReasonMissingMeterReading {
+		t.Fatalf("pre-condition: expected reason %s, got %s", billing.ReasonMissingMeterReading, item.ReasonCode)
 	}
 
 	// Operator records the missing meter mid-batch.
@@ -171,7 +166,7 @@ func TestRePlanBatchItem_FlipsSkippedToCreatedAfterMeterRecord(t *testing.T) {
 		t.Fatalf("RePlanBatchItem: %v", err)
 	}
 
-	if updated.ResultType != ResultCreated {
+	if updated.ResultType != billing.ResultCreated {
 		t.Errorf("ResultType = %s, want CREATED", updated.ResultType)
 	}
 	if updated.ReasonCode != "" {
@@ -195,7 +190,7 @@ func TestRePlanBatchItem_FlipsSkippedToCreatedAfterMeterRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-read item: %v", err)
 	}
-	if persisted.ResultType != ResultCreated {
+	if persisted.ResultType != billing.ResultCreated {
 		t.Errorf("persisted ResultType = %s, want CREATED", persisted.ResultType)
 	}
 }
@@ -219,7 +214,7 @@ func TestRePlanBatchItem_StaysCreatedWithUpdatedSnapshotAfterMeterEdit(t *testin
 	batch := env.runGenerate(t)
 	item := env.firstItem(t, batch.ID)
 
-	if item.ResultType != ResultCreated {
+	if item.ResultType != billing.ResultCreated {
 		t.Fatalf("pre-condition: expected CREATED, got %s", item.ResultType)
 	}
 	const firstRunTotal int64 = 349000
@@ -243,7 +238,7 @@ func TestRePlanBatchItem_StaysCreatedWithUpdatedSnapshotAfterMeterEdit(t *testin
 		t.Fatalf("RePlanBatchItem (second pass): %v", err)
 	}
 
-	if updated.ResultType != ResultCreated {
+	if updated.ResultType != billing.ResultCreated {
 		t.Errorf("ResultType = %s, want CREATED (still)", updated.ResultType)
 	}
 	if updated.ReasonCode != "" {
@@ -277,11 +272,11 @@ func TestRePlanBatchItem_StaysSkippedWhenStateUnchanged(t *testing.T) {
 		t.Fatalf("RePlanBatchItem: %v", err)
 	}
 
-	if updated.ResultType != ResultSkipped {
+	if updated.ResultType != billing.ResultSkipped {
 		t.Errorf("ResultType = %s, want SKIPPED (no meter yet)", updated.ResultType)
 	}
-	if updated.ReasonCode != ReasonMissingMeterReading {
-		t.Errorf("ReasonCode = %s, want %s", updated.ReasonCode, ReasonMissingMeterReading)
+	if updated.ReasonCode != billing.ReasonMissingMeterReading {
+		t.Errorf("ReasonCode = %s, want %s", updated.ReasonCode, billing.ReasonMissingMeterReading)
 	}
 	if len(updated.ComputedSnapshot.LineItems) != 0 {
 		t.Errorf("ComputedSnapshot.LineItems = %d, want 0 for SKIPPED", len(updated.ComputedSnapshot.LineItems))
@@ -299,7 +294,7 @@ func TestRePlanBatchItem_RejectsFullyCommittedBatch(t *testing.T) {
 	batch := env.runGenerate(t)
 	item := env.firstItem(t, batch.ID)
 
-	if item.ResultType != ResultCreated {
+	if item.ResultType != billing.ResultCreated {
 		t.Fatalf("pre-condition: expected CREATED, got %s", item.ResultType)
 	}
 
@@ -334,8 +329,8 @@ func TestRePlanBatchItem_RejectsItemWithBillID(t *testing.T) {
 	// After commit the batch has CommitStatus = COMMITTED for the
 	// single-item batch — verify the per-row guard fires first by
 	// staging the same batch as PARTIALLY_COMMITTED.
-	committed := CommitStatusPartiallyCommitted
-	if err := env.db.Model(&BillGenerationBatch{}).Where("id = ?", batch.ID).
+	committed := billing.CommitStatusPartiallyCommitted
+	if err := env.db.Model(&billing.BillGenerationBatch{}).Where("id = ?", batch.ID).
 		Update("commit_status", &committed).Error; err != nil {
 		t.Fatalf("downgrade commit_status: %v", err)
 	}

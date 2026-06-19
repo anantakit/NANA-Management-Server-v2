@@ -1,9 +1,11 @@
-package billing
+package monthly
 
 import (
 	"context"
 	"errors"
 	"testing"
+
+	"nana/internal/billing"
 
 	"github.com/google/uuid"
 )
@@ -11,53 +13,52 @@ import (
 // finalizeFixture builds a DRAFT monthly bill with one AUTO line item.
 // status / line items are overridable per-test for the various paths
 // (FINALIZED, VOID, empty line items, etc).
-func finalizeFixture(billID uuid.UUID) Bill {
-	return Bill{
+func finalizeFixture(billID uuid.UUID) billing.Bill {
+	return billing.Bill{
 		ID:           billID,
 		ContractID:   uuid.New(),
 		BillingMonth: "2026-05",
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusDraft,
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusDraft,
 		TotalAmount:  500000,
-		LineItems: []BillLineItem{
-			{ID: uuid.New(), BillID: billID, LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 500000, SortOrder: 1},
+		LineItems: []billing.BillLineItem{
+			{ID: uuid.New(), BillID: billID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Amount: 500000, SortOrder: 1},
 		},
 	}
 }
 
-// newBatchFinalizeService wires a service whose repo returns the given bills
-// from ListBillsByBatchID and whose FindByID matches by id. Returns the audit
-// repo so tests can assert exact emission counts (lock #10).
-func newBatchFinalizeService(bills []Bill) (BillingService, *mockBillingRepo, *mockBillAuditRepo) {
-	byID := make(map[uuid.UUID]*Bill, len(bills))
+// newBatchFinalizeService wires a service whose store returns the given bills
+// from ListByBatchID and whose FindByID matches by id. Returns the store so
+// tests can assert exact emission counts (lock #10).
+func newBatchFinalizeService(bills []billing.Bill) (Service, *mockStore) {
+	byID := make(map[uuid.UUID]*billing.Bill, len(bills))
 	for i := range bills {
 		byID[bills[i].ID] = &bills[i]
 	}
-	repo := &mockBillingRepo{}
-	repo.listBillsByBatchIDFn = func(_ uuid.UUID) ([]Bill, error) { return bills, nil }
-	repo.findByIDFn = func(_ context.Context, id uuid.UUID) (*Bill, error) {
+	store := &mockStore{}
+	store.listByBatchIDFn = func(_ uuid.UUID) ([]billing.Bill, error) { return bills, nil }
+	store.findByIDFn = func(_ context.Context, id uuid.UUID) (*billing.Bill, error) {
 		if b, ok := byID[id]; ok {
 			return b, nil
 		}
 		return nil, errBillFinalizeNotFound
 	}
-	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
-	return svc, repo, audit
+	svc := NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	return svc, store
 }
 
-// errBillFinalizeNotFound returns gorm.ErrRecordNotFound semantics without
-// importing gorm into the test file — finalizeBillInTx already maps any
-// "find bill" error from FindByID into ErrBillNotFound via gorm.ErrRecordNotFound,
-// but this fixture sticks to the simpler "bill exists in batch" happy case.
+// errBillFinalizeNotFound returns a sentinel from FindByID for bills not in
+// the fixture. The migrated tests only exercise the "bill is in the slice"
+// happy case so this never fires; kept for parity with the pre-migration
+// shape.
 var errBillFinalizeNotFound = errors.New("bill not found in fixture")
 
 // Happy path: 3 DRAFT monthly bills → 3 FINALIZED + exactly 3 FINALIZE
 // audit rows. Locks #10: audit count == success_count, no extra rows.
 func TestBatchFinalizeAll_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing.T) {
 	ids := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
-	bills := []Bill{finalizeFixture(ids[0]), finalizeFixture(ids[1]), finalizeFixture(ids[2])}
-	svc, repo, audit := newBatchFinalizeService(bills)
+	bills := []billing.Bill{finalizeFixture(ids[0]), finalizeFixture(ids[1]), finalizeFixture(ids[2])}
+	svc, store := newBatchFinalizeService(bills)
 
 	actor := uuid.New()
 	result, err := svc.BatchFinalizeAll(context.Background(), uuid.New(), &actor)
@@ -76,8 +77,8 @@ func TestBatchFinalizeAll_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing.T
 
 	// Lock #10 — exactly one FINALIZE audit row per success, nothing more.
 	finalizeCount := 0
-	for _, log := range audit.logs {
-		if log.Action == AuditFinalize {
+	for _, log := range store.logs {
+		if log.Action == billing.AuditFinalize {
 			finalizeCount++
 		}
 		if log.ActorID == nil || *log.ActorID != actor {
@@ -88,12 +89,12 @@ func TestBatchFinalizeAll_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing.T
 		t.Errorf("FINALIZE audit count = %d, want %d (success_count) — lock #10 violated", finalizeCount, result.SuccessCount)
 	}
 
-	// All 3 bills passed to Update.
-	if len(repo.updatedBills) != 3 {
-		t.Errorf("Update call count = %d, want 3", len(repo.updatedBills))
+	// All 3 bills passed to Update (tracked by FinalizeBillInTx via updatedBills).
+	if len(store.updatedBills) != 3 {
+		t.Errorf("Update call count = %d, want 3", len(store.updatedBills))
 	}
-	for _, b := range repo.updatedBills {
-		if b.Status != BillStatusFinalized {
+	for _, b := range store.updatedBills {
+		if b.Status != billing.BillStatusFinalized {
 			t.Errorf("bill %s saved status = %s, want FINALIZED", b.ID, b.Status)
 		}
 	}
@@ -107,8 +108,8 @@ func TestBatchFinalizeAll_PartialFailureContinues(t *testing.T) {
 	emptyDraft := finalizeFixture(id2)
 	emptyDraft.LineItems = nil // triggers ErrNoLineItems on Finalize()
 
-	bills := []Bill{finalizeFixture(id1), emptyDraft, finalizeFixture(id3)}
-	svc, _, audit := newBatchFinalizeService(bills)
+	bills := []billing.Bill{finalizeFixture(id1), emptyDraft, finalizeFixture(id3)}
+	svc, store := newBatchFinalizeService(bills)
 
 	result, err := svc.BatchFinalizeAll(context.Background(), uuid.New(), nil)
 	if err != nil {
@@ -130,8 +131,8 @@ func TestBatchFinalizeAll_PartialFailureContinues(t *testing.T) {
 
 	// Lock #10 — only 2 FINALIZE audit rows (not 3, the failed bill emits none).
 	finalizeCount := 0
-	for _, log := range audit.logs {
-		if log.Action == AuditFinalize {
+	for _, log := range store.logs {
+		if log.Action == billing.AuditFinalize {
 			finalizeCount++
 		}
 	}
@@ -145,10 +146,10 @@ func TestBatchFinalizeAll_PartialFailureContinues(t *testing.T) {
 func TestBatchFinalizeAll_IdempotentRerun_FinalizedSilentlySkipped(t *testing.T) {
 	id1, id2, id3 := uuid.New(), uuid.New(), uuid.New()
 	alreadyFinalized := finalizeFixture(id2)
-	alreadyFinalized.Status = BillStatusFinalized
+	alreadyFinalized.Status = billing.BillStatusFinalized
 
-	bills := []Bill{finalizeFixture(id1), alreadyFinalized, finalizeFixture(id3)}
-	svc, repo, audit := newBatchFinalizeService(bills)
+	bills := []billing.Bill{finalizeFixture(id1), alreadyFinalized, finalizeFixture(id3)}
+	svc, store := newBatchFinalizeService(bills)
 
 	result, err := svc.BatchFinalizeAll(context.Background(), uuid.New(), nil)
 	if err != nil {
@@ -166,14 +167,14 @@ func TestBatchFinalizeAll_IdempotentRerun_FinalizedSilentlySkipped(t *testing.T)
 	}
 
 	// Update only invoked for the 2 DRAFT bills.
-	if len(repo.updatedBills) != 2 {
-		t.Errorf("Update call count = %d, want 2", len(repo.updatedBills))
+	if len(store.updatedBills) != 2 {
+		t.Errorf("Update call count = %d, want 2", len(store.updatedBills))
 	}
 
 	// Lock #10 — 2 audit rows, none for the silent-skipped bill.
 	finalizeCount := 0
-	for _, log := range audit.logs {
-		if log.Action == AuditFinalize {
+	for _, log := range store.logs {
+		if log.Action == billing.AuditFinalize {
 			finalizeCount++
 		}
 		if log.BillID == id2 {
@@ -190,12 +191,12 @@ func TestBatchFinalizeAll_IdempotentRerun_FinalizedSilentlySkipped(t *testing.T)
 func TestBatchFinalizeAll_NonDraftBill_FailsWithNotDraft(t *testing.T) {
 	id1, idVoided := uuid.New(), uuid.New()
 	voided := finalizeFixture(idVoided)
-	voided.Status = BillStatusVoid
+	voided.Status = billing.BillStatusVoid
 	reason := "ออกผิด"
 	voided.VoidReason = &reason
 
-	bills := []Bill{finalizeFixture(id1), voided}
-	svc, _, audit := newBatchFinalizeService(bills)
+	bills := []billing.Bill{finalizeFixture(id1), voided}
+	svc, store := newBatchFinalizeService(bills)
 
 	result, err := svc.BatchFinalizeAll(context.Background(), uuid.New(), nil)
 	if err != nil {
@@ -217,8 +218,8 @@ func TestBatchFinalizeAll_NonDraftBill_FailsWithNotDraft(t *testing.T) {
 
 	// Lock #10 — single FINALIZE audit row, none for the VOID bill.
 	finalizeCount := 0
-	for _, log := range audit.logs {
-		if log.Action == AuditFinalize {
+	for _, log := range store.logs {
+		if log.Action == billing.AuditFinalize {
 			finalizeCount++
 		}
 		if log.BillID == idVoided {
@@ -235,9 +236,9 @@ func TestBatchFinalizeAll_NonDraftBill_FailsWithNotDraft(t *testing.T) {
 // per-item TX boundary actually isolates failures (lock #3).
 func TestBatchFinalizeAll_AuditFailure_OnlyAffectsThatBill(t *testing.T) {
 	idA, idB, idC := uuid.New(), uuid.New(), uuid.New()
-	bills := []Bill{finalizeFixture(idA), finalizeFixture(idB), finalizeFixture(idC)}
-	svc, _, audit := newBatchFinalizeService(bills)
-	audit.createErrByBillID = map[uuid.UUID]error{
+	bills := []billing.Bill{finalizeFixture(idA), finalizeFixture(idB), finalizeFixture(idC)}
+	svc, store := newBatchFinalizeService(bills)
+	store.createErrByBillID = map[uuid.UUID]error{
 		idA: errors.New("audit-store unreachable for bill A"),
 	}
 
@@ -262,8 +263,8 @@ func TestBatchFinalizeAll_AuditFailure_OnlyAffectsThatBill(t *testing.T) {
 	// Lock #10 — 2 audit rows persisted (B and C); A's failed Create
 	// returned error and never appended to logs.
 	finalizeCount := 0
-	for _, log := range audit.logs {
-		if log.Action == AuditFinalize {
+	for _, log := range store.logs {
+		if log.Action == billing.AuditFinalize {
 			finalizeCount++
 		}
 		if log.BillID == idA {
@@ -278,7 +279,7 @@ func TestBatchFinalizeAll_AuditFailure_OnlyAffectsThatBill(t *testing.T) {
 // Empty batch returns a zero-result with explicit `failures: []` so the
 // FE deserializes as `[]` not `null`.
 func TestBatchFinalizeAll_EmptyBatch_ReturnsZeros(t *testing.T) {
-	svc, _, _ := newBatchFinalizeService([]Bill{})
+	svc, _ := newBatchFinalizeService([]billing.Bill{})
 	result, err := svc.BatchFinalizeAll(context.Background(), uuid.New(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -296,33 +297,32 @@ func TestBatchFinalizeAll_EmptyBatch_ReturnsZeros(t *testing.T) {
 // Sibling of BatchFinalizeAll for reconciliation-path bills (no Batch wrapper).
 // Core loop semantics are identical; only the scope query differs.
 
-// newFinalizeByMonthService wires a service whose repo returns the given bills
-// from ListMonthlyBillsByApartmentMonth. Uses the same FindByID + Update +
-// audit mocks as newBatchFinalizeService.
-func newFinalizeByMonthService(bills []Bill) (BillingService, *mockBillingRepo, *mockBillAuditRepo) {
-	byID := make(map[uuid.UUID]*Bill, len(bills))
+// newFinalizeByMonthService wires a service whose store returns the given bills
+// from ListMonthlyByApartmentMonth. Uses the same FindByID + audit mocks as
+// newBatchFinalizeService.
+func newFinalizeByMonthService(bills []billing.Bill) (Service, *mockStore) {
+	byID := make(map[uuid.UUID]*billing.Bill, len(bills))
 	for i := range bills {
 		byID[bills[i].ID] = &bills[i]
 	}
-	repo := &mockBillingRepo{}
-	repo.listMonthlyBillsByApartmentMonthFn = func(_ uuid.UUID, _ string) ([]Bill, error) {
+	store := &mockStore{}
+	store.listMonthlyByApartmentMonthFn = func(_ uuid.UUID, _ string) ([]billing.Bill, error) {
 		return bills, nil
 	}
-	repo.findByIDFn = func(_ context.Context, id uuid.UUID) (*Bill, error) {
+	store.findByIDFn = func(_ context.Context, id uuid.UUID) (*billing.Bill, error) {
 		if b, ok := byID[id]; ok {
 			return b, nil
 		}
 		return nil, errBillFinalizeNotFound
 	}
-	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
-	return svc, repo, audit
+	svc := NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
+	return svc, store
 }
 
 func TestFinalizeAllByMonth_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing.T) {
 	id1, id2 := uuid.New(), uuid.New()
-	bills := []Bill{finalizeFixture(id1), finalizeFixture(id2)}
-	svc, repo, audit := newFinalizeByMonthService(bills)
+	bills := []billing.Bill{finalizeFixture(id1), finalizeFixture(id2)}
+	svc, store := newFinalizeByMonthService(bills)
 
 	actor := uuid.New()
 	result, err := svc.FinalizeAllByMonth(context.Background(), uuid.New(), "2026-06", &actor)
@@ -338,12 +338,12 @@ func TestFinalizeAllByMonth_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing
 	if result.FailCount != 0 {
 		t.Errorf("FailCount = %d, want 0", result.FailCount)
 	}
-	if len(repo.updatedBills) != 2 {
-		t.Errorf("Update call count = %d, want 2", len(repo.updatedBills))
+	if len(store.updatedBills) != 2 {
+		t.Errorf("Update call count = %d, want 2", len(store.updatedBills))
 	}
 	finalizeAuditCount := 0
-	for _, log := range audit.logs {
-		if log.Action == AuditFinalize {
+	for _, log := range store.logs {
+		if log.Action == billing.AuditFinalize {
 			finalizeAuditCount++
 		}
 	}
@@ -355,12 +355,12 @@ func TestFinalizeAllByMonth_HappyPath_FinalizesAllDraftBillsWithAudit(t *testing
 func TestFinalizeAllByMonth_TotalCount_IncludesSilentlySkippedBills(t *testing.T) {
 	draftID := uuid.New()
 	finalizedFixture := finalizeFixture(uuid.New())
-	finalizedFixture.Status = BillStatusFinalized
+	finalizedFixture.Status = billing.BillStatusFinalized
 	paidFixture := finalizeFixture(uuid.New())
-	paidFixture.Status = BillStatusPaid
+	paidFixture.Status = billing.BillStatusPaid
 
-	bills := []Bill{finalizeFixture(draftID), finalizedFixture, paidFixture}
-	svc, _, _ := newFinalizeByMonthService(bills)
+	bills := []billing.Bill{finalizeFixture(draftID), finalizedFixture, paidFixture}
+	svc, _ := newFinalizeByMonthService(bills)
 
 	result, err := svc.FinalizeAllByMonth(context.Background(), uuid.New(), "2026-06", nil)
 	if err != nil {
@@ -375,7 +375,7 @@ func TestFinalizeAllByMonth_TotalCount_IncludesSilentlySkippedBills(t *testing.T
 }
 
 func TestFinalizeAllByMonth_InvalidMonth_Returns400(t *testing.T) {
-	svc, _, _ := newFinalizeByMonthService(nil)
+	svc, _ := newFinalizeByMonthService(nil)
 	_, err := svc.FinalizeAllByMonth(context.Background(), uuid.New(), "bad-month", nil)
 	if err == nil {
 		t.Fatal("expected error for invalid billing_month, got nil")
@@ -390,8 +390,8 @@ func TestClassifyFinalizeError(t *testing.T) {
 		err  error
 		want BatchFinalizeFailureCode
 	}{
-		{"ErrNoLineItems", ErrNoLineItems, FailureCodeNoLineItems},
-		{"ErrNotDraft", ErrNotDraft, FailureCodeNotDraft},
+		{"ErrNoLineItems", billing.ErrNoLineItems, FailureCodeNoLineItems},
+		{"ErrNotDraft", billing.ErrNotDraft, FailureCodeNotDraft},
 		{"wrapped ErrNoLineItems", errors.New("wrap"), FailureCodeInfraError}, // not unwrappable → INFRA
 		{"unknown infra", errors.New("db connection lost"), FailureCodeInfraError},
 		{"nil", nil, FailureCodeInfraError},

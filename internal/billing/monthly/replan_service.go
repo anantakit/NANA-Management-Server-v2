@@ -1,31 +1,13 @@
-package billing
+package monthly
 
 import (
 	"context"
 	"fmt"
 
-	"nana/internal/shared/respond"
+	"nana/internal/billing"
+	"nana/internal/shared/database"
 
 	"github.com/google/uuid"
-)
-
-// errBatchItemContractMissing — defensive: classifier inputs no longer contain
-// the contract referenced by the batch item. Means the active-contract set
-// has shifted since batch generate (contract ENDED/TERMINATED in between).
-// Surfaced as 409 because the underlying state is now incompatible with
-// re-classification — caller should regenerate the batch instead.
-var errBatchItemContractMissing = respond.ErrConflict.WithMessage(
-	"สัญญานี้ไม่อยู่ในรายการที่ใช้งานแล้ว ไม่สามารถ replan ได้ กรุณาสร้างรอบบิลใหม่",
-)
-
-var errBatchItemAlreadyCommitted = respond.ErrConflict.WithMessage(
-	"แถวนี้สร้างบิลแล้ว ไม่สามารถ replan ได้",
-)
-
-var errBatchItemMismatch = respond.ErrNotFound.WithMessage("ไม่พบรายการในรอบบิลนี้")
-
-var errBatchAlreadyCommittedForReplan = respond.ErrConflict.WithMessage(
-	"รอบบิลนี้ commit แล้ว ไม่สามารถ replan ได้",
 )
 
 // RePlanBatchItem re-evaluates one batch item against the current state and
@@ -51,24 +33,24 @@ var errBatchAlreadyCommittedForReplan = respond.ErrConflict.WithMessage(
 // won't see the updated classification until the next ListCommitPendingItems
 // read, which is the same eventual-consistency window the batch already
 // accepts between admin actions.
-func (s *billingService) RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID) (*BatchItemWithTenant, error) {
-	batch, err := s.repo.FindBatchByID(ctx, batchID)
+func (s *service) RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID) (*billing.BatchItemWithTenant, error) {
+	batch, err := s.batches.FindBatchByID(ctx, batchID)
 	if err != nil {
-		if isNotFound(err) {
-			return nil, ErrBatchNotFound
+		if database.IsNotFound(err) {
+			return nil, billing.ErrBatchNotFound
 		}
 		return nil, fmt.Errorf("find batch: %w", err)
 	}
-	if batch.CommitStatus != nil && *batch.CommitStatus == CommitStatusCommitted {
+	if batch.CommitStatus != nil && *batch.CommitStatus == billing.CommitStatusCommitted {
 		// Fully committed → the batch ledger is closed. PARTIALLY_COMMITTED /
 		// FAILED / nil all allow replan because rows that didn't land are still
 		// candidates for a follow-up commit attempt.
 		return nil, errBatchAlreadyCommittedForReplan
 	}
 
-	item, err := s.repo.FindBatchItemByID(ctx, itemID)
+	item, err := s.batches.FindBatchItemByID(ctx, itemID)
 	if err != nil {
-		if isNotFound(err) {
+		if database.IsNotFound(err) {
 			return nil, errBatchItemMismatch
 		}
 		return nil, fmt.Errorf("find batch item: %w", err)
@@ -85,7 +67,7 @@ func (s *billingService) RePlanBatchItem(ctx context.Context, batchID, itemID uu
 		return nil, fmt.Errorf("load batch inputs: %w", err)
 	}
 
-	var contract *ContractWithRoom
+	var contract *billing.ContractWithRoom
 	for i := range in.contracts {
 		if in.contracts[i].ContractID == item.ContractID {
 			contract = &in.contracts[i]
@@ -100,9 +82,9 @@ func (s *billingService) RePlanBatchItem(ctx context.Context, batchID, itemID uu
 		*contract, in.startOfMonth, in.endOfMonth,
 		in.pendingMoveOuts, in.meterMap, in.existingMap,
 	)
-	var snapshot ComputedSnapshot
-	if cls.ResultType == ResultCreated {
-		snapshot = computeMonthlyBillSnapshot(
+	var snapshot billing.ComputedSnapshot
+	if cls.ResultType == billing.ResultCreated {
+		snapshot = billing.ComputeMonthlyBillSnapshot(
 			batch.BillingMonth,
 			contract.MonthlyRent,
 			contract.ElectricityRatePerUnit,
@@ -111,13 +93,13 @@ func (s *billingService) RePlanBatchItem(ctx context.Context, batchID, itemID uu
 		)
 	}
 
-	if err := s.repo.UpdateBatchItemPlan(
+	if err := s.batches.UpdateBatchItemPlan(
 		ctx, item.ID, cls.ResultType, cls.ReasonCode, cls.ReasonText, cls.BillID, snapshot,
 	); err != nil {
 		return nil, fmt.Errorf("update batch item plan: %w", err)
 	}
 
-	updated, err := s.repo.FindBatchItemByIDWithTenant(ctx, item.ID)
+	updated, err := s.batches.FindBatchItemByIDWithTenant(ctx, item.ID)
 	if err != nil {
 		return nil, fmt.Errorf("re-read batch item: %w", err)
 	}

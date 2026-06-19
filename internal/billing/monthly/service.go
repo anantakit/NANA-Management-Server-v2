@@ -1,24 +1,124 @@
-package billing
+package monthly
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
-	"nana/internal/meterreading"
+	"nana/internal/billing"
 	"nana/internal/shared/billingmonth"
+	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
 
+// Service is the monthly billing workflow's public surface — the lifecycle
+// of a monthly billing cycle from preflight through batch generation,
+// commit, finalize, and replan.
+//
+// SCOPE NOTE: this is the MONTHLY billing workflow only. It is not a
+// general batch engine. Future batch-shaped workflows (delivery, collection,
+// LINE sending, etc.) MUST live in their own workflow packages — never
+// fold them in here just because they happen to be batch-shaped.
+type Service interface {
+	// Batch generation
+	PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error)
+	BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*billing.BillGenerationBatch, error)
+
+	// Batch commit + finalize
+	CommitBatch(ctx context.Context, batchID uuid.UUID) (*billing.CommitBatchResult, error)
+	BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error)
+	FinalizeAllByMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string, actor *uuid.UUID) (*BatchFinalizeResult, error)
+
+	// Batch read
+	GetBatchByID(ctx context.Context, id uuid.UUID) (*billing.BillGenerationBatch, error)
+	GetBatchItems(ctx context.Context, id uuid.UUID) ([]billing.BatchItemWithTenant, error)
+	ListBatches(ctx context.Context, params billing.BatchListParams) ([]billing.BillGenerationBatch, int64, error)
+
+	// Per-item replan (implemented in replan_service.go)
+	RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID) (*billing.BatchItemWithTenant, error)
+}
+
+// All ports (BillStore, AuditStore, BatchStore, MeterReadingSource,
+// MoveOutSource) are declared in port.go. The Service holds them as fields
+// here and exposes a single NewService constructor for DI.
+
+type service struct {
+	bills    BillStore
+	audit    AuditStore
+	batches  BatchStore
+	meters   MeterReadingSource
+	moveOuts MoveOutSource
+	tx       database.TxManager
+}
+
+var _ Service = (*service)(nil)
+
+func NewService(
+	bills BillStore,
+	audit AuditStore,
+	batches BatchStore,
+	meters MeterReadingSource,
+	moveOuts MoveOutSource,
+	tx database.TxManager,
+) Service {
+	return &service{
+		bills:    bills,
+		audit:    audit,
+		batches:  batches,
+		meters:   meters,
+		moveOuts: moveOuts,
+		tx:       tx,
+	}
+}
+
+// --- PreflightMonthly ---
+
+// PreflightMonthly returns readiness counts without persisting anything.
+// Uses the same loadBatchInputs + classifyContractForBatch pair as the real
+// batch flow, so counts always match what a subsequent batch run would tally.
+func (s *service) PreflightMonthly(ctx context.Context, req MonthlyPreflightRequest) (*MonthlyPreflightResult, error) {
+	apartmentID, err := uuid.Parse(req.ApartmentID)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("apartment_id ไม่ถูกต้อง")
+	}
+	if !billingmonth.Valid(req.BillingMonth) {
+		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
+	}
+
+	in, err := s.loadBatchInputs(ctx, apartmentID, req.BillingMonth)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &MonthlyPreflightResult{TotalRooms: len(in.contracts)}
+	for _, c := range in.contracts {
+		cls := classifyContractForBatch(c, in.startOfMonth, in.endOfMonth, in.pendingMoveOuts, in.meterMap, in.existingMap)
+		switch {
+		case cls.ResultType == billing.ResultCreated:
+			result.ReadyCount++
+		case cls.ReasonCode == billing.ReasonAlreadyExists:
+			result.AlreadyExistsCount++
+		case cls.ReasonCode == billing.ReasonMissingMeterReading:
+			result.MissingMeterCount++
+		case cls.ReasonCode == billing.ReasonMoveOutPending:
+			result.MoveOutPendingCount++
+		case cls.ReasonCode == billing.ReasonNotBillable:
+			result.NotBillableCount++
+		}
+	}
+	return result, nil
+}
+
+// --- BatchCreateMonthlyBills ---
+
 // BatchCreateMonthlyBills generates monthly bills for all eligible active contracts
 // in an apartment for a given billing month. Persists a BillGenerationBatch run-log
 // with per-contract items so the result can be re-opened later by batch_id.
-func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*BillGenerationBatch, error) {
+func (s *service) BatchCreateMonthlyBills(ctx context.Context, req BatchCreateMonthlyBillsRequest, createdBy *uuid.UUID) (*billing.BillGenerationBatch, error) {
 	// --- 1. Validate input ---
 	apartmentID, err := uuid.Parse(req.ApartmentID)
 	if err != nil {
@@ -30,14 +130,14 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 
 	// Pre-generate batch ID so bills can reference it before the batch row is inserted.
 	batchID := uuid.New()
-	batch := &BillGenerationBatch{
+	batch := &billing.BillGenerationBatch{
 		ID:           batchID,
 		ApartmentID:  apartmentID,
 		BillingMonth: req.BillingMonth,
 		CreatedBy:    createdBy,
 		CreatedAt:    time.Now().UTC(),
 	}
-	var items []BillGenerationBatchItem
+	var items []billing.BillGenerationBatchItem
 
 	// --- 2. Run the whole batch inside a transaction ---
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
@@ -51,19 +151,19 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 		batch.TotalContracts = len(items)
 		for _, it := range items {
 			switch it.ResultType {
-			case ResultCreated:
+			case billing.ResultCreated:
 				batch.CreatedCount++
-			case ResultAlreadyExists:
+			case billing.ResultAlreadyExists:
 				batch.AlreadyExistsCount++
-			case ResultSkipped:
+			case billing.ResultSkipped:
 				batch.SkippedCount++
-			case ResultFailed:
+			case billing.ResultFailed:
 				batch.FailedCount++
 			}
 		}
 		batch.ComputeStatus()
 
-		return s.repo.CreateBatch(txCtx, batch, items)
+		return s.batches.CreateBatch(txCtx, batch, items)
 	}); err != nil {
 		return nil, fmt.Errorf("batch billing: %w", err)
 	}
@@ -73,24 +173,24 @@ func (s *billingService) BatchCreateMonthlyBills(ctx context.Context, req BatchC
 
 // buildBatchItems classifies each active contract and computes a snapshot
 // for the CREATED cases. Runs inside the batch transaction so everything is atomic.
-func (s *billingService) buildBatchItems(
+func (s *service) buildBatchItems(
 	ctx context.Context,
 	apartmentID uuid.UUID,
 	billingMonth string,
 	batchID uuid.UUID,
-) ([]BillGenerationBatchItem, error) {
+) ([]billing.BillGenerationBatchItem, error) {
 	in, err := s.loadBatchInputs(ctx, apartmentID, billingMonth)
 	if err != nil {
 		return nil, err
 	}
 	if len(in.contracts) == 0 {
-		return []BillGenerationBatchItem{}, nil
+		return []billing.BillGenerationBatchItem{}, nil
 	}
 
-	items := make([]BillGenerationBatchItem, 0, len(in.contracts))
+	items := make([]billing.BillGenerationBatchItem, 0, len(in.contracts))
 	for _, c := range in.contracts {
 		cls := classifyContractForBatch(c, in.startOfMonth, in.endOfMonth, in.pendingMoveOuts, in.meterMap, in.existingMap)
-		item := BillGenerationBatchItem{
+		item := billing.BillGenerationBatchItem{
 			BatchID:    batchID,
 			ContractID: c.ContractID,
 			RoomID:     c.RoomID,
@@ -101,8 +201,8 @@ func (s *billingService) buildBatchItems(
 			ReasonText: cls.ReasonText,
 			BillID:     cls.BillID,
 		}
-		if cls.ResultType == ResultCreated {
-			item.ComputedSnapshot = computeMonthlyBillSnapshot(
+		if cls.ResultType == billing.ResultCreated {
+			item.ComputedSnapshot = billing.ComputeMonthlyBillSnapshot(
 				billingMonth, c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, in.meterMap[c.RoomID],
 			)
 		}
@@ -111,64 +211,7 @@ func (s *billingService) buildBatchItems(
 	return items, nil
 }
 
-// parseBillingMonthRange converts "YYYY-MM" to start and end of that month.
-// Uses time.UTC consistently — PG date columns are timezone-naive.
-func parseBillingMonthRange(billingMonth string) (start, end time.Time) {
-	year, _ := strconv.Atoi(billingMonth[:4])
-	month, _ := strconv.Atoi(billingMonth[5:7])
-	start = time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
-	end = start.AddDate(0, 1, -1) // last day of month
-	return start, end
-}
-
-// computeMonthlyBillSnapshot builds the line items + total for a monthly bill
-// without touching the bills table. Persistence happens later in the commit step.
-func computeMonthlyBillSnapshot(
-	billingMonth string,
-	monthlyRent, elecRate, waterRate int64,
-	reading *meterreading.MeterReading,
-) ComputedSnapshot {
-	nextMonth := advanceMonth(billingMonth)
-	elecUnits := reading.ElectricityUsed()
-	waterUnits := reading.WaterUsed()
-
-	lines := []ComputedLineItem{
-		{
-			Type:        LineItemRoomRent,
-			Description: fmt.Sprintf("ค่าห้อง %s", nextMonth),
-			Amount:      monthlyRent,
-			SortOrder:   1,
-		},
-		{
-			Type:        LineItemElectricity,
-			Description: fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits),
-			Amount:      int64(elecUnits) * elecRate,
-			Quantity:    elecUnits,
-			UnitPrice:   elecRate,
-			SortOrder:   2,
-		},
-		{
-			Type:        LineItemWater,
-			Description: fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits),
-			Amount:      int64(waterUnits) * waterRate,
-			Quantity:    waterUnits,
-			UnitPrice:   waterRate,
-			SortOrder:   3,
-		},
-	}
-
-	var total int64
-	for _, li := range lines {
-		total += li.Amount
-	}
-
-	return ComputedSnapshot{
-		Version:     ComputedSnapshotVersion,
-		LineItems:   lines,
-		TotalAmount: total,
-		ComputedAt:  time.Now().UTC(),
-	}
-}
+// --- CommitBatch ---
 
 // CommitBatch reads the computed snapshots from a generate batch and creates
 // Bill(DRAFT) rows. Per-item transactions ensure partial progress is preserved.
@@ -178,13 +221,13 @@ func computeMonthlyBillSnapshot(
 // curation phase mirroring settlement bills. Admin reviews + optionally edits
 // (override AUTO amounts, add MANUAL items, set note) before explicit Finalize.
 // See project_billing_editable_monthly_arch_lock.md for the locked semantics.
-func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*CommitBatchResult, error) {
+func (s *service) CommitBatch(ctx context.Context, batchID uuid.UUID) (*billing.CommitBatchResult, error) {
 	// 1. Lock batch + read pending items in a short tx, then release.
-	var batch *BillGenerationBatch
-	var items []BillGenerationBatchItem
+	var batch *billing.BillGenerationBatch
+	var items []billing.BillGenerationBatchItem
 
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		b, err := s.repo.LockBatchForCommit(txCtx, batchID)
+		b, err := s.batches.LockBatchForCommit(txCtx, batchID)
 		if err != nil {
 			return err
 		}
@@ -193,17 +236,17 @@ func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*C
 		}
 		batch = b
 
-		pending, err := s.repo.ListCommitPendingItems(txCtx, batchID)
+		pending, err := s.batches.ListCommitPendingItems(txCtx, batchID)
 		if err != nil {
 			return err
 		}
 		items = pending
 		return nil
 	}); err != nil {
-		if isNotFound(err) {
-			return nil, ErrBatchNotFound
+		if database.IsNotFound(err) {
+			return nil, billing.ErrBatchNotFound
 		}
-		if errors.Is(err, ErrBatchAlreadyCommitted) {
+		if errors.Is(err, billing.ErrBatchAlreadyCommitted) {
 			return nil, respond.ErrConflict.WithMessage("batch ถูก commit ไปแล้ว")
 		}
 		return nil, fmt.Errorf("lock batch: %w", err)
@@ -222,7 +265,7 @@ func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*C
 				break
 			}
 			// Business error: record in a separate tx so rollback of create doesn't erase it.
-			if logErr := s.repo.UpdateBatchItemCommitError(ctx, item.ID, err.Error()); logErr != nil {
+			if logErr := s.batches.UpdateBatchItemCommitError(ctx, item.ID, err.Error()); logErr != nil {
 				slog.Error("failed to record commit error on batch item", "item_id", item.ID, "error", logErr)
 			}
 			failCount++
@@ -236,12 +279,12 @@ func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*C
 	batch.MarkCommitResult(successCount, failCount, pendingCount)
 
 	if batch.CommitStatus != nil {
-		if err := s.repo.UpdateBatchCommitStatus(ctx, batchID, *batch.CommitStatus, batch.CommittedAt); err != nil {
+		if err := s.batches.UpdateBatchCommitStatus(ctx, batchID, *batch.CommitStatus, batch.CommittedAt); err != nil {
 			slog.Warn("failed to update batch commit status", "batch_id", batchID, "status", *batch.CommitStatus, "error", err)
 		}
 	}
 
-	result := &CommitBatchResult{
+	result := &billing.CommitBatchResult{
 		Batch:        batch,
 		SuccessCount: successCount,
 		FailCount:    failCount,
@@ -257,16 +300,12 @@ func (s *billingService) CommitBatch(ctx context.Context, batchID uuid.UUID) (*C
 // commitOneItem creates a single DRAFT bill from a batch item's snapshot.
 // Runs in its own transaction so failures are isolated per-item.
 //
-// Bills land as DRAFT so admin can review + edit (override AUTO amounts,
-// add MANUAL items, set note) before explicit Finalize. The ComputedSnapshot
-// is the immutable system-computed source; the DRAFT row is the curation
-// surface admin operates on. See project_billing_editable_monthly_arch_lock.md.
-//
+// Bills land as DRAFT so admin can review + edit before explicit Finalize.
 // Audit: emits CREATE_DRAFT with actor=nil (batch commit is system-triggered,
 // admin clicks "commit batch" but per-bill creation is not a per-bill admin
 // action). Payload includes batch_id / room_id / billing_month so the audit
 // timeline can link back to the batch run without joining batch_items.
-func (s *billingService) commitOneItem(ctx context.Context, batch *BillGenerationBatch, item BillGenerationBatchItem) error {
+func (s *service) commitOneItem(ctx context.Context, batch *billing.BillGenerationBatch, item billing.BillGenerationBatchItem) error {
 	return s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		snapshot := item.ComputedSnapshot
 		if err := snapshot.Validate(); err != nil {
@@ -276,18 +315,18 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 		// Pre-generate bill ID so line items can reference it in a single Create.
 		// BeforeCreate hook skips uuid.New() when ID is already set.
 		billID := uuid.New()
-		bill := &Bill{
+		bill := &billing.Bill{
 			ID:           billID,
 			ContractID:   item.ContractID,
 			BillingMonth: batch.BillingMonth,
-			BillType:     BillTypeMonthly,
-			Status:       BillStatusDraft,
+			BillType:     billing.BillTypeMonthly,
+			Status:       billing.BillStatusDraft,
 			BatchID:      &item.BatchID,
 			LineItems:    snapshot.ToLineItems(billID),
 		}
 		bill.CalculateTotal()
 
-		if err := s.repo.Create(txCtx, bill); err != nil {
+		if err := s.bills.CreateBill(txCtx, bill); err != nil {
 			// PG unique-violation on idx_bills_unique_monthly: another non-VOID
 			// bill for the same (contract, month) exists. Race against a parallel
 			// single-bill create / correction DRAFT that landed between planner
@@ -295,13 +334,13 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 			// isInfraError whitelist surfaces it as a business conflict — the
 			// loop marks this item failed and continues with the rest of the
 			// batch instead of aborting the whole commit.
-			if IsDuplicateBillError(err) {
-				return ErrBillAlreadyExists
+			if billing.IsDuplicateBillError(err) {
+				return billing.ErrBillAlreadyExists
 			}
 			return err
 		}
 
-		if err := recordAudit(txCtx, s.audit, bill.ID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+		if err := s.audit.RecordAudit(txCtx, bill.ID, billing.AuditCreateDraft, nil, billing.AuditCreateDraftPayload{
 			LineItemCount: len(bill.LineItems),
 			TotalAmount:   bill.TotalAmount,
 			BatchID:       &item.BatchID,
@@ -311,9 +350,11 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 			return err
 		}
 
-		return s.repo.UpdateBatchItemCommitted(txCtx, item.ID, bill.ID)
+		return s.batches.UpdateBatchItemCommitted(txCtx, item.ID, bill.ID)
 	})
 }
+
+// --- BatchFinalizeAll ---
 
 // BatchFinalizeAll transitions every DRAFT monthly bill in the given batch
 // to FINALIZED in per-item transactions. Idempotent + continue-on-error:
@@ -324,8 +365,8 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 //
 // Settlement bills are excluded at SQL by ListBillsByBatchID; the
 // b.IsMonthly() guard below is defense-in-depth per lock #9.
-func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error) {
-	bills, err := s.repo.ListBillsByBatchID(ctx, batchID)
+func (s *service) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID, actor *uuid.UUID) (*BatchFinalizeResult, error) {
+	bills, err := s.bills.ListByBatchID(ctx, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("list batch bills: %w", err)
 	}
@@ -336,11 +377,7 @@ func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID
 	}
 
 	for _, b := range bills {
-		// Lock #9 — never finalize settlement bills. The query filters by
-		// bill_type='MONTHLY' at SQL, so this branch is only reached on
-		// data corruption (batch_items pointing at the wrong bill row).
-		// Skip silently with a log so ops can triage without polluting
-		// the admin's failure list.
+		// Lock #9 — never finalize settlement bills.
 		if !b.IsMonthly() {
 			slog.Warn("BatchFinalizeAll: skipping non-monthly bill in batch",
 				"batch_id", batchID, "bill_id", b.ID, "bill_type", b.BillType)
@@ -354,13 +391,11 @@ func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID
 		}
 
 		err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-			return finalizeBillInTx(txCtx, s.repo, s.audit, b.ID, actor)
+			return s.bills.FinalizeBillInTx(txCtx, b.ID, actor)
 		})
 		if err != nil {
 			code, msg := classifyFinalizeError(err)
 			if code == FailureCodeInfraError {
-				// Server-log the underlying error for ops triage. The
-				// admin-facing message stays opaque (locked spec).
 				slog.Error("BatchFinalizeAll: bill finalize infra error",
 					"batch_id", batchID, "bill_id", b.ID, "error", err)
 			}
@@ -378,28 +413,19 @@ func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID
 	return result, nil
 }
 
+// --- FinalizeAllByMonth ---
+
 // FinalizeAllByMonth bulk-finalizes every DRAFT MONTHLY bill scoped to
-// (apartment, billing_month). Doctrine note: this is the per-month sibling
-// of BatchFinalizeAll for bills created via the reconciliation Generate
-// path, which produces bills WITHOUT a Batch wrapper per the anti-promotion
-// guard in billingreconciliation/service_generate.go. The /:batchID/
-// finalize-all endpoint and this one share `finalizeBillInTx` so the
-// audit + idempotency semantics are identical — only the scope query
-// differs.
-//
-// Loop semantics mirror BatchFinalizeAll one-to-one:
-//   - already-FINALIZED rows skipped silently (idempotent re-run)
-//   - settlement rows guarded (the repo query filters MONTHLY at SQL,
-//     belt-and-suspenders here)
-//   - per-row TX so a single failure doesn't roll back successful rows
-//   - errors classified via the same classifyFinalizeError table → FE
-//     reuses FinalizeAllModal's failure grouping verbatim
-func (s *billingService) FinalizeAllByMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string, actor *uuid.UUID) (*BatchFinalizeResult, error) {
+// (apartment, billing_month). Per-month sibling of BatchFinalizeAll for
+// bills created via the reconciliation Generate path (which produces bills
+// without a Batch wrapper). Loop semantics mirror BatchFinalizeAll exactly
+// — only the scope query differs.
+func (s *service) FinalizeAllByMonth(ctx context.Context, apartmentID uuid.UUID, billingMonth string, actor *uuid.UUID) (*BatchFinalizeResult, error) {
 	if !billingmonth.Valid(billingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
 
-	bills, err := s.repo.ListMonthlyBillsByApartmentMonth(ctx, apartmentID, billingMonth)
+	bills, err := s.bills.ListMonthlyByApartmentMonth(ctx, apartmentID, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("list monthly bills by apartment+month: %w", err)
 	}
@@ -410,23 +436,18 @@ func (s *billingService) FinalizeAllByMonth(ctx context.Context, apartmentID uui
 	}
 
 	for _, b := range bills {
-		// Defense-in-depth: the SQL already filters bill_type=MONTHLY, but
-		// keep the runtime guard to match BatchFinalizeAll's structure
-		// (Lock #9 — settlement bills must never enter this path).
 		if !b.IsMonthly() {
 			slog.Warn("FinalizeAllByMonth: skipping non-monthly bill",
 				"apartment_id", apartmentID, "billing_month", billingMonth, "bill_id", b.ID, "bill_type", b.BillType)
 			continue
 		}
 
-		// Idempotency: already-FINALIZED or PAID bills silently skipped.
-		// VOID excluded at the SQL layer.
 		if b.IsFinalized() || b.IsPaid() {
 			continue
 		}
 
 		err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-			return finalizeBillInTx(txCtx, s.repo, s.audit, b.ID, actor)
+			return s.bills.FinalizeBillInTx(txCtx, b.ID, actor)
 		})
 		if err != nil {
 			code, msg := classifyFinalizeError(err)
@@ -448,15 +469,73 @@ func (s *billingService) FinalizeAllByMonth(ctx context.Context, apartmentID uui
 	return result, nil
 }
 
+// --- Batch query (for review page) ---
+
+func (s *service) GetBatchByID(ctx context.Context, id uuid.UUID) (*billing.BillGenerationBatch, error) {
+	b, err := s.batches.FindBatchByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("find batch: %w", err)
+	}
+	return b, nil
+}
+
+// GetBatchItems returns every batch item with its tenant + edit history flag.
+// Issues ONE batched EditedBillIDs query for all committed bills in the
+// response (items where BillID != nil) so the Edited badge can render
+// directly on BillBatchReview without forcing the admin to open every
+// drawer. Pre-commit items (BillID == nil) keep IsEdited=false trivially.
+//
+// On audit-store failure the call returns the wrapped error per the locked
+// is_edited contract — never silently hide edited state.
+func (s *service) GetBatchItems(ctx context.Context, id uuid.UUID) ([]billing.BatchItemWithTenant, error) {
+	items, err := s.batches.FindBatchItemsByBatchID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect bill IDs from committed items only — uncommitted items have
+	// no bill row and therefore no audit history to query.
+	var billIDs []uuid.UUID
+	for _, it := range items {
+		if it.BillID != nil {
+			billIDs = append(billIDs, *it.BillID)
+		}
+	}
+	if len(billIDs) == 0 {
+		return items, nil
+	}
+
+	editedSet, err := s.audit.EditedBillIDs(ctx, billIDs)
+	if err != nil {
+		return nil, fmt.Errorf("populate batch item is_edited: %w", err)
+	}
+	for i := range items {
+		if items[i].BillID != nil && editedSet[*items[i].BillID] {
+			items[i].IsEdited = true
+		}
+	}
+	return items, nil
+}
+
+func (s *service) ListBatches(ctx context.Context, params billing.BatchListParams) ([]billing.BillGenerationBatch, int64, error) {
+	params.Normalize()
+	if params.Status != "" && !billing.BatchStatus(params.Status).IsValid() {
+		return nil, 0, respond.ErrBadRequest.WithMessage("status ไม่ถูกต้อง")
+	}
+	return s.batches.ListBatches(ctx, params)
+}
+
+// --- Error classification helpers ---
+
 // classifyFinalizeError maps a finalizeBillInTx error to the FE-facing
 // failure code + Thai message. ErrNotDraft / ErrNoLineItems are domain
 // sentinels surfaced via errors.Is; everything else falls through to
 // INFRA_ERROR so the underlying cause never leaks to the FE.
 func classifyFinalizeError(err error) (BatchFinalizeFailureCode, string) {
 	switch {
-	case errors.Is(err, ErrNoLineItems):
+	case errors.Is(err, billing.ErrNoLineItems):
 		return FailureCodeNoLineItems, "ออกบิลไม่ได้: บิลไม่มีรายการ"
-	case errors.Is(err, ErrNotDraft):
+	case errors.Is(err, billing.ErrNotDraft):
 		return FailureCodeNotDraft, "ออกบิลไม่ได้: บิลไม่ใช่สถานะร่าง"
 	default:
 		return FailureCodeInfraError, "เกิดข้อผิดพลาดของระบบ กรุณาลองอีกครั้ง"
@@ -467,11 +546,11 @@ func classifyFinalizeError(err error) (BatchFinalizeFailureCode, string) {
 // Business errors (validation, snapshot issues) are whitelisted and return false.
 func isInfraError(err error) bool {
 	// Whitelist known business errors — everything else is infra.
-	if errors.Is(err, ErrSnapshotUnsupportedVersion) ||
-		errors.Is(err, ErrSnapshotNoLineItems) ||
-		errors.Is(err, ErrSnapshotNegativeTotal) ||
-		errors.Is(err, ErrBillAlreadyExists) ||
-		errors.Is(err, ErrBatchAlreadyCommitted) {
+	if errors.Is(err, billing.ErrSnapshotUnsupportedVersion) ||
+		errors.Is(err, billing.ErrSnapshotNoLineItems) ||
+		errors.Is(err, billing.ErrSnapshotNegativeTotal) ||
+		errors.Is(err, billing.ErrBillAlreadyExists) ||
+		errors.Is(err, billing.ErrBatchAlreadyCommitted) {
 		return false
 	}
 	// respond.AppError with 4xx status = business error

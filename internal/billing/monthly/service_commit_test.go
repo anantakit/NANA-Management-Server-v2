@@ -1,4 +1,4 @@
-package billing
+package monthly
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"nana/internal/billing"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -14,34 +15,34 @@ import (
 
 // --- helpers ---
 
-func newTestBatch(itemCount int) (*BillGenerationBatch, []BillGenerationBatchItem) {
+func newTestBatch(itemCount int) (*billing.BillGenerationBatch, []billing.BillGenerationBatchItem) {
 	batchID := uuid.New()
-	batch := &BillGenerationBatch{
+	batch := &billing.BillGenerationBatch{
 		ID:             batchID,
 		ApartmentID:    uuid.New(),
 		BillingMonth:   "2026-04",
-		Status:         BatchStatusCompleted,
+		Status:         billing.BatchStatusCompleted,
 		TotalContracts: itemCount,
 		CreatedCount:   itemCount,
 		CreatedAt:      time.Now(),
 	}
 
-	items := make([]BillGenerationBatchItem, itemCount)
+	items := make([]billing.BillGenerationBatchItem, itemCount)
 	for i := range items {
-		items[i] = BillGenerationBatchItem{
+		items[i] = billing.BillGenerationBatchItem{
 			ID:         uuid.New(),
 			BatchID:    batchID,
 			ContractID: uuid.New(),
 			RoomID:     uuid.New(),
 			RoomNumber: fmt.Sprintf("10%d", i+1),
 			RoomFloor:  1,
-			ResultType: ResultCreated,
-			ComputedSnapshot: ComputedSnapshot{
-				Version: ComputedSnapshotVersion,
-				LineItems: []ComputedLineItem{
-					{Type: LineItemRoomRent, Description: "ค่าห้อง 2026-05", Amount: 500000, SortOrder: 1},
-					{Type: LineItemElectricity, Description: "ค่าไฟ 50 หน่วย", Amount: 30000, Quantity: 50, UnitPrice: 600, SortOrder: 2},
-					{Type: LineItemWater, Description: "ค่าน้ำ 5 หน่วย", Amount: 9000, Quantity: 5, UnitPrice: 1800, SortOrder: 3},
+			ResultType: billing.ResultCreated,
+			ComputedSnapshot: billing.ComputedSnapshot{
+				Version: billing.ComputedSnapshotVersion,
+				LineItems: []billing.ComputedLineItem{
+					{Type: billing.LineItemRoomRent, Description: "ค่าห้อง 2026-05", Amount: 500000, SortOrder: 1},
+					{Type: billing.LineItemElectricity, Description: "ค่าไฟ 50 หน่วย", Amount: 30000, Quantity: 50, UnitPrice: 600, SortOrder: 2},
+					{Type: billing.LineItemWater, Description: "ค่าน้ำ 5 หน่วย", Amount: 9000, Quantity: 5, UnitPrice: 1800, SortOrder: 3},
 				},
 				TotalAmount: 539000,
 				ComputedAt:  time.Now(),
@@ -51,25 +52,16 @@ func newTestBatch(itemCount int) (*BillGenerationBatch, []BillGenerationBatchIte
 	return batch, items
 }
 
-func newCommitService(repo *mockBillingRepo) BillingService {
-	return NewBillingService(
-		repo,
-		&mockBillAuditRepo{},
-		&mockContractQuerier{},
-		&mockMeterQuerier{},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
-		nil,
-		&mockTxManager{},
-	)
+func newCommitService(store *mockStore) Service {
+	return NewService(store, store, store, &mockMeterQuerier{}, &mockMoveOutQuerier{}, &mockTxManager{})
 }
 
 // --- tests ---
 
 func TestCommitBatch_HappyPath(t *testing.T) {
 	batch, items := newTestBatch(3)
-	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
-	svc := newCommitService(repo)
+	store := &mockStore{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err != nil {
@@ -84,7 +76,7 @@ func TestCommitBatch_HappyPath(t *testing.T) {
 	if result.PendingCount != 0 {
 		t.Errorf("PendingCount = %d, want 0", result.PendingCount)
 	}
-	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != CommitStatusCommitted {
+	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != billing.CommitStatusCommitted {
 		t.Errorf("CommitStatus = %v, want COMMITTED", result.Batch.CommitStatus)
 	}
 	if result.Batch.CommittedAt == nil {
@@ -92,21 +84,21 @@ func TestCommitBatch_HappyPath(t *testing.T) {
 	}
 
 	// Verify all items got bill_id
-	for i, it := range repo.createdBatchItems {
+	for i, it := range store.createdBatchItems {
 		if it.BillID == nil {
 			t.Errorf("item %d: BillID should be set", i)
 		}
 	}
 
 	// Verify bills were created with correct fields
-	if repo.createdBill == nil {
+	if store.createdBill == nil {
 		t.Fatal("expected at least one bill created")
 	}
-	if repo.createdBill.Status != BillStatusDraft {
-		t.Errorf("bill status = %s, want DRAFT", repo.createdBill.Status)
+	if store.createdBill.Status != billing.BillStatusDraft {
+		t.Errorf("bill status = %s, want DRAFT", store.createdBill.Status)
 	}
-	if repo.createdBill.BillType != BillTypeMonthly {
-		t.Errorf("bill type = %s, want MONTHLY", repo.createdBill.BillType)
+	if store.createdBill.BillType != billing.BillTypeMonthly {
+		t.Errorf("bill type = %s, want MONTHLY", store.createdBill.BillType)
 	}
 }
 
@@ -117,8 +109,8 @@ func TestCommitBatch_HappyPath(t *testing.T) {
 // to FINALIZED would fail loud.
 func TestCommitBatch_LandsAllAsDraft(t *testing.T) {
 	batch, items := newTestBatch(5)
-	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
-	svc := newCommitService(repo)
+	store := &mockStore{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err != nil {
@@ -127,14 +119,14 @@ func TestCommitBatch_LandsAllAsDraft(t *testing.T) {
 	if result.SuccessCount != 5 {
 		t.Errorf("SuccessCount = %d, want 5", result.SuccessCount)
 	}
-	if len(repo.createdBills) != 5 {
-		t.Fatalf("created %d bills, want 5", len(repo.createdBills))
+	if len(store.createdBills) != 5 {
+		t.Fatalf("created %d bills, want 5", len(store.createdBills))
 	}
-	for i, bill := range repo.createdBills {
-		if bill.Status != BillStatusDraft {
+	for i, bill := range store.createdBills {
+		if bill.Status != billing.BillStatusDraft {
 			t.Errorf("bill[%d] status = %s, want DRAFT", i, bill.Status)
 		}
-		if bill.BillType != BillTypeMonthly {
+		if bill.BillType != billing.BillTypeMonthly {
 			t.Errorf("bill[%d] type = %s, want MONTHLY", i, bill.BillType)
 		}
 		if bill.FinalizedAt != nil {
@@ -149,8 +141,8 @@ func TestCommitBatch_PartialBusinessFailure(t *testing.T) {
 	// Corrupt one snapshot so validation fails
 	items[1].ComputedSnapshot.Version = 999
 
-	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
-	svc := newCommitService(repo)
+	store := &mockStore{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err != nil {
@@ -162,13 +154,13 @@ func TestCommitBatch_PartialBusinessFailure(t *testing.T) {
 	if result.FailCount != 1 {
 		t.Errorf("FailCount = %d, want 1", result.FailCount)
 	}
-	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != CommitStatusPartiallyCommitted {
+	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != billing.CommitStatusPartiallyCommitted {
 		t.Errorf("CommitStatus = %v, want PARTIALLY_COMMITTED", result.Batch.CommitStatus)
 	}
 
 	// Failed item should have COMMIT_ERROR reason
-	if repo.createdBatchItems[1].ReasonCode != ReasonCodeCommitError {
-		t.Errorf("failed item reason_code = %q, want COMMIT_ERROR", repo.createdBatchItems[1].ReasonCode)
+	if store.createdBatchItems[1].ReasonCode != billing.ReasonCodeCommitError {
+		t.Errorf("failed item reason_code = %q, want COMMIT_ERROR", store.createdBatchItems[1].ReasonCode)
 	}
 }
 
@@ -179,8 +171,8 @@ func TestCommitBatch_IdempotentRetry(t *testing.T) {
 	committedBillID := uuid.New()
 	items[0].BillID = &committedBillID
 
-	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
-	svc := newCommitService(repo)
+	store := &mockStore{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err != nil {
@@ -192,18 +184,18 @@ func TestCommitBatch_IdempotentRetry(t *testing.T) {
 	}
 
 	// Item 0's bill_id should remain unchanged
-	if *repo.createdBatchItems[0].BillID != committedBillID {
+	if *store.createdBatchItems[0].BillID != committedBillID {
 		t.Error("already-committed item's BillID was changed")
 	}
 }
 
 func TestCommitBatch_AlreadyCommitted(t *testing.T) {
 	batch, items := newTestBatch(1)
-	committed := CommitStatusCommitted
+	committed := billing.CommitStatusCommitted
 	batch.CommitStatus = &committed
 
-	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
-	svc := newCommitService(repo)
+	store := &mockStore{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(store)
 
 	_, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err == nil {
@@ -222,22 +214,22 @@ func TestCommitBatch_MixedSkippedAndCreated(t *testing.T) {
 	batch, items := newTestBatch(2)
 
 	// Add a SKIPPED item — commit should not touch it
-	skippedItem := BillGenerationBatchItem{
+	skippedItem := billing.BillGenerationBatchItem{
 		ID:         uuid.New(),
 		BatchID:    batch.ID,
 		ContractID: uuid.New(),
 		RoomID:     uuid.New(),
 		RoomNumber: "200",
 		RoomFloor:  2,
-		ResultType: ResultSkipped,
-		ReasonCode: ReasonMoveOutPending,
+		ResultType: billing.ResultSkipped,
+		ReasonCode: billing.ReasonMoveOutPending,
 		ReasonText: "มีใบแจ้งย้ายออก",
 	}
 	items = append(items, skippedItem)
 	batch.TotalContracts = 3
 
-	repo := &mockBillingRepo{createdBatch: batch, createdBatchItems: items}
-	svc := newCommitService(repo)
+	store := &mockStore{createdBatch: batch, createdBatchItems: items}
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err != nil {
@@ -249,8 +241,8 @@ func TestCommitBatch_MixedSkippedAndCreated(t *testing.T) {
 	}
 
 	// SKIPPED item should be untouched
-	lastItem := repo.createdBatchItems[2]
-	if lastItem.ResultType != ResultSkipped {
+	lastItem := store.createdBatchItems[2]
+	if lastItem.ResultType != billing.ResultSkipped {
 		t.Errorf("skipped item ResultType = %s, want SKIPPED", lastItem.ResultType)
 	}
 	if lastItem.BillID != nil {
@@ -259,8 +251,8 @@ func TestCommitBatch_MixedSkippedAndCreated(t *testing.T) {
 }
 
 func TestCommitBatch_NotFound(t *testing.T) {
-	repo := &mockBillingRepo{} // no batch
-	svc := newCommitService(repo)
+	store := &mockStore{} // no batch
+	svc := newCommitService(store)
 
 	_, err := svc.CommitBatch(context.Background(), uuid.New())
 	if err == nil {
@@ -290,10 +282,10 @@ func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.
 	batch, items := newTestBatch(3)
 
 	calls := 0
-	repo := &mockBillingRepo{
+	store := &mockStore{
 		createdBatch:      batch,
 		createdBatchItems: items,
-		createFn: func(_ context.Context, _ *Bill) error {
+		createFn: func(_ context.Context, _ *billing.Bill) error {
 			calls++
 			if calls == 1 {
 				// Shape of pgx/lib/pq error string for SQLSTATE 23505; the
@@ -304,7 +296,7 @@ func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.
 			return nil
 		},
 	}
-	svc := newCommitService(repo)
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	if err != nil {
@@ -319,11 +311,11 @@ func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.
 	if result.PendingCount != 0 {
 		t.Errorf("PendingCount = %d, want 0 (loop drained all items)", result.PendingCount)
 	}
-	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != CommitStatusPartiallyCommitted {
+	if result.Batch.CommitStatus == nil || *result.Batch.CommitStatus != billing.CommitStatusPartiallyCommitted {
 		t.Errorf("CommitStatus = %v, want PARTIALLY_COMMITTED", result.Batch.CommitStatus)
 	}
 	// Failed item carries COMMIT_ERROR so the FE attention section can surface it.
-	if items[0].ReasonCode != ReasonCodeCommitError {
+	if items[0].ReasonCode != billing.ReasonCodeCommitError {
 		t.Errorf("first item reason = %q, want COMMIT_ERROR", items[0].ReasonCode)
 	}
 }
@@ -340,17 +332,17 @@ func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.
 // leaves behind.
 func TestCommitBatch_InfraErrorOnFirstItem_MarksFailedNotNil(t *testing.T) {
 	batch, items := newTestBatch(3)
-	repo := &mockBillingRepo{
+	store := &mockStore{
 		createdBatch:      batch,
 		createdBatchItems: items,
-		createFn: func(_ context.Context, _ *Bill) error {
+		createFn: func(_ context.Context, _ *billing.Bill) error {
 			// Generic non-whitelisted error → isInfraError returns true →
 			// loop breaks. Mirrors a DB connection drop / transient infra
 			// failure on the first INSERT.
 			return errors.New("connection reset by peer")
 		},
 	}
-	svc := newCommitService(repo)
+	svc := newCommitService(store)
 
 	result, err := svc.CommitBatch(context.Background(), batch.ID)
 	// Service surfaces the infra error so the caller knows the commit was
@@ -371,7 +363,7 @@ func TestCommitBatch_InfraErrorOnFirstItem_MarksFailedNotNil(t *testing.T) {
 	if result.Batch.CommitStatus == nil {
 		t.Fatal("CommitStatus should not be nil — FE reads this to leave pre-commit")
 	}
-	if *result.Batch.CommitStatus != CommitStatusFailed {
+	if *result.Batch.CommitStatus != billing.CommitStatusFailed {
 		t.Errorf("CommitStatus = %v, want FAILED", *result.Batch.CommitStatus)
 	}
 	if result.Batch.CommittedAt != nil {
@@ -393,7 +385,7 @@ func TestIsDuplicateBillError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsDuplicateBillError(tt.err); got != tt.want {
+			if got := billing.IsDuplicateBillError(tt.err); got != tt.want {
 				t.Errorf("IsDuplicateBillError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
@@ -408,11 +400,11 @@ func TestIsInfraError(t *testing.T) {
 		err     error
 		isInfra bool
 	}{
-		{"snapshot version", ErrSnapshotUnsupportedVersion, false},
-		{"snapshot no line items", ErrSnapshotNoLineItems, false},
-		{"snapshot negative total", ErrSnapshotNegativeTotal, false},
-		{"bill already exists", ErrBillAlreadyExists, false},
-		{"batch already committed", ErrBatchAlreadyCommitted, false},
+		{"snapshot version", billing.ErrSnapshotUnsupportedVersion, false},
+		{"snapshot no line items", billing.ErrSnapshotNoLineItems, false},
+		{"snapshot negative total", billing.ErrSnapshotNegativeTotal, false},
+		{"bill already exists", billing.ErrBillAlreadyExists, false},
+		{"batch already committed", billing.ErrBatchAlreadyCommitted, false},
 		{"4xx AppError", respond.ErrBadRequest.WithMessage("bad"), false},
 		{"generic error", errors.New("connection refused"), true},
 		{"context canceled", context.Canceled, true},

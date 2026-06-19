@@ -12,6 +12,7 @@ import (
 	"nana/internal/apartment"
 	"nana/internal/auth"
 	"nana/internal/billing"
+	"nana/internal/billing/monthly"
 	"nana/internal/billdelivery"
 	"nana/internal/billingconfig"
 	"nana/internal/billingreconciliation"
@@ -131,6 +132,16 @@ func main() {
 	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, routingService, txManager)
 	billHandler := billing.NewBillingHandler(billService)
 
+	// Wire dependencies — Monthly billing workflow (W2 batch mechanics).
+	// One MonthlyAdapter satisfies all six monthly ports (BillReader,
+	// BillCommander, AuditReader, AuditEmitter, BatchReader, BatchCommander)
+	// — passed three times to NewService for the composite store slots.
+	// Meter + MoveOut repos satisfy monthly's narrower query ports via
+	// structural typing (same method shapes as billing's existing ports).
+	monthlyAdapter := billing.NewMonthlyAdapter(billRepo, billAuditRepo)
+	monthlyService := monthly.NewService(monthlyAdapter, monthlyAdapter, monthlyAdapter, meterRepo, moveOutRepo, txManager)
+	monthlyHandler := monthly.NewHandler(monthlyService)
+
 	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier)
 	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, billService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
@@ -235,6 +246,11 @@ func main() {
 	bcHandler.RegisterRoutes(admin.Group("/apartments/:id/billing-configs"))
 	moveOutHandler.RegisterRoutes(admin.Group("/move-out-notices"))
 	billGroup := admin.Group("/bills")
+	// monthly MUST register FIRST so its literal segments (/batches/*,
+	// /preflight, /batch-monthly, /finalize-all-by-month) beat /:id at
+	// the radix match level. Preserves the original "batches before /:id"
+	// registration order from the pre-extraction handler.
+	monthlyHandler.RegisterRoutes(billGroup)
 	billHandler.RegisterRoutes(billGroup)
 	paymentHandler.RegisterRoutes(billGroup)
 	deliveryHandler.RegisterRoutes(admin.Group("/bill-deliveries"))

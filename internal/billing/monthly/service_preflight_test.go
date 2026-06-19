@@ -1,11 +1,14 @@
-package billing
+package monthly
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"nana/internal/billing"
+	"nana/internal/contract"
 	"nana/internal/meterreading"
+	"nana/internal/shared/database"
 
 	"github.com/google/uuid"
 )
@@ -23,76 +26,76 @@ func TestClassifyContractForBatch(t *testing.T) {
 	startOfMonth := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	endOfMonth := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
 
-	base := ContractWithRoom{
+	base := billing.ContractWithRoom{
 		ContractID: contractID,
 		RoomID:     roomID,
 		StartDate:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	withMeter := map[uuid.UUID]*meterreading.MeterReading{roomID: {}}
-	withExisting := map[uuid.UUID]*Bill{contractID: {ID: existingBillID}}
+	withExisting := map[uuid.UUID]*billing.Bill{contractID: {ID: existingBillID}}
 
 	cases := []struct {
 		name        string
-		mutate      func(c ContractWithRoom) ContractWithRoom
+		mutate      func(c billing.ContractWithRoom) billing.ContractWithRoom
 		moveOuts    map[uuid.UUID]bool
 		meters      map[uuid.UUID]*meterreading.MeterReading
-		existing    map[uuid.UUID]*Bill
-		wantResult  ResultType
+		existing    map[uuid.UUID]*billing.Bill
+		wantResult  billing.ResultType
 		wantReason  string
 		wantBillSet bool
 	}{
 		{
 			name:       "ready: meter present, no existing, no pending",
 			meters:     withMeter,
-			wantResult: ResultCreated,
+			wantResult: billing.ResultCreated,
 		},
 		{
 			name:       "move-out pending wins over meter + existing bill",
 			moveOuts:   map[uuid.UUID]bool{roomID: true},
 			meters:     withMeter,
 			existing:   withExisting,
-			wantResult: ResultSkipped,
-			wantReason: ReasonMoveOutPending,
+			wantResult: billing.ResultSkipped,
+			wantReason: billing.ReasonMoveOutPending,
 		},
 		{
 			name: "not billable: contract starts after billing month",
-			mutate: func(c ContractWithRoom) ContractWithRoom {
+			mutate: func(c billing.ContractWithRoom) billing.ContractWithRoom {
 				c.StartDate = time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 				return c
 			},
 			meters:     withMeter,
-			wantResult: ResultSkipped,
-			wantReason: ReasonNotBillable,
+			wantResult: billing.ResultSkipped,
+			wantReason: billing.ReasonNotBillable,
 		},
 		{
 			name: "not billable: contract ended before billing month",
-			mutate: func(c ContractWithRoom) ContractWithRoom {
+			mutate: func(c billing.ContractWithRoom) billing.ContractWithRoom {
 				end := time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC)
 				c.EndDate = &end
 				return c
 			},
 			meters:     withMeter,
-			wantResult: ResultSkipped,
-			wantReason: ReasonNotBillable,
+			wantResult: billing.ResultSkipped,
+			wantReason: billing.ReasonNotBillable,
 		},
 		{
 			name:       "missing meter for billable contract",
-			wantResult: ResultSkipped,
-			wantReason: ReasonMissingMeterReading,
+			wantResult: billing.ResultSkipped,
+			wantReason: billing.ReasonMissingMeterReading,
 		},
 		{
 			name:        "already exists when bill present for contract",
 			meters:      withMeter,
 			existing:    withExisting,
-			wantResult:  ResultAlreadyExists,
-			wantReason:  ReasonAlreadyExists,
+			wantResult:  billing.ResultAlreadyExists,
+			wantReason:  billing.ReasonAlreadyExists,
 			wantBillSet: true,
 		},
 		{
 			name:       "billability check runs before meter check (no meter + start in future → NOT_BILLABLE)",
-			mutate:     func(c ContractWithRoom) ContractWithRoom { c.StartDate = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC); return c },
-			wantResult: ResultSkipped,
-			wantReason: ReasonNotBillable,
+			mutate:     func(c billing.ContractWithRoom) billing.ContractWithRoom { c.StartDate = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC); return c },
+			wantResult: billing.ResultSkipped,
+			wantReason: billing.ReasonNotBillable,
 		},
 	}
 
@@ -112,7 +115,7 @@ func TestClassifyContractForBatch(t *testing.T) {
 			}
 			existing := tc.existing
 			if existing == nil {
-				existing = map[uuid.UUID]*Bill{}
+				existing = map[uuid.UUID]*billing.Bill{}
 			}
 
 			got := classifyContractForBatch(c, startOfMonth, endOfMonth, moveOuts, meters, existing)
@@ -151,12 +154,12 @@ func TestPreflightMonthly_HappyPath_AllBuckets(t *testing.T) {
 	r2 := testMonthlyReading(c2.RoomID, "2026-03")
 	existingBillID := uuid.New()
 
-	repo := &mockBillingRepo{
-		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
-			return []ContractWithRoom{cwr1, cwr2, cwr3, cwr4, cwr5}, nil
+	store := &mockStore{
+		findActiveContractsByApartmentFn: func(_ context.Context, _ uuid.UUID) ([]billing.ContractWithRoom, error) {
+			return []billing.ContractWithRoom{cwr1, cwr2, cwr3, cwr4, cwr5}, nil
 		},
-		findExistingByContractsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*Bill, error) {
-			return map[uuid.UUID]*Bill{c2.ID: {ID: existingBillID}}, nil
+		findExistingByContractsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*billing.Bill, error) {
+			return map[uuid.UUID]*billing.Bill{c2.ID: {ID: existingBillID}}, nil
 		},
 	}
 	meters := &mockMeterQuerier{
@@ -173,7 +176,7 @@ func TestPreflightMonthly_HappyPath_AllBuckets(t *testing.T) {
 		},
 	}
 
-	svc := batchSvc(repo, meters, moveOuts)
+	svc := batchSvc(store, meters, moveOuts)
 	result, err := svc.PreflightMonthly(context.Background(), MonthlyPreflightRequest{
 		ApartmentID:  uuid.New().String(),
 		BillingMonth: "2026-03",
@@ -203,21 +206,21 @@ func TestPreflightMonthly_HappyPath_AllBuckets(t *testing.T) {
 
 	// Preflight must NOT persist anything — the whole point of the endpoint
 	// is that the user gets to decide before committing.
-	if repo.createdBatch != nil {
+	if store.createdBatch != nil {
 		t.Error("preflight created a batch row — should be read-only")
 	}
-	if repo.createdBill != nil {
+	if store.createdBill != nil {
 		t.Error("preflight created a bill — should be read-only")
 	}
 }
 
 func TestPreflightMonthly_EmptyApartment(t *testing.T) {
-	repo := &mockBillingRepo{
-		findActiveContractsByApartmentIDFn: func(_ context.Context, _ uuid.UUID) ([]ContractWithRoom, error) {
-			return []ContractWithRoom{}, nil
+	store := &mockStore{
+		findActiveContractsByApartmentFn: func(_ context.Context, _ uuid.UUID) ([]billing.ContractWithRoom, error) {
+			return []billing.ContractWithRoom{}, nil
 		},
 	}
-	svc := batchSvc(repo, &mockMeterQuerier{}, &mockMoveOutQuerier{})
+	svc := batchSvc(store, &mockMeterQuerier{}, &mockMoveOutQuerier{})
 	result, err := svc.PreflightMonthly(context.Background(), MonthlyPreflightRequest{
 		ApartmentID:  uuid.New().String(),
 		BillingMonth: "2026-03",
@@ -229,3 +232,60 @@ func TestPreflightMonthly_EmptyApartment(t *testing.T) {
 		t.Errorf("empty apartment should return zeros, got total=%d ready=%d", result.TotalRooms, result.ReadyCount)
 	}
 }
+
+// --- Shared test helpers (preflight + commit + finalize + replan unit tests) ---
+
+// testContractWithRoom builds a (ContractWithRoom, *contract.Contract) pair
+// matching the production seed shape — 5000 baht rent, 8/unit electricity,
+// 18/unit water — so snapshot totals are stable across tests.
+func testContractWithRoom(floor int, roomNum string) (billing.ContractWithRoom, *contract.Contract) {
+	c := &contract.Contract{
+		ID:                     uuid.New(),
+		RoomID:                 uuid.New(),
+		Status:                 contract.ContractStatusActive,
+		MonthlyRent:            500000,
+		DepositAmount:          1000000,
+		ElectricityRatePerUnit: 800,
+		WaterRatePerUnit:       1800,
+		StartDate:              time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	return billing.ContractWithRoom{
+		ContractID:             c.ID,
+		RoomID:                 c.RoomID,
+		RoomNumber:             roomNum,
+		RoomFloor:              floor,
+		StartDate:              c.StartDate,
+		MonthlyRent:            c.MonthlyRent,
+		ElectricityRatePerUnit: c.ElectricityRatePerUnit,
+		WaterRatePerUnit:       c.WaterRatePerUnit,
+	}, c
+}
+
+// testMonthlyReading mirrors billing/service_test.go helper of the same name
+// — canonical "150 elec units, 10 water units" MONTHLY reading for the
+// given room + month.
+func testMonthlyReading(roomID uuid.UUID, billingMonth string) *meterreading.MeterReading {
+	bm := billingMonth
+	return &meterreading.MeterReading{
+		ID:                  uuid.New(),
+		RoomID:              roomID,
+		ReadingType:         meterreading.ReadingTypeMonthly,
+		BillingMonth:        &bm,
+		ElectricityPrevious: 1000,
+		ElectricityCurrent:  1150,
+		WaterPrevious:       100,
+		WaterCurrent:        110,
+	}
+}
+
+// batchSvc builds a Service wired with the given store + cross-feature ports.
+// The store is passed three times (bills/audit/batches) because mockStore
+// satisfies all three composite ports — mirroring the production
+// MonthlyAdapter wiring in cmd/main.go.
+func batchSvc(store *mockStore, meters MeterReadingSource, moveOuts MoveOutSource) Service {
+	return NewService(store, store, store, meters, moveOuts, &mockTxManager{})
+}
+
+// Compile-time guard: mockTxManager satisfies database.TxManager so the
+// test wiring matches production exactly.
+var _ database.TxManager = (*mockTxManager)(nil)
