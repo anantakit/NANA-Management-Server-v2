@@ -304,6 +304,10 @@ type BillResponse struct {
 	PaymentBankName      *string `json:"payment_bank_name,omitempty"`
 	PaymentAccountNumber *string `json:"payment_account_number,omitempty"`
 	PaymentAccountName   *string `json:"payment_account_name,omitempty"`
+	// Delivery fields — populated from bill_deliveries via single aggregate query.
+	// DeliveryCount is 0 when never delivered. LastDeliveredAt is nil when never delivered.
+	DeliveryCount   int     `json:"delivery_count"`
+	LastDeliveredAt *string `json:"last_delivered_at,omitempty"`
 }
 
 // BillListItemResponse is the per-row DTO for the bill list endpoint.
@@ -748,6 +752,11 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 		resp.PaidAt = b.PaidAt
 		resp.PaymentMethod = b.PaymentMethod
 		resp.PaymentNote = b.PaymentNote
+	}
+	resp.DeliveryCount = b.DeliveryCount
+	if b.LastDeliveredAt != nil {
+		s := b.LastDeliveredAt.Format("2006-01-02T15:04:05Z07:00")
+		resp.LastDeliveredAt = &s
 	}
 	return resp
 }

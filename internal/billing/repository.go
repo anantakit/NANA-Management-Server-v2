@@ -289,6 +289,21 @@ func (r *billingRepository) FindByIDWithRelations(ctx context.Context, id uuid.U
 		}
 	}
 
+	// Attach delivery aggregate — count and last-delivered-at.
+	var deliveryAgg struct {
+		Count  int        `gorm:"column:delivery_count"`
+		LastAt *time.Time `gorm:"column:last_delivered_at"`
+	}
+	if err := database.DB(ctx, r.db).
+		Table("bill_deliveries").
+		Select("COUNT(*)::int AS delivery_count, MAX(delivered_at) AS last_delivered_at").
+		Where("bill_id = ?", b.ID).
+		Scan(&deliveryAgg).Error; err != nil {
+		return nil, fmt.Errorf("load delivery data for bill %s: %w", b.ID, err)
+	}
+	bwr.DeliveryCount = deliveryAgg.Count
+	bwr.LastDeliveredAt = deliveryAgg.LastAt
+
 	return bwr, nil
 }
 
