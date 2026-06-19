@@ -7,11 +7,11 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/moveout"
+	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // PreviewSettlement computes settlement data without persisting anything.
@@ -20,7 +20,7 @@ func (s *billingService) PreviewSettlement(ctx context.Context, input PreviewSet
 	// Resolve move-out date from notice (same as CreateSettlementBill)
 	notice, err := s.moveOuts.FindActiveByContractID(ctx, input.ContractID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrMoveOutNotFound
 		}
 		return nil, fmt.Errorf("find move-out: %w", err)
@@ -66,7 +66,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 	// Resolve actual move-out date from notice
 	notice, err := s.moveOuts.FindActiveByContractID(ctx, contractID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrMoveOutNotFound
 		}
 		return nil, fmt.Errorf("find move-out: %w", err)
@@ -124,7 +124,7 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		b, err := s.repo.FindByID(txCtx, id)
 		if err != nil {
-			if err == gorm.ErrRecordNotFound {
+			if database.IsNotFound(err) {
 				return ErrBillNotFound
 			}
 			return fmt.Errorf("find bill: %w", err)
@@ -257,7 +257,7 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUID) error {
 	b, err := s.repo.FindByID(ctx, billID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return ErrBillNotFound
 		}
 		return fmt.Errorf("find bill: %w", err)
@@ -289,7 +289,7 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	// Load existing bill to extract MANUAL items + note + rent mode + overrides + deposit app
 	existing, err := s.repo.FindByID(ctx, existingBillID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrBillNotFound
 		}
 		return nil, fmt.Errorf("find existing bill: %w", err)

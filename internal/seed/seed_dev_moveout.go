@@ -9,10 +9,10 @@ import (
 	"nana/internal/apartment"
 	"nana/internal/billing"
 	"nana/internal/contract"
-	"nana/internal/domain"
 	"nana/internal/meterreading"
 	"nana/internal/moveout"
 	"nana/internal/room"
+	"nana/internal/shared/paymentmethod"
 	"nana/internal/tenant"
 
 	"gorm.io/gorm"
@@ -172,7 +172,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 
 	endOffsetPtr := func(d int) *int { return &d }
 	outcomePtr := func(o moveout.PaymentOutcome) *moveout.PaymentOutcome { return &o }
-	methodPtr := func(m domain.PaymentMethod) *domain.PaymentMethod { return &m }
+	methodPtr := func(m paymentmethod.PaymentMethod) *paymentmethod.PaymentMethod { return &m }
 
 	scenarios := []scenario{
 		// 1. NORMAL (Stage 1)
@@ -260,7 +260,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 				rentPaid:       true, // M-1 monthly bill paid → settlement skips rent line
 				cleaningFee:    30000, // ฿300
 				paymentOutcome: outcomePtr(moveout.PaymentOutcomeRefunded),
-				paymentMethod:  methodPtr(domain.PaymentMethodTransfer),
+				paymentMethod:  methodPtr(paymentmethod.Transfer),
 				paymentNote:    "โอนคืนผ่าน SCB",
 			},
 		},
@@ -282,7 +282,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 				cleaningFee:    30000, // ฿300
 				depositForfeit: true,  // bill marked DepositForfeited; net = full charges
 				paymentOutcome: outcomePtr(moveout.PaymentOutcomePaidExtra),
-				paymentMethod:  methodPtr(domain.PaymentMethodCash),
+				paymentMethod:  methodPtr(paymentmethod.Cash),
 				paymentNote:    "เก็บเป็นเงินสด",
 			},
 		},
@@ -311,7 +311,7 @@ func seedDevMoveOuts(db *gorm.DB) error {
 				rentPaid:       true, // M-1 paid → settlement has no rent line, deterministic refund
 				cleaningFee:    0,    // no cleaning → utilities only
 				paymentOutcome: outcomePtr(moveout.PaymentOutcomeRefunded),
-				paymentMethod:  methodPtr(domain.PaymentMethodTransfer),
+				paymentMethod:  methodPtr(paymentmethod.Transfer),
 				paymentNote:    "คืนเงินส่วนเกินหลังหักค่าใช้จ่าย",
 			},
 		},
@@ -563,7 +563,7 @@ type devSettlementSpec struct {
 	// been recorded. Leave nil to seed a "no outcome" state (PENDING_PAYMENT
 	// or COMPLETED+UNSETTLED).
 	paymentOutcome *moveout.PaymentOutcome
-	paymentMethod  *domain.PaymentMethod
+	paymentMethod  *paymentmethod.PaymentMethod
 	paymentNote    string
 }
 

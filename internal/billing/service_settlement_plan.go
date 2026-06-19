@@ -9,11 +9,11 @@ import (
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/moveout"
+	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // feeLineTypes maps billing config fee types to bill line item types.
@@ -44,7 +44,7 @@ type settlementPlan struct {
 func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, opts SettlementOptions) (*settlementPlan, error) {
 	c, err := s.contracts.FindByIDSimple(ctx, contractID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrContractNotFound
 		}
 		return nil, fmt.Errorf("find contract: %w", err)
@@ -52,7 +52,7 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 
 	exitReading, err := s.meters.FindLatestByRoomID(ctx, c.RoomID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrExitReadingMissing
 		}
 		return nil, fmt.Errorf("find exit reading: %w", err)
@@ -70,7 +70,7 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 		if err == nil && !existing.IsVoid() {
 			return nil, ErrBillAlreadyExists
 		}
-		if err != nil && err != gorm.ErrRecordNotFound {
+		if err != nil && !database.IsNotFound(err) {
 			return nil, fmt.Errorf("check existing settlement: %w", err)
 		}
 	}

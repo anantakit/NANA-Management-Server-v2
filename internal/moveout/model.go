@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"nana/internal/domain"
+	"nana/internal/shared/paymentmethod"
 )
 
 // --- Types ---
@@ -34,27 +34,27 @@ const (
 // --- Model ---
 
 type MoveOutNotice struct {
-	ID                   uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	ContractID           uuid.UUID      `gorm:"type:uuid;not null" json:"contract_id"`
-	NoticeDate           time.Time      `gorm:"type:date;not null" json:"notice_date"`
-	ScheduledMoveOutDate time.Time      `gorm:"column:scheduled_move_out_date;type:date;not null" json:"scheduled_move_out_date"`
+	ID                   uuid.UUID `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	ContractID           uuid.UUID `gorm:"type:uuid;not null" json:"contract_id"`
+	NoticeDate           time.Time `gorm:"type:date;not null" json:"notice_date"`
+	ScheduledMoveOutDate time.Time `gorm:"column:scheduled_move_out_date;type:date;not null" json:"scheduled_move_out_date"`
 	// ActualMoveOutDate is the real date the tenant vacated the unit.
 	// This is the source of truth for all financial calculations (rent prorate, utilities, settlement).
 	// It is NOT tied to the date when settlement is generated.
-	ActualMoveOutDate *time.Time     `gorm:"type:date" json:"actual_move_out_date,omitempty"`
-	Status            MoveOutStatus  `gorm:"type:varchar(20);not null;default:'PENDING_METER'" json:"status"`
-	Note                 string         `gorm:"type:text;not null;default:''" json:"note"`
+	ActualMoveOutDate *time.Time    `gorm:"type:date" json:"actual_move_out_date,omitempty"`
+	Status            MoveOutStatus `gorm:"type:varchar(20);not null;default:'PENDING_METER'" json:"status"`
+	Note              string        `gorm:"type:text;not null;default:''" json:"note"`
 
 	// V2 workflow columns
-	SettlementBillID *uuid.UUID             `gorm:"type:uuid" json:"settlement_bill_id,omitempty"`
-	NetAmount        *int64                 `gorm:"type:bigint" json:"net_amount,omitempty"`
-	PaymentOutcome   *PaymentOutcome        `gorm:"type:varchar(20)" json:"payment_outcome,omitempty"`
-	PaymentMethod    *domain.PaymentMethod  `gorm:"column:payment_method;type:varchar(20)" json:"payment_method,omitempty"`
-	PaymentNote      string                 `gorm:"type:text;not null;default:''" json:"payment_note"`
-	ClosedAt         *time.Time             `gorm:"type:timestamptz" json:"closed_at,omitempty"`
-	CancelledAt      *time.Time             `gorm:"type:timestamptz" json:"cancelled_at,omitempty"`
-	LastActionBy     *uuid.UUID             `gorm:"type:uuid" json:"last_action_by,omitempty"`
-	LastActionAt     *time.Time             `gorm:"type:timestamptz" json:"last_action_at,omitempty"`
+	SettlementBillID *uuid.UUID                   `gorm:"type:uuid" json:"settlement_bill_id,omitempty"`
+	NetAmount        *int64                       `gorm:"type:bigint" json:"net_amount,omitempty"`
+	PaymentOutcome   *PaymentOutcome              `gorm:"type:varchar(20)" json:"payment_outcome,omitempty"`
+	PaymentMethod    *paymentmethod.PaymentMethod `gorm:"column:payment_method;type:varchar(20)" json:"payment_method,omitempty"`
+	PaymentNote      string                       `gorm:"type:text;not null;default:''" json:"payment_note"`
+	ClosedAt         *time.Time                   `gorm:"type:timestamptz" json:"closed_at,omitempty"`
+	CancelledAt      *time.Time                   `gorm:"type:timestamptz" json:"cancelled_at,omitempty"`
+	LastActionBy     *uuid.UUID                   `gorm:"type:uuid" json:"last_action_by,omitempty"`
+	LastActionAt     *time.Time                   `gorm:"type:timestamptz" json:"last_action_at,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -73,20 +73,20 @@ func (m *MoveOutNotice) BeforeCreate(tx *gorm.DB) error {
 // --- Domain errors ---
 
 var (
-	ErrDateOrderInvalid       = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันแจ้ง")
-	ErrCannotCancel            = errors.New("ยกเลิกได้เฉพาะสถานะรอจดมิเตอร์หรือรอสร้างบิล")
-	ErrCannotRecordSettlement  = errors.New("สร้างบิลได้เฉพาะสถานะรอสร้างบิล")
-	ErrCannotAdvanceToPayment  = errors.New("สรุปยอดได้เฉพาะสถานะรอสร้างบิลที่มีบิลแนบแล้ว")
-	ErrCannotRecordPayment     = errors.New("บันทึกชำระได้เฉพาะสถานะรอชำระ")
-	ErrCannotSkipPayment       = errors.New("ข้ามชำระได้เฉพาะสถานะรอชำระ")
-	ErrCannotClose             = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
-	ErrCannotCloseWithUnsettled = errors.New("ปิดงาน (ยังไม่ชำระ) ได้เฉพาะสถานะที่ยังไม่บันทึกการเงิน")
-	ErrMissingSettlementBill   = errors.New("ต้องมีบิลปิดสัญญาก่อนปิด")
-	ErrMissingPaymentOutcome   = errors.New("ต้องระบุผลการชำระก่อนปิด")
-	ErrNotPendingMeter             = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอจดมิเตอร์")
-	ErrActualMoveOutDateRequired   = errors.New("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลปิดสัญญา")
+	ErrDateOrderInvalid              = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันแจ้ง")
+	ErrCannotCancel                  = errors.New("ยกเลิกได้เฉพาะสถานะรอจดมิเตอร์หรือรอสร้างบิล")
+	ErrCannotRecordSettlement        = errors.New("สร้างบิลได้เฉพาะสถานะรอสร้างบิล")
+	ErrCannotAdvanceToPayment        = errors.New("สรุปยอดได้เฉพาะสถานะรอสร้างบิลที่มีบิลแนบแล้ว")
+	ErrCannotRecordPayment           = errors.New("บันทึกชำระได้เฉพาะสถานะรอชำระ")
+	ErrCannotSkipPayment             = errors.New("ข้ามชำระได้เฉพาะสถานะรอชำระ")
+	ErrCannotClose                   = errors.New("ปิดได้เฉพาะสถานะพร้อมปิด")
+	ErrCannotCloseWithUnsettled      = errors.New("ปิดงาน (ยังไม่ชำระ) ได้เฉพาะสถานะที่ยังไม่บันทึกการเงิน")
+	ErrMissingSettlementBill         = errors.New("ต้องมีบิลปิดสัญญาก่อนปิด")
+	ErrMissingPaymentOutcome         = errors.New("ต้องระบุผลการชำระก่อนปิด")
+	ErrNotPendingMeter               = errors.New("ไม่สามารถดำเนินการได้ เนื่องจากสถานะไม่ใช่รอจดมิเตอร์")
+	ErrActualMoveOutDateRequired     = errors.New("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลปิดสัญญา")
 	ErrActualDateBeforeContractStart = errors.New("วันย้ายออกจริงต้องไม่ก่อนวันเริ่มสัญญา")
-	ErrCannotSetActualDate         = errors.New("ไม่สามารถตั้งวันย้ายออกจริงได้ในสถานะนี้")
+	ErrCannotSetActualDate           = errors.New("ไม่สามารถตั้งวันย้ายออกจริงได้ในสถานะนี้")
 	// ErrCannotDowngradeToPendingSettlement fires when the settlement-
 	// correction "workflow rewind" is attempted from a status that doesn't
 	// host a FINALIZED settlement bill — see CanDowngradeToPendingSettlement.
@@ -96,11 +96,11 @@ var (
 // --- Status checks ---
 
 func (m *MoveOutNotice) IsPendingMeter() bool      { return m.Status == MoveOutStatusPendingMeter }
-func (m *MoveOutNotice) IsPendingSettlement() bool  { return m.Status == MoveOutStatusPendingSettlement }
-func (m *MoveOutNotice) IsPendingPayment() bool     { return m.Status == MoveOutStatusPendingPayment }
-func (m *MoveOutNotice) IsReadyToClose() bool       { return m.Status == MoveOutStatusReadyToClose }
-func (m *MoveOutNotice) IsCompleted() bool           { return m.Status == MoveOutStatusCompleted }
-func (m *MoveOutNotice) IsCancelled() bool           { return m.Status == MoveOutStatusCancelled }
+func (m *MoveOutNotice) IsPendingSettlement() bool { return m.Status == MoveOutStatusPendingSettlement }
+func (m *MoveOutNotice) IsPendingPayment() bool    { return m.Status == MoveOutStatusPendingPayment }
+func (m *MoveOutNotice) IsReadyToClose() bool      { return m.Status == MoveOutStatusReadyToClose }
+func (m *MoveOutNotice) IsCompleted() bool         { return m.Status == MoveOutStatusCompleted }
+func (m *MoveOutNotice) IsCancelled() bool         { return m.Status == MoveOutStatusCancelled }
 
 // IsTerminal returns true for COMPLETED or CANCELLED (no further transitions).
 func (m *MoveOutNotice) IsTerminal() bool {
@@ -314,7 +314,7 @@ func (m *MoveOutNotice) AdvanceToPayment() error {
 // payment fields (outcome/method/note); no merge. Direction-flips
 // (PAY_MORE ↔ REFUND) are intentionally permitted — admin correction is the
 // priority. Phase-2 audit log will retroactively trace overwrites.
-func (m *MoveOutNotice) RecordPayment(outcome PaymentOutcome, method *domain.PaymentMethod, note string) error {
+func (m *MoveOutNotice) RecordPayment(outcome PaymentOutcome, method *paymentmethod.PaymentMethod, note string) error {
 	if err := m.CanRecordPayment(); err != nil {
 		return err
 	}

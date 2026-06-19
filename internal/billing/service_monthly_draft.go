@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // UpdateMonthlyDraft replaces all MANUAL line items, applies overrides to AUTO
@@ -35,7 +35,7 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		b, err := s.repo.FindByID(txCtx, id)
 		if err != nil {
-			if err == gorm.ErrRecordNotFound {
+			if database.IsNotFound(err) {
 				return ErrBillNotFound
 			}
 			return fmt.Errorf("find bill: %w", err)

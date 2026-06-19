@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"nana/internal/contract"
-	"nana/internal/domain"
+	"nana/internal/shared/paymentmethod"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -387,7 +387,7 @@ func TestRecordPaymentOutcome_HappyPath(t *testing.T) {
 	}
 	// Silent-failure case: forgetting to wire req.PaymentMethod through to
 	// the domain method wouldn't be caught by status/outcome assertions alone.
-	if h.repo.updatedNotice.PaymentMethod == nil || *h.repo.updatedNotice.PaymentMethod != domain.PaymentMethodCash {
+	if h.repo.updatedNotice.PaymentMethod == nil || *h.repo.updatedNotice.PaymentMethod != paymentmethod.Cash {
 		t.Errorf("payment_method: got %v, want CASH", h.repo.updatedNotice.PaymentMethod)
 	}
 }
@@ -1372,7 +1372,7 @@ func TestRecordPaymentOutcome_BackfillOnCompleted(t *testing.T) {
 	if h.repo.updatedNotice.PaymentOutcome == nil || *h.repo.updatedNotice.PaymentOutcome != PaymentOutcomePaidExtra {
 		t.Error("payment_outcome must be set")
 	}
-	if h.repo.updatedNotice.PaymentMethod == nil || *h.repo.updatedNotice.PaymentMethod != domain.PaymentMethodTransfer {
+	if h.repo.updatedNotice.PaymentMethod == nil || *h.repo.updatedNotice.PaymentMethod != paymentmethod.Transfer {
 		t.Errorf("payment_method: got %v, want TRANSFER", h.repo.updatedNotice.PaymentMethod)
 	}
 	// RecordPayment must NOT touch contract/room — those were already handled
@@ -1444,7 +1444,7 @@ func finalizedSettlementNotice(noticeID, contractID, billID uuid.UUID) *MoveOutN
 	moveOut := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 	netAmount := int64(120000) // 1200 baht — original (about to be replaced)
 	outcome := PaymentOutcomePaidExtra
-	method := domain.PaymentMethodCash
+	method := paymentmethod.Cash
 	return &MoveOutNotice{
 		ID:                noticeID,
 		ContractID:        contractID,

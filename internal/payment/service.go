@@ -8,6 +8,7 @@ import (
 	"nana/internal/billing"
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
+	"nana/internal/shared/paymentmethod"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -62,7 +63,7 @@ func (s *paymentService) RecordBillPayment(ctx context.Context, billID uuid.UUID
 		p = BillPayment{
 			BillID:     billID,
 			Amount:     amountSatang,
-			Method:     PaymentMethod(req.Method),
+			Method:     paymentmethod.PaymentMethod(req.Method),
 			Note:       req.Note,
 			PaidAt:     time.Now(),
 			ReceivedBy: actorID,

@@ -13,11 +13,11 @@ import (
 
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
-	"nana/internal/domain"
 	"nana/internal/meterreading"
 	"nana/internal/moveout"
 	"nana/internal/room"
 	"nana/internal/shared/database"
+	"nana/internal/shared/paymentmethod"
 	"nana/internal/testutil/fixtures"
 	"nana/internal/testutil/testdb"
 
@@ -81,10 +81,10 @@ func (f *correctionFailingAuditRepo) FindLatestSupersedeReason(ctx context.Conte
 // EXIT meter / notice and walks the production move-out workflow up to the
 // requested targetStatus (PENDING_PAYMENT, READY_TO_CLOSE, or COMPLETED).
 type correctionEnv struct {
-	db          *gorm.DB
-	moveOutSvc  moveout.MoveOutService
-	billSvc     BillingService
-	ctx         context.Context
+	db         *gorm.DB
+	moveOutSvc moveout.MoveOutService
+	billSvc    BillingService
+	ctx        context.Context
 
 	apartmentID      uuid.UUID
 	contractID       uuid.UUID
@@ -188,7 +188,7 @@ func walkToTargetStatus(t *testing.T, env *correctionEnv, target moveout.MoveOut
 	// → READY_TO_CLOSE (records payment outcome)
 	if _, err := env.moveOutSvc.RecordPaymentOutcome(env.ctx, env.noticeID, moveout.RecordPaymentOutcomeRequest{
 		PaymentOutcome: string(moveout.PaymentOutcomePaidExtra),
-		PaymentMethod:  string(domain.PaymentMethodCash),
+		PaymentMethod:  string(paymentmethod.Cash),
 		PaymentNote:    "เก็บเงินสดแล้ว (จะถูกล้างเมื่อ correct)",
 	}); err != nil {
 		t.Fatalf("RecordPaymentOutcome: %v", err)
@@ -869,13 +869,13 @@ func assertPaymentMetadataCleared(t *testing.T, env *correctionEnv) {
 // (e.g., a buggy "restore" that delete+re-inserts line items on rollback)
 // still trips the assertSnapshotUnchanged check.
 type stateSnapshot struct {
-	notice                  moveout.MoveOutNotice
-	oldSettlement           Bill
-	oldSettlementLineCount  int64 // line-items on old settlement (catches partial INSERT/DELETE leaks)
-	absorbedMonthly         *Bill // nil if env has no absorbed bill
+	notice                   moveout.MoveOutNotice
+	oldSettlement            Bill
+	oldSettlementLineCount   int64 // line-items on old settlement (catches partial INSERT/DELETE leaks)
+	absorbedMonthly          *Bill // nil if env has no absorbed bill
 	absorbedMonthlyLineCount int64
-	billsTotal              int64
-	billAuditTotal          int64
+	billsTotal               int64
+	billAuditTotal           int64
 }
 
 func snapshotNoticeAndBills(t *testing.T, env *correctionEnv) stateSnapshot {
@@ -1024,7 +1024,7 @@ func equalOutcomePtr(a, b *moveout.PaymentOutcome) bool {
 	return *a == *b
 }
 
-func equalMethodPtr(a, b *domain.PaymentMethod) bool {
+func equalMethodPtr(a, b *paymentmethod.PaymentMethod) bool {
 	if a == nil || b == nil {
 		return a == b
 	}

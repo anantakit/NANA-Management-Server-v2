@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"nana/internal/moveout"
+	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // GenerateSettlement creates a DRAFT settlement bill for the given contract
@@ -59,7 +59,7 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.CorrectSettlementInput) (*moveout.SettlementBillResult, error) {
 	old, err := s.repo.LockBillForCorrection(ctx, in.ExistingBillID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrBillNotFound
 		}
 		return nil, fmt.Errorf("lock settlement for correction: %w", err)
@@ -165,7 +165,7 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error {
 	b, err := s.repo.FindByID(ctx, billID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return ErrBillNotFound
 		}
 		return fmt.Errorf("find bill for void: %w", err)

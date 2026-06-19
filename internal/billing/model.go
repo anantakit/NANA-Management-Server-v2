@@ -206,6 +206,16 @@ type Bill struct {
 	DepositForfeited bool           `gorm:"not null;default:false" json:"deposit_forfeited"`
 	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
 	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
+	// RentPaid is a SETTLEMENT-only flag meaning "advance rent for the
+	// move-out month was already collected in the prior MONTHLY bill"
+	// (the system bills rent one month in advance). When true, the
+	// settlement plan suppresses the rent line entirely (no charge AND no
+	// refund — the unused days are not refunded by policy). When false,
+	// the settlement charges either a prorated rent (PRORATED mode) or
+	// full-month rent (FULL_MONTH_KEEP_DEPOSIT mode). NOT a generic
+	// "tenant has paid this bill" flag — payment status lives on
+	// `bills.status` (PAID) + the bill_payments record. See
+	// addRentAdjustment in service_settlement_plan.go.
 	RentPaid             bool               `gorm:"not null;default:false" json:"rent_paid"`
 	SettlementRentMode   SettlementRentMode `gorm:"column:settlement_rent_mode;type:varchar(30);not null;default:'PRORATED'" json:"settlement_rent_mode"`
 	Note                 string             `gorm:"type:text;not null;default:''" json:"note"`

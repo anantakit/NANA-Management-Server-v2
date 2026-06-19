@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"nana/internal/domain"
+	"nana/internal/shared/paymentmethod"
 )
 
 func TestMoveOutNotice_ValidateDates(t *testing.T) {
@@ -469,8 +469,8 @@ func TestMoveOutNotice_AdvanceToPayment(t *testing.T) {
 }
 
 func TestMoveOutNotice_RecordPayment(t *testing.T) {
-	cash := domain.PaymentMethodCash
-	transfer := domain.PaymentMethodTransfer
+	cash := paymentmethod.Cash
+	transfer := paymentmethod.Transfer
 
 	t.Run("PENDING_PAYMENT → READY_TO_CLOSE with method", func(t *testing.T) {
 		m := &MoveOutNotice{Status: MoveOutStatusPendingPayment}
@@ -483,7 +483,7 @@ func TestMoveOutNotice_RecordPayment(t *testing.T) {
 		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
 			t.Fatal("payment_outcome not set")
 		}
-		if m.PaymentMethod == nil || *m.PaymentMethod != domain.PaymentMethodTransfer {
+		if m.PaymentMethod == nil || *m.PaymentMethod != paymentmethod.Transfer {
 			t.Fatalf("payment_method = %v, want TRANSFER", m.PaymentMethod)
 		}
 		if m.PaymentNote != "คืนเงิน 500 บาท" {
@@ -520,7 +520,7 @@ func TestMoveOutNotice_RecordPayment(t *testing.T) {
 		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
 			t.Fatalf("outcome not replaced: got %v, want REFUNDED", m.PaymentOutcome)
 		}
-		if m.PaymentMethod == nil || *m.PaymentMethod != domain.PaymentMethodTransfer {
+		if m.PaymentMethod == nil || *m.PaymentMethod != paymentmethod.Transfer {
 			t.Fatalf("method not replaced: got %v, want TRANSFER", m.PaymentMethod)
 		}
 		if m.PaymentNote != "ของใหม่" {
@@ -557,7 +557,7 @@ func TestMoveOutNotice_RecordPayment(t *testing.T) {
 		if m.PaymentOutcome == nil || *m.PaymentOutcome != PaymentOutcomeRefunded {
 			t.Fatal("outcome not set on COMPLETED back-fill")
 		}
-		if m.PaymentMethod == nil || *m.PaymentMethod != domain.PaymentMethodCash {
+		if m.PaymentMethod == nil || *m.PaymentMethod != paymentmethod.Cash {
 			t.Fatalf("method not set on COMPLETED back-fill: got %v", m.PaymentMethod)
 		}
 		if m.PaymentNote != "บันทึกหลังปิด" {
@@ -871,7 +871,7 @@ func TestComputeUrgency(t *testing.T) {
 
 func TestMoveOutNotice_ClearPaymentOutcome(t *testing.T) {
 	paid := PaymentOutcomePaidExtra
-	cash := domain.PaymentMethodCash
+	cash := paymentmethod.Cash
 
 	t.Run("clears all three payment fields from non-nil state", func(t *testing.T) {
 		n := &MoveOutNotice{
@@ -952,7 +952,7 @@ func TestMoveOutNotice_CanDowngradeToPendingSettlement(t *testing.T) {
 
 func TestMoveOutNotice_DowngradeToPendingSettlement(t *testing.T) {
 	paid := PaymentOutcomePaidExtra
-	cash := domain.PaymentMethodCash
+	cash := paymentmethod.Cash
 	billID := uuid.New()
 
 	t.Run("happy path from PENDING_PAYMENT", func(t *testing.T) {

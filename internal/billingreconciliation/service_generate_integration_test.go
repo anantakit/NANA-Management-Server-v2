@@ -82,9 +82,10 @@ func newGenerateEnv(t *testing.T) *generateEnv {
 	billSvc := billing.NewBillingService(
 		billRepo, billAudit, contractRepo, meterRepo, configRepo, moveOutRepo, nil, txMgr,
 	)
+	reconAdapter := billing.NewReconciliationAdapter(billRepo, contractRepo, meterRepo, billSvc)
 
 	reconRepo := billingreconciliation.NewRepository(db)
-	svc := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billSvc, billSvc)
+	svc := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, reconAdapter, reconAdapter)
 
 	return &generateEnv{db: db, svc: svc, billRepo: billRepo, apartment: apt.ID}
 }

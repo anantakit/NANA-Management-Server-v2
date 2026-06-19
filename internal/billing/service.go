@@ -7,14 +7,12 @@ import (
 	"time"
 
 	"nana/internal/billingconfig"
-	"nana/internal/billingreconciliation"
 	"nana/internal/moveout"
 	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 type BillingService interface {
@@ -63,11 +61,6 @@ type BillingService interface {
 	PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error)
 	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
 	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
-
-	// Billing-reconciliation workspace ports (satisfies billingreconciliation.BillsQuerier
-	// + billingreconciliation.BillsCommander). Methods live in service_reconciliation_ports.go.
-	FindExistingBillsByContractsAndMonth(ctx context.Context, contractIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]*billingreconciliation.BillSnapshot, error)
-	CreateMonthlyBillForReconciliation(ctx context.Context, req billingreconciliation.CreateMonthlyBillForReconciliationRequest, actor *uuid.UUID) (*billingreconciliation.CreatedBill, error)
 }
 
 type billingService struct {
@@ -151,7 +144,7 @@ func (s *billingService) GetSummary(ctx context.Context, params BillSummaryParam
 func (s *billingService) GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
 	b, err := s.repo.FindByIDWithRelations(ctx, id)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrBillNotFound
 		}
 		return nil, fmt.Errorf("get bill: %w", err)
@@ -262,7 +255,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	// Validate contract + meter outside the TX to keep lock time short.
 	c, err := s.contracts.FindByIDSimple(ctx, contractID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrContractNotFound
 		}
 		return nil, fmt.Errorf("find contract: %w", err)
@@ -275,13 +268,13 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 	if err == nil {
 		return nil, ErrBillAlreadyExists
 	}
-	if err != gorm.ErrRecordNotFound {
+	if !database.IsNotFound(err) {
 		return nil, fmt.Errorf("check duplicate: %w", err)
 	}
 
 	reading, err := s.meters.FindByIDSimple(ctx, meterID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrMeterNotFound
 		}
 		return nil, fmt.Errorf("find meter: %w", err)
@@ -375,7 +368,7 @@ func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *
 func (s *billingService) finalizeBillInTx(txCtx context.Context, id uuid.UUID, actor *uuid.UUID) error {
 	b, err := s.repo.FindByID(txCtx, id)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return ErrBillNotFound
 		}
 		return fmt.Errorf("find bill: %w", err)
@@ -401,7 +394,7 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		b, err := s.repo.FindByID(txCtx, id)
 		if err != nil {
-			if err == gorm.ErrRecordNotFound {
+			if database.IsNotFound(err) {
 				return ErrBillNotFound
 			}
 			return fmt.Errorf("find bill: %w", err)
@@ -430,7 +423,7 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 func (s *billingService) MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error) {
 	b, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, ErrBillNotFound
 		}
 		return nil, fmt.Errorf("find bill: %w", err)

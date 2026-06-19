@@ -147,8 +147,12 @@ func main() {
 	deliveryHandler := billdelivery.NewDeliveryHandler(deliveryService)
 
 	// Wire dependencies — Billing Reconciliation (Phase 1A: read-only audit)
+	// Adapter satisfies BillsQuerier + BillsCommander so billingreconciliation
+	// stays consumer-defined and billing's main service surface keeps no
+	// reconciliation-shaped methods (mirrors PaymentAdapter).
 	reconRepo := billingreconciliation.NewRepository(db)
-	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, billService, billService)
+	reconAdapter := billing.NewReconciliationAdapter(billRepo, contractRepo, meterRepo, billService)
+	reconService := billingreconciliation.NewService(reconRepo, meterRepo, moveOutRepo, reconAdapter, reconAdapter)
 	reconHandler := billingreconciliation.NewHandler(reconService)
 
 	// Create Fiber app

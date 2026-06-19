@@ -34,9 +34,9 @@ func TestFindExistingBillsByContractsAndMonth_MapsBillToSnapshot(t *testing.T) {
 			}, nil
 		},
 	}
-	svc := newSvc(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	a := newReconcileAdapter(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	got, err := svc.FindExistingBillsByContractsAndMonth(
+	got, err := a.FindExistingBillsByContractsAndMonth(
 		context.Background(),
 		[]uuid.UUID{contractA, contractB},
 		"2026-06",
@@ -66,9 +66,9 @@ func TestFindExistingBillsByContractsAndMonth_EmptyShortCircuits(t *testing.T) {
 			return nil, nil
 		},
 	}
-	svc := newSvc(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	a := newReconcileAdapter(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	got, err := svc.FindExistingBillsByContractsAndMonth(context.Background(), nil, "2026-06")
+	got, err := a.FindExistingBillsByContractsAndMonth(context.Background(), nil, "2026-06")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,9 +102,9 @@ func TestCreateMonthlyBillForReconciliation_DelegatesToCreateMonthlyBill(t *test
 			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: reading}, nil
 		},
 	}
-	svc := newSvc(repo, &mockContractQuerier{contract: c}, meters, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	a := newReconcileAdapter(repo, &mockContractQuerier{contract: c}, meters, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	got, err := svc.CreateMonthlyBillForReconciliation(context.Background(),
+	got, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
 			ContractID:   c.ID,
 			BillingMonth: "2026-03",
@@ -131,10 +131,10 @@ func TestCreateMonthlyBillForReconciliation_DelegatesToCreateMonthlyBill(t *test
 
 func TestCreateMonthlyBillForReconciliation_MissingMeterMapsToLostReady(t *testing.T) {
 	c := testContract()
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
+	a := newReconcileAdapter(&mockBillingRepo{}, &mockContractQuerier{contract: c},
 		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	_, err := svc.CreateMonthlyBillForReconciliation(context.Background(),
+	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
 			ContractID:   c.ID,
 			BillingMonth: "2026-03",
@@ -148,10 +148,10 @@ func TestCreateMonthlyBillForReconciliation_MissingMeterMapsToLostReady(t *testi
 }
 
 func TestCreateMonthlyBillForReconciliation_ContractMissingMapsToLostReady(t *testing.T) {
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{}, // empty → ErrRecordNotFound
+	a := newReconcileAdapter(&mockBillingRepo{}, &mockContractQuerier{}, // empty → ErrRecordNotFound
 		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	_, err := svc.CreateMonthlyBillForReconciliation(context.Background(),
+	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
 			ContractID:   uuid.New(),
 			BillingMonth: "2026-03",
@@ -163,10 +163,10 @@ func TestCreateMonthlyBillForReconciliation_ContractMissingMapsToLostReady(t *te
 
 func TestCreateMonthlyBillForReconciliation_BadBillingMonth(t *testing.T) {
 	c := testContract()
-	svc := newSvc(&mockBillingRepo{}, &mockContractQuerier{contract: c},
+	a := newReconcileAdapter(&mockBillingRepo{}, &mockContractQuerier{contract: c},
 		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	_, err := svc.CreateMonthlyBillForReconciliation(context.Background(),
+	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
 			ContractID:   c.ID,
 			BillingMonth: "2026-3", // invalid format
@@ -188,7 +188,7 @@ func TestCreateMonthlyBillForReconciliation_DuplicateMapsToAlreadyBilled(t *test
 			return &Bill{ID: uuid.New()}, nil
 		},
 	}
-	svc := newSvc(repo, &mockContractQuerier{contract: c},
+	a := newReconcileAdapter(repo, &mockContractQuerier{contract: c},
 		&mockMeterQuerier{reading: reading,
 			findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
 				return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: reading}, nil
@@ -196,7 +196,7 @@ func TestCreateMonthlyBillForReconciliation_DuplicateMapsToAlreadyBilled(t *test
 		},
 		&mockConfigQuerier{}, &mockMoveOutQuerier{})
 
-	_, err := svc.CreateMonthlyBillForReconciliation(context.Background(),
+	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
 			ContractID:   c.ID,
 			BillingMonth: "2026-03",
@@ -206,10 +206,10 @@ func TestCreateMonthlyBillForReconciliation_DuplicateMapsToAlreadyBilled(t *test
 	}
 }
 
-// Compile-time interface checks — guarantees the billing service stays
-// wired to the reconciliation ports at the type level, so a rename on
-// either side surfaces immediately at build instead of at DI time.
-var (
-	_ billingreconciliation.BillsQuerier   = (*billingService)(nil)
-	_ billingreconciliation.BillsCommander = (*billingService)(nil)
-)
+// newReconcileAdapter wires the adapter on top of a fully mocked billing
+// service. Keeps the per-test setup ergonomic (same 5 args as newSvc) while
+// the production type is exactly the one wired in cmd/main.go.
+func newReconcileAdapter(repo *mockBillingRepo, contracts *mockContractQuerier, meters *mockMeterQuerier, configs *mockConfigQuerier, moveOuts *mockMoveOutQuerier) *ReconciliationAdapter {
+	svc := newSvc(repo, contracts, meters, configs, moveOuts)
+	return NewReconciliationAdapter(repo, contracts, meters, svc)
+}

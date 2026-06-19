@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"nana/internal/apartment"
+	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // CorrectBill executes the void+recreate correction flow on a FINALIZED bill.
@@ -48,7 +48,7 @@ func (s *billingService) CorrectBill(ctx context.Context, id uuid.UUID, req Corr
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		old, err := s.repo.LockBillForCorrection(txCtx, id)
 		if err != nil {
-			if err == gorm.ErrRecordNotFound {
+			if database.IsNotFound(err) {
 				return ErrBillNotFound
 			}
 			return fmt.Errorf("lock bill for correction: %w", err)
@@ -107,7 +107,7 @@ func (s *billingService) correctMonthlyBillInTx(
 
 	c, err := s.contracts.FindByIDSimple(txCtx, old.ContractID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return uuid.Nil, ErrContractNotFound
 		}
 		return uuid.Nil, fmt.Errorf("find contract: %w", err)

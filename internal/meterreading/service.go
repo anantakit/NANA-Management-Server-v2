@@ -14,7 +14,6 @@ import (
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // isValidBillingMonth validates "YYYY-MM" format.
@@ -297,7 +296,7 @@ func (s *meterReadingService) Update(ctx context.Context, id uuid.UUID, req Upda
 func (s *meterReadingService) GetLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error) {
 	reading, err := s.repo.FindLatestByRoomID(ctx, roomID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, respond.ErrNotFound.WithMessage("ยังไม่มีข้อมูลมิเตอร์ของห้องนี้")
 		}
 		return nil, fmt.Errorf("get latest meter reading: %w", err)
@@ -308,7 +307,7 @@ func (s *meterReadingService) GetLatestByRoomID(ctx context.Context, roomID uuid
 func (s *meterReadingService) GetLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error) {
 	reading, err := s.repo.FindLatestByRoomIDBeforeDate(ctx, roomID, before, excludeID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if database.IsNotFound(err) {
 			return nil, respond.ErrNotFound.WithMessage("ไม่พบข้อมูลมิเตอร์ก่อนวันที่ระบุ")
 		}
 		return nil, fmt.Errorf("get latest meter reading before date: %w", err)

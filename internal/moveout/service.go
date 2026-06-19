@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"nana/internal/domain"
 	"nana/internal/shared/database"
+	"nana/internal/shared/paymentmethod"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -385,12 +385,12 @@ func (s *moveOutService) RecordPaymentOutcome(ctx context.Context, id uuid.UUID,
 	// ZERO_BALANCE normalization (defensive): force method to nil regardless
 	// of what FE sent. Protects against stale FE state that retains a
 	// previously-picked method when outcome flips to ZERO.
-	var method *domain.PaymentMethod
+	var method *paymentmethod.PaymentMethod
 	if outcome != PaymentOutcomeZeroBalance {
 		if req.PaymentMethod == "" {
 			return nil, respond.ErrBadRequest.WithMessage("ต้องเลือกวิธีชำระสำหรับผลการชำระแบบนี้")
 		}
-		m := domain.PaymentMethod(req.PaymentMethod)
+		m := paymentmethod.PaymentMethod(req.PaymentMethod)
 		method = &m
 	}
 

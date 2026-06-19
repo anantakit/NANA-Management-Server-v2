@@ -13,20 +13,39 @@ import (
 	"github.com/google/uuid"
 )
 
-// Cross-feature adapter methods that let billing.BillingService satisfy the
-// reconciliation workspace's BillsQuerier + BillsCommander ports
-// (defined in nana/internal/billingreconciliation/port.go).
+// ReconciliationAdapter satisfies billingreconciliation.BillsQuerier and
+// billingreconciliation.BillsCommander with a narrow dependency surface:
+// the bill repository for read projection, the contract + meter queriers
+// for per-row resolution, and the underlying BillingService only for the
+// CreateMonthlyBill orchestration (TX, validation pipeline, audit emit).
 //
-// Same pattern as service_moveout_ports.go: billing knows the consumer's
-// types directly so the wiring stays a single struct (no separate adapter
-// object). Cycle direction: billing imports billingreconciliation;
-// billingreconciliation does NOT import billing.
+// Mirrors PaymentAdapter: billing owns the consumer-defined port at the
+// implementation layer, so reconciliation never imports billing. The two
+// methods previously lived on billingService directly; that pattern
+// dragged a downstream package (billingreconciliation) into billing's
+// main interface and inverted the natural adapter direction. The adapter
+// shape keeps BillingService's surface scoped to billing's own concerns.
+type ReconciliationAdapter struct {
+	repo      BillingRepository
+	contracts ContractQuerier
+	meters    MeterReadingQuerier
+	svc       BillingService
+}
+
+func NewReconciliationAdapter(
+	repo BillingRepository,
+	contracts ContractQuerier,
+	meters MeterReadingQuerier,
+	svc BillingService,
+) *ReconciliationAdapter {
+	return &ReconciliationAdapter{repo: repo, contracts: contracts, meters: meters, svc: svc}
+}
 
 // FindExistingBillsByContractsAndMonth implements
-// billingreconciliation.BillsQuerier — pure read, no transaction. Delegates
-// to the underlying repository and maps the billing.Bill rows to the
-// reconciliation-flat projection at the boundary (display-read pattern).
-func (s *billingService) FindExistingBillsByContractsAndMonth(
+// billingreconciliation.BillsQuerier — pure read, no transaction.
+// Maps the billing.Bill rows to the reconciliation-flat projection at the
+// boundary (display-read pattern).
+func (a *ReconciliationAdapter) FindExistingBillsByContractsAndMonth(
 	ctx context.Context,
 	contractIDs []uuid.UUID,
 	billingMonth string,
@@ -34,7 +53,7 @@ func (s *billingService) FindExistingBillsByContractsAndMonth(
 	if len(contractIDs) == 0 {
 		return map[uuid.UUID]*billingreconciliation.BillSnapshot{}, nil
 	}
-	bills, err := s.repo.FindExistingByContractsAndMonth(ctx, contractIDs, billingMonth)
+	bills, err := a.repo.FindExistingByContractsAndMonth(ctx, contractIDs, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("find existing bills for reconciliation: %w", err)
 	}
@@ -70,7 +89,7 @@ func (s *billingService) FindExistingBillsByContractsAndMonth(
 //     service cannot do this classification itself because it cannot
 //     import billing (cycle would re-form). System errors propagate
 //     unchanged for the service to surface as FAILED rows.
-func (s *billingService) CreateMonthlyBillForReconciliation(
+func (a *ReconciliationAdapter) CreateMonthlyBillForReconciliation(
 	ctx context.Context,
 	req billingreconciliation.CreateMonthlyBillForReconciliationRequest,
 	actor *uuid.UUID,
@@ -78,7 +97,7 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 	if !billingmonth.Valid(req.BillingMonth) {
 		return nil, respond.ErrBadRequest.WithMessage("billing_month ต้องเป็นรูปแบบ YYYY-MM")
 	}
-	c, err := s.contracts.FindByIDSimple(ctx, req.ContractID)
+	c, err := a.contracts.FindByIDSimple(ctx, req.ContractID)
 	if err != nil {
 		if database.IsNotFound(err) {
 			// Contract disappeared between Reconcile and commit (soft-delete /
@@ -87,7 +106,7 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 		}
 		return nil, fmt.Errorf("find contract for reconciliation bill: %w", err)
 	}
-	meters, err := s.meters.FindMonthlyByRoomsAndMonth(ctx, []uuid.UUID{c.RoomID}, req.BillingMonth)
+	meters, err := a.meters.FindMonthlyByRoomsAndMonth(ctx, []uuid.UUID{c.RoomID}, req.BillingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("find meter for reconciliation bill: %w", err)
 	}
@@ -99,7 +118,7 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 		return nil, billingreconciliation.ErrLostReady
 	}
 
-	bill, err := s.CreateMonthlyBill(ctx, CreateMonthlyBillRequest{
+	bill, err := a.svc.CreateMonthlyBill(ctx, CreateMonthlyBillRequest{
 		ContractID:     req.ContractID.String(),
 		BillingMonth:   req.BillingMonth,
 		MeterReadingID: reading.ID.String(),
@@ -121,7 +140,7 @@ func (s *billingService) CreateMonthlyBillForReconciliation(
 //     (DRAFT-vs-DRAFT collision — CreateMonthlyBill's application-level
 //     duplicate check ignores DRAFT bills, so the partial unique index is
 //     the only guard for concurrent DRAFT creates)
-//                                                → ErrAlreadyBilled
+//     → ErrAlreadyBilled
 //   - state-change invariant violations
 //     (meter type/room/month mismatch, contract not active, contract not
 //     found, meter not found)                    → ErrLostReady
@@ -142,3 +161,11 @@ func classifyCreateMonthlyBillError(err error) error {
 	}
 	return err
 }
+
+// Compile-time interface checks — guarantees the adapter stays wired to
+// the reconciliation ports at the type level, so a rename on either side
+// surfaces immediately at build instead of at DI time.
+var (
+	_ billingreconciliation.BillsQuerier   = (*ReconciliationAdapter)(nil)
+	_ billingreconciliation.BillsCommander = (*ReconciliationAdapter)(nil)
+)

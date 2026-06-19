@@ -15,13 +15,16 @@ import (
 // reports the right count per status and the right amount per AR-lite bucket.
 //
 // Critical formulas (status-derived under the atomic 1-bill-1-payment model):
-//   - pending_amount = SUM total of DRAFT + FINALIZED
+//   - pending_amount = SUM total of FINALIZED only (DRAFT is admin workflow
+//     state, NOT user-facing "ออกบิลแล้วรอชำระ" — keeps amount aligned with
+//     pending_count which has always been FINALIZED-only). Locked alongside
+//     commit 4e35239 ("scope summary endpoint to bill_type + fix
+//     pending_amount semantics").
 //   - paid_amount    = SUM total of PAID
 //   - voided_amount  = SUM total of VOID
 //   - total_amount   = SUM total of non-VOID (existing — must not regress)
 //   - pending_count  = COUNT of FINALIZED only (existing — must not regress;
-//     intentionally asymmetric with pending_amount because DRAFT is admin
-//     workflow state, not user-facing "ออกบิลแล้วรอชำระ")
+//     now symmetric with pending_amount)
 func TestGetSummary_AggregatesByStatus(t *testing.T) {
 	db := testdb.Open(t)
 	testdb.TruncateAll(t, db)
@@ -93,10 +96,11 @@ func TestGetSummary_AggregatesByStatus(t *testing.T) {
 		t.Errorf("TotalAmount = %d, want %d (DRAFT+FINALIZED+PAID, VOID excluded)", got.TotalAmount, wantTotal)
 	}
 
-	// New AR-lite amounts
-	wantPending := draftAmt + finalizedAmt
+	// New AR-lite amounts — pending_amount is FINALIZED-only to stay symmetric
+	// with pending_count (DRAFT is admin workflow state, not AR).
+	wantPending := finalizedAmt
 	if got.PendingAmount != wantPending {
-		t.Errorf("PendingAmount = %d, want %d (DRAFT+FINALIZED)", got.PendingAmount, wantPending)
+		t.Errorf("PendingAmount = %d, want %d (FINALIZED only — DRAFT excluded)", got.PendingAmount, wantPending)
 	}
 	if got.PaidAmount != paidAmt {
 		t.Errorf("PaidAmount = %d, want %d", got.PaidAmount, paidAmt)
