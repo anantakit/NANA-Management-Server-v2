@@ -156,6 +156,65 @@ LEFT JOIN contracts ON ... AND contracts.status = 'ACTIVE'
 ❌ ห้าม FindAndUpdateX() (read+write ซ่อน)
 ```
 
+### Adapter Implementation Shape
+
+**Consumer defines the port. Provider implements a small adapter struct that satisfies it.** All cross-feature adapters in the codebase MUST point the same direction — if one inverts, future authors copy the wrong precedent.
+
+**Template:** `backend/internal/billing/payment_adapter.go` (provider = billing, consumer = payment).
+
+```go
+// payment/port.go — CONSUMER defines the port
+type BillingPort interface {
+    FindBillForPayment(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
+    LockBillForPayment(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
+    PersistBillPaid(ctx context.Context, b *billing.Bill) error
+    EmitPaymentAudit(ctx context.Context, billID uuid.UUID, ...) error
+}
+
+// billing/payment_adapter.go — PROVIDER implements a small adapter struct
+type PaymentAdapter struct {
+    repo  BillingRepository
+    audit BillAuditRepository
+}
+
+func NewPaymentAdapter(repo BillingRepository, audit BillAuditRepository) *PaymentAdapter {
+    return &PaymentAdapter{repo: repo, audit: audit}
+}
+
+func (a *PaymentAdapter) FindBillForPayment(ctx, id) (*Bill, error) { ... }
+// ...
+```
+
+**Constraints:**
+
+```
+✅ Consumer defines port; provider implements adapter struct
+✅ Adapter lives in PROVIDER package (e.g. billing/payment_adapter.go)
+✅ Adapter methods narrow + named around the consumer need
+✅ Adapter dependencies = only what the adapter's methods touch (repo, audit, ...)
+✅ Compile-time check: var _ consumer.Port = (*ProviderAdapter)(nil)
+❌ ห้าม add consumer-shaped methods to the provider's main service interface
+   (e.g. don't expose CreateMonthlyBillForReconciliation on BillingService —
+   keep BillingService's surface scoped to billing's own concerns)
+❌ ห้าม invert the direction (provider importing consumer types into its
+   service interface). Inversion = future authors will guess wrong direction.
+❌ Provider's service must not import consumer types if avoidable; if a
+   shared shape is needed, define neutral types in the consumer's port.go
+```
+
+**DI wiring in `cmd/main.go`:**
+
+```go
+// Build provider's service first
+billService := billing.NewBillingService(...)
+
+// Build adapter wrapping the producer's internals
+paymentAdapter := billing.NewPaymentAdapter(billRepo, billAuditRepo)
+
+// Pass adapter (not full service) to consumer
+paymentService := payment.NewPaymentService(paymentRepo, paymentAdapter, txManager)
+```
+
 ## 5. Sharing Rules
 
 ### Feature Model

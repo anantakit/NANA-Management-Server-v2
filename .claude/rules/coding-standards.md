@@ -146,6 +146,20 @@ return fmt.Errorf("create contract %s: %w", id, err)
 return fmt.Errorf("create contract: %v", err)
 ```
 
+### NotFound check — service layer
+
+- **Service layer must not compare `err == gorm.ErrRecordNotFound`** — that drags `gorm.io/gorm` into the service tier (listed anti-pattern) and breaks `errors.Is` chains if any caller wraps with `%w`.
+- **Use `database.IsNotFound(err)`** as the canonical NotFound check across all service files. The helper lives in `shared/database/tx.go` and wraps `errors.Is(err, gorm.ErrRecordNotFound)`.
+- **Repositories may know about GORM** (they own the persistence layer and legitimately return `gorm.ErrRecordNotFound` as a sentinel). Services consume that sentinel through the shared wrapper only — preserves the "no gorm imports in service" boundary.
+
+```go
+// ❌ service layer — drags in gorm + brittle to %w wrap
+if err == gorm.ErrRecordNotFound { return ErrBillNotFound }
+
+// ✅ service layer
+if database.IsNotFound(err) { return ErrBillNotFound }
+```
+
 ## Query Anti-Patterns
 
 ```go

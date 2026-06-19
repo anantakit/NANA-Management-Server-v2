@@ -124,13 +124,31 @@ Domain methods (pure, no DB, no side effects) ใส่ที่ model.go ขอ
 |---------|--------|
 | Business entity + types + methods | feature package (`contract/model.go`) |
 | Cross-cutting concern (role, pagination, errors) | `shared/` |
+| **Primitive value type ที่หลาย feature ใช้ร่วมกัน** (no workflow owner) | `shared/<typename>/` |
 | Future entity ที่ยังไม่มี feature | `domain/` (ย้ายเข้า feature เมื่อสร้าง) |
 
 ```
 ❌ domain/ ≠ shared dumping ground — เก็บเฉพาะ future entities
 ✅ feature/model.go = single source of truth (struct + types + methods)
-✅ shared/ = infrastructure + cross-cutting concerns
+✅ shared/ = infrastructure + cross-cutting concerns + primitive value types
 ```
+
+### Q7b: Shared value types (primitives)
+
+ถ้า type ไหน **ไม่มี workflow ใดเป็นเจ้าของ** และ **หลาย feature ใช้ร่วมกัน** → วางใน `shared/<typename>/`.
+
+ตัวอย่าง: `Money`, `PaymentMethod`, `PhoneNumber`, `Currency`. — เป็น value types ไม่ใช่ business entity, ไม่มี workflow owner, ทุก feature ที่ใช้เห็นเป็น primitive ตัวเดียวกัน.
+
+```
+✅ shared/paymentmethod/  → const Cash/Transfer (consumed by payment + moveout + seed)
+✅ shared/money/          → satang↔baht conversion (consumed across features)
+❌ domain/payment.go      → เก็บ PaymentMethod ที่นี่ทำให้ domain กลายเป็น junk drawer
+❌ payment/model.go       → เก็บ PaymentMethod ใน payment feature → moveout ต้อง duplicate
+❌ ห้าม duplicate enum/value type ข้าม feature
+✅ Use judgment: shared = stable value types เท่านั้น, ไม่ใช่ที่ทิ้ง business logic
+```
+
+**Decision test:** ถาม "type นี้มี workflow ใด own ไหม?" — ไม่มี = primitive → `shared/`. มี = feature/model.go.
 
 ## 4. Summary: 10 Principles
 
