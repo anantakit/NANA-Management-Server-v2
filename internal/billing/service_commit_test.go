@@ -297,7 +297,7 @@ func TestCommitBatch_DuplicateKeyOnFirstItem_ContinuesAndMarksFailed(t *testing.
 			calls++
 			if calls == 1 {
 				// Shape of pgx/lib/pq error string for SQLSTATE 23505; the
-				// isDuplicateBillError matcher keys off the substring, mirroring
+				// IsDuplicateBillError matcher keys off the substring, mirroring
 				// meterreading/service.go's isDuplicateKeyError convention.
 				return errors.New(`ERROR: duplicate key value violates unique constraint "idx_bills_unique_monthly" (SQLSTATE 23505)`)
 			}
@@ -393,8 +393,8 @@ func TestIsDuplicateBillError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isDuplicateBillError(tt.err); got != tt.want {
-				t.Errorf("isDuplicateBillError(%v) = %v, want %v", tt.err, got, tt.want)
+			if got := IsDuplicateBillError(tt.err); got != tt.want {
+				t.Errorf("IsDuplicateBillError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

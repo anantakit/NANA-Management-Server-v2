@@ -156,7 +156,7 @@ func classifyCreateMonthlyBillError(err error) error {
 		errors.Is(err, ErrMeterRoomMismatch),
 		errors.Is(err, ErrMeterMonthMismatch):
 		return billingreconciliation.ErrLostReady
-	case isDuplicateBillError(err):
+	case IsDuplicateBillError(err):
 		return billingreconciliation.ErrAlreadyBilled
 	}
 	return err

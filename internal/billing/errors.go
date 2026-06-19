@@ -1,6 +1,10 @@
 package billing
 
-import "nana/internal/shared/respond"
+import (
+	"strings"
+
+	"nana/internal/shared/respond"
+)
 
 var (
 	ErrBatchNotFound       = respond.ErrNotFound.WithMessage("ไม่พบ batch")
@@ -16,3 +20,26 @@ var (
 	ErrMeterRoomMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ไม่ตรงกับห้องในสัญญา")
 	ErrMeterMonthMismatch  = respond.ErrBadRequest.WithMessage("เดือนของมิเตอร์ไม่ตรงกับเดือนที่ออกบิล")
 )
+
+// IsDuplicateBillError detects a PG unique-constraint violation on the
+// bills table. Translates a race-window duplicate INSERT into the
+// ErrBillAlreadyExists business-conflict path so per-item commit loops
+// can mark the row failed and continue rather than aborting via the
+// infra-error break path.
+//
+// SQLSTATE 23505 + "duplicate key" string match mirrors the convention
+// already used by meterreading/service.go isDuplicateKeyError — kept as
+// substring match (not pgconn.PgError type assertion) for parity.
+//
+// Exported so both billing.ReconciliationAdapter and the monthly batch
+// commit path (in internal/billing/monthly) can share a single
+// implementation without forcing a billing↔monthly import cycle.
+// Lives at billing root because it's a billing-domain helper (a single
+// canonical duplicate-bill detector), not a generic DB helper.
+func IsDuplicateBillError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "23505")
+}
