@@ -316,7 +316,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		if err := s.repo.Create(txCtx, &bill); err != nil {
 			return fmt.Errorf("create monthly bill: %w", err)
 		}
-		return s.recordAudit(txCtx, bill.ID, AuditCreateDraft, actor, AuditCreateDraftPayload{
+		return recordAudit(txCtx, s.audit, bill.ID, AuditCreateDraft, actor, AuditCreateDraftPayload{
 			LineItemCount: len(bill.LineItems),
 			TotalAmount:   bill.TotalAmount,
 		})
@@ -333,14 +333,15 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 // Wrapped in a TX so the bill Update + FINALIZE audit row are atomic — audit
 // failure rolls back the status transition.
 //
-// Delegates the inner steps to finalizeBillInTx so BatchFinalizeAll can reuse
-// the exact same finalize semantics + audit boundary on a per-item basis.
-// Domain errors (ErrNotDraft / ErrNoLineItems) bubble up unwrapped from the
-// helper so they reach a single AppError conversion at this caller layer —
-// the bulk caller (BatchFinalizeAll) classifies via errors.Is instead.
+// Delegates the inner steps to the package-level finalizeBillInTx so
+// BatchFinalizeAll, FinalizeAllByMonth, and the cross-feature MonthlyAdapter
+// reuse the exact same finalize semantics + audit boundary on a per-item
+// basis. Domain errors (ErrNotDraft / ErrNoLineItems) bubble up unwrapped
+// from the helper so they reach a single AppError conversion at this caller
+// layer — the bulk callers classify via errors.Is instead.
 func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error) {
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		return s.finalizeBillInTx(txCtx, id, actor)
+		return finalizeBillInTx(txCtx, s.repo, s.audit, id, actor)
 	}); err != nil {
 		// Domain-sentinel errors → 400 AppError so the API responds with the
 		// Thai validation message verbatim.
@@ -356,17 +357,24 @@ func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *
 }
 
 // finalizeBillInTx is the shared inner DRAFT→FINALIZED transition used by
-// single-bill FinalizeBill and bulk BatchFinalizeAll. Caller MUST provide a
-// txCtx — audit + Update run on it so audit failure rolls the parent TX
-// back (correctness > availability for billing forensics).
+// single-bill FinalizeBill, bulk BatchFinalizeAll, FinalizeAllByMonth, and
+// the cross-feature MonthlyAdapter. Caller MUST provide a txCtx — audit +
+// Update run on it so audit failure rolls the parent TX back (correctness >
+// availability for billing forensics).
 //
 // Returns raw domain sentinel errors (ErrBillNotFound / ErrNotDraft /
 // ErrNoLineItems) so callers can classify via errors.Is. Infra errors
 // from repo or audit are wrapped with %w. Callers convert as needed:
-//   - FinalizeBill  : ErrNotDraft / ErrNoLineItems → AppError 400
-//   - BatchFinalizeAll: same sentinels → BatchFinalizeFailureCode
-func (s *billingService) finalizeBillInTx(txCtx context.Context, id uuid.UUID, actor *uuid.UUID) error {
-	b, err := s.repo.FindByID(txCtx, id)
+//   - FinalizeBill   : ErrNotDraft / ErrNoLineItems → AppError 400
+//   - BatchFinalizeAll / FinalizeAllByMonth: same sentinels → BatchFinalizeFailureCode
+//
+// Package-level function (not a method on billingService) so the cross-feature
+// MonthlyAdapter can share the exact same finalize path without duplicating
+// the load → domain method → persist → audit orchestration. Extracted from
+// billingService.finalizeBillInTx on 2026-06-19 during the monthly extraction
+// scaffold.
+func finalizeBillInTx(txCtx context.Context, repo BillingRepository, audit BillAuditRepository, id uuid.UUID, actor *uuid.UUID) error {
+	b, err := repo.FindByID(txCtx, id)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return ErrBillNotFound
@@ -379,10 +387,10 @@ func (s *billingService) finalizeBillInTx(txCtx context.Context, id uuid.UUID, a
 		// Raw sentinel — caller classifies. No AppError wrap here.
 		return err
 	}
-	if err := s.repo.Update(txCtx, b); err != nil {
+	if err := repo.Update(txCtx, b); err != nil {
 		return fmt.Errorf("finalize bill: %w", err)
 	}
-	return s.recordAudit(txCtx, b.ID, AuditFinalize, actor, AuditFinalizePayload{
+	return recordAudit(txCtx, audit, b.ID, AuditFinalize, actor, AuditFinalizePayload{
 		PreviousStatus: previousStatus,
 		TotalAmount:    b.TotalAmount,
 	})
@@ -407,7 +415,7 @@ func (s *billingService) VoidBill(ctx context.Context, id uuid.UUID, req VoidBil
 		if err := s.repo.Update(txCtx, b); err != nil {
 			return fmt.Errorf("void bill: %w", err)
 		}
-		return s.recordAudit(txCtx, b.ID, AuditVoid, actor, AuditVoidPayload{
+		return recordAudit(txCtx, s.audit, b.ID, AuditVoid, actor, AuditVoidPayload{
 			PreviousStatus: previousStatus,
 			Reason:         req.Reason,
 		})

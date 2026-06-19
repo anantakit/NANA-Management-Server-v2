@@ -100,7 +100,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 			return cErr
 		}
 		billID = result.BillID
-		return s.recordAudit(txCtx, billID, AuditCreateDraft, actor, AuditCreateDraftPayload{
+		return recordAudit(txCtx, s.audit, billID, AuditCreateDraft, actor, AuditCreateDraftPayload{
 			LineItemCount: len(plan.Bill.LineItems),
 			TotalAmount:   plan.Bill.TotalAmount,
 		})
@@ -276,7 +276,7 @@ func (s *billingService) FinalizeSettlement(ctx context.Context, billID uuid.UUI
 	if err := s.repo.Update(ctx, b); err != nil {
 		return err
 	}
-	return s.recordAudit(ctx, b.ID, AuditFinalize, nil, AuditFinalizePayload{
+	return recordAudit(ctx, s.audit, b.ID, AuditFinalize, nil, AuditFinalizePayload{
 		PreviousStatus: previousStatus,
 		TotalAmount:    b.TotalAmount,
 	})
@@ -313,7 +313,7 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	if err := s.repo.Update(ctx, existing); err != nil {
 		return nil, fmt.Errorf("void existing bill: %w", err)
 	}
-	if err := s.recordAudit(ctx, existing.ID, AuditVoid, nil, AuditVoidPayload{
+	if err := recordAudit(ctx, s.audit, existing.ID, AuditVoid, nil, AuditVoidPayload{
 		PreviousStatus: previousStatus,
 		Reason:         "REGENERATED",
 	}); err != nil {
@@ -344,7 +344,7 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recordAudit(ctx, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+	if err := recordAudit(ctx, s.audit, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
 		LineItemCount: len(plan.Bill.LineItems),
 		TotalAmount:   plan.Bill.TotalAmount,
 	}); err != nil {

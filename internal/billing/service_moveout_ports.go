@@ -38,7 +38,7 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recordAudit(ctx, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+	if err := recordAudit(ctx, s.audit, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
 		LineItemCount: len(plan.Bill.LineItems),
 		TotalAmount:   plan.Bill.TotalAmount,
 	}); err != nil {
@@ -140,14 +140,14 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 	}
 
 	// Phase 4: emit the correction audit pair (mirrors MONTHLY).
-	if err := s.recordAudit(ctx, old.ID, AuditSupersede, in.Actor, AuditSupersedePayload{
+	if err := recordAudit(ctx, s.audit, old.ID, AuditSupersede, in.Actor, AuditSupersedePayload{
 		PreviousStatus:   previousStatus,
 		NewBillID:        newBillID,
 		CorrectionReason: in.CorrectionReason,
 	}); err != nil {
 		return nil, err
 	}
-	if err := s.recordAudit(ctx, newBillID, AuditCreateFromCorrection, in.Actor, AuditCreateFromCorrectionPayload{
+	if err := recordAudit(ctx, s.audit, newBillID, AuditCreateFromCorrection, in.Actor, AuditCreateFromCorrectionPayload{
 		SupersededBillID: old.ID,
 		CorrectionReason: in.CorrectionReason,
 	}); err != nil {
@@ -177,7 +177,7 @@ func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, r
 	if err := s.repo.Update(ctx, b); err != nil {
 		return fmt.Errorf("void settlement: %w", err)
 	}
-	if err := s.recordAudit(ctx, b.ID, AuditVoid, nil, AuditVoidPayload{
+	if err := recordAudit(ctx, s.audit, b.ID, AuditVoid, nil, AuditVoidPayload{
 		PreviousStatus: previousStatus,
 		Reason:         reason,
 	}); err != nil {

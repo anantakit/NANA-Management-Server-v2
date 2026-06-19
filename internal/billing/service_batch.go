@@ -302,7 +302,7 @@ func (s *billingService) commitOneItem(ctx context.Context, batch *BillGeneratio
 			return err
 		}
 
-		if err := s.recordAudit(txCtx, bill.ID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+		if err := recordAudit(txCtx, s.audit, bill.ID, AuditCreateDraft, nil, AuditCreateDraftPayload{
 			LineItemCount: len(bill.LineItems),
 			TotalAmount:   bill.TotalAmount,
 			BatchID:       &item.BatchID,
@@ -355,7 +355,7 @@ func (s *billingService) BatchFinalizeAll(ctx context.Context, batchID uuid.UUID
 		}
 
 		err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-			return s.finalizeBillInTx(txCtx, b.ID, actor)
+			return finalizeBillInTx(txCtx, s.repo, s.audit, b.ID, actor)
 		})
 		if err != nil {
 			code, msg := classifyFinalizeError(err)
@@ -427,7 +427,7 @@ func (s *billingService) FinalizeAllByMonth(ctx context.Context, apartmentID uui
 		}
 
 		err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-			return s.finalizeBillInTx(txCtx, b.ID, actor)
+			return finalizeBillInTx(txCtx, s.repo, s.audit, b.ID, actor)
 		})
 		if err != nil {
 			code, msg := classifyFinalizeError(err)

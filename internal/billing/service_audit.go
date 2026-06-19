@@ -14,6 +14,8 @@ import (
 //   - ctx MUST be a transaction context (txCtx) from the same RunInTx that
 //     performed the state mutation. Audit failure rolls back the parent TX —
 //     correctness > availability for billing forensics.
+//   - audit is the audit-log repository; callers in billingService pass
+//     s.audit. The cross-feature MonthlyAdapter passes its own a.audit.
 //   - billID is the bill the event belongs to.
 //   - action is the typed BillAuditAction. The matching typed payload struct
 //     is what should be passed as `payload` (e.g. AuditUpdateOverride pairs
@@ -26,8 +28,15 @@ import (
 //     event meaning (none today; reserved for future).
 //
 // On any error this returns wrapped so the caller can fail the parent TX.
-func (s *billingService) recordAudit(
+//
+// Package-level function (not a method on billingService) so the cross-feature
+// adapters (PaymentAdapter, MonthlyAdapter) can share the exact same audit-
+// emission path without duplicating the marshal + insert logic. Extracted
+// from billingService.recordAudit on 2026-06-19 during the monthly extraction
+// scaffold so MonthlyAdapter can be pure-delegation rather than a re-implementation.
+func recordAudit(
 	ctx context.Context,
+	audit BillAuditRepository,
 	billID uuid.UUID,
 	action BillAuditAction,
 	actor *uuid.UUID,
@@ -43,7 +52,7 @@ func (s *billingService) recordAudit(
 		ActorID: actor,
 		Payload: p,
 	}
-	if err := s.audit.Create(ctx, log); err != nil {
+	if err := audit.Create(ctx, log); err != nil {
 		return fmt.Errorf("record audit %s for bill %s: %w", action, billID, err)
 	}
 	return nil
@@ -81,7 +90,7 @@ func (s *billingService) emitDraftEditAudit(
 			Description: m.Description,
 			Amount:      m.Amount,
 		}
-		if err := s.recordAudit(txCtx, billID, AuditRemoveManualItem, actor, payload); err != nil {
+		if err := recordAudit(txCtx, s.audit, billID, AuditRemoveManualItem, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -101,7 +110,7 @@ func (s *billingService) emitDraftEditAudit(
 			u := m.UnitPrice
 			payload.UnitPrice = &u
 		}
-		if err := s.recordAudit(txCtx, billID, AuditAddManualItem, actor, payload); err != nil {
+		if err := recordAudit(txCtx, s.audit, billID, AuditAddManualItem, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -135,7 +144,7 @@ func (s *billingService) emitDraftEditAudit(
 			v := newVal
 			payload.After = &v
 		}
-		if err := s.recordAudit(txCtx, billID, AuditUpdateOverride, actor, payload); err != nil {
+		if err := recordAudit(txCtx, s.audit, billID, AuditUpdateOverride, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -143,7 +152,7 @@ func (s *billingService) emitDraftEditAudit(
 	// Note — single comparison, single row if changed.
 	if oldNote != newNote {
 		payload := AuditUpdateNotePayload{Before: oldNote, After: newNote}
-		if err := s.recordAudit(txCtx, billID, AuditUpdateNote, actor, payload); err != nil {
+		if err := recordAudit(txCtx, s.audit, billID, AuditUpdateNote, actor, payload); err != nil {
 			return err
 		}
 	}

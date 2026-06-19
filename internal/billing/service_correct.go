@@ -167,14 +167,14 @@ func (s *billingService) correctMonthlyBillInTx(
 		return uuid.Nil, fmt.Errorf("create corrected bill: %w", err)
 	}
 
-	if err := s.recordAudit(txCtx, old.ID, AuditSupersede, actor, AuditSupersedePayload{
+	if err := recordAudit(txCtx, s.audit, old.ID, AuditSupersede, actor, AuditSupersedePayload{
 		PreviousStatus:   previousStatus,
 		NewBillID:        newBill.ID,
 		CorrectionReason: req.CorrectionReason,
 	}); err != nil {
 		return uuid.Nil, err
 	}
-	if err := s.recordAudit(txCtx, newBill.ID, AuditCreateFromCorrection, actor, AuditCreateFromCorrectionPayload{
+	if err := recordAudit(txCtx, s.audit, newBill.ID, AuditCreateFromCorrection, actor, AuditCreateFromCorrectionPayload{
 		SupersededBillID: old.ID,
 		CorrectionReason: req.CorrectionReason,
 	}); err != nil {
