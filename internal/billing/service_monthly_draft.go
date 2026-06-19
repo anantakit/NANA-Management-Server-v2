@@ -137,7 +137,7 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 		if err := s.repo.Update(txCtx, reloaded); err != nil {
 			return err
 		}
-		return s.emitDraftEditAudit(txCtx, id, actor, oldManuals, manualItems, oldOverrides, reloaded.Overrides, oldNote, reloaded.Note)
+		return EmitDraftEditAudit(txCtx, s.audit, id, actor, oldManuals, manualItems, oldOverrides, reloaded.Overrides, oldNote, reloaded.Note)
 	}); err != nil {
 		if _, ok := respond.Is(err); ok {
 			return nil, err

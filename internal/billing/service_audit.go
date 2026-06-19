@@ -58,7 +58,7 @@ func recordAudit(
 	return nil
 }
 
-// emitDraftEditAudit emits one audit row per mutation diff for a draft-edit
+// EmitDraftEditAudit emits one audit row per mutation diff for a draft-edit
 // call (UpdateMonthlyDraft / UpdateSettlementDraft). Caller passes the before
 // and after snapshots it captured around the mutation. Order of emission is
 // deterministic so log timelines reproduce identically across runs.
@@ -72,8 +72,15 @@ func recordAudit(
 //
 // Any recordAudit failure aborts immediately and propagates — the caller is
 // running inside RunInTx, so the parent mutation rolls back.
-func (s *billingService) emitDraftEditAudit(
+//
+// Package-level function (not a method on billingService) so the upcoming
+// settlement sub-package's UpdateSettlementDraft can share the exact same
+// diff-audit path without depending on billingService internals. Mirrors the
+// recordAudit / finalizeBillInTx package-function pattern locked during the
+// monthly extraction. Pre-extraction commit 1 (2026-06-19).
+func EmitDraftEditAudit(
 	txCtx context.Context,
+	audit BillAuditRepository,
 	billID uuid.UUID,
 	actor *uuid.UUID,
 	oldManuals []BillLineItem,
@@ -90,7 +97,7 @@ func (s *billingService) emitDraftEditAudit(
 			Description: m.Description,
 			Amount:      m.Amount,
 		}
-		if err := recordAudit(txCtx, s.audit, billID, AuditRemoveManualItem, actor, payload); err != nil {
+		if err := recordAudit(txCtx, audit, billID, AuditRemoveManualItem, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -110,7 +117,7 @@ func (s *billingService) emitDraftEditAudit(
 			u := m.UnitPrice
 			payload.UnitPrice = &u
 		}
-		if err := recordAudit(txCtx, s.audit, billID, AuditAddManualItem, actor, payload); err != nil {
+		if err := recordAudit(txCtx, audit, billID, AuditAddManualItem, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -144,7 +151,7 @@ func (s *billingService) emitDraftEditAudit(
 			v := newVal
 			payload.After = &v
 		}
-		if err := recordAudit(txCtx, s.audit, billID, AuditUpdateOverride, actor, payload); err != nil {
+		if err := recordAudit(txCtx, audit, billID, AuditUpdateOverride, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -152,7 +159,7 @@ func (s *billingService) emitDraftEditAudit(
 	// Note — single comparison, single row if changed.
 	if oldNote != newNote {
 		payload := AuditUpdateNotePayload{Before: oldNote, After: newNote}
-		if err := recordAudit(txCtx, s.audit, billID, AuditUpdateNote, actor, payload); err != nil {
+		if err := recordAudit(txCtx, audit, billID, AuditUpdateNote, actor, payload); err != nil {
 			return err
 		}
 	}

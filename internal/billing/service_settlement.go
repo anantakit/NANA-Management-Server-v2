@@ -94,7 +94,7 @@ func (s *billingService) CreateSettlementBill(ctx context.Context, req CreateSet
 		if pErr != nil {
 			return pErr
 		}
-		applyPaymentSnapshot(&plan.Bill, paymentDest)
+		ApplyPaymentSnapshot(&plan.Bill, paymentDest)
 		result, cErr := s.commitSettlementPlan(txCtx, plan)
 		if cErr != nil {
 			return cErr
@@ -235,7 +235,7 @@ func (s *billingService) UpdateSettlementDraft(ctx context.Context, id uuid.UUID
 		if err := s.repo.Update(txCtx, reloaded); err != nil {
 			return err
 		}
-		return s.emitDraftEditAudit(txCtx, id, actor, oldManuals, manualItems, oldOverrides, reloaded.Overrides, oldNote, reloaded.Note)
+		return EmitDraftEditAudit(txCtx, s.audit, id, actor, oldManuals, manualItems, oldOverrides, reloaded.Overrides, oldNote, reloaded.Note)
 	}); err != nil {
 		if _, ok := respond.Is(err); ok {
 			return nil, err
@@ -339,7 +339,7 @@ func (s *billingService) RegenerateSettlement(ctx context.Context, existingBillI
 	if err != nil {
 		return nil, err
 	}
-	applyPaymentSnapshot(&plan.Bill, paymentDest)
+	ApplyPaymentSnapshot(&plan.Bill, paymentDest)
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
 		return nil, err

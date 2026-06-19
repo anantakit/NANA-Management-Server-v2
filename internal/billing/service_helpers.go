@@ -150,11 +150,17 @@ func toSettlementResult(billID uuid.UUID, ds DepositSettlementState) *moveout.Se
 
 // --- Billing month helpers ---
 
-func toMonth(t time.Time) string {
+// ToMonth formats a time.Time as "YYYY-MM". Exported so the upcoming
+// settlement sub-package can share the same billing-month projection as
+// billing root + monthly. Pre-extraction commit 1 (2026-06-19) — see
+// project_billing_extraction_plan_locked.md.
+func ToMonth(t time.Time) string {
 	return t.Format("2006-01")
 }
 
-func previousMonth(month string) string {
+// PreviousMonth returns the YYYY-MM string for the calendar month before
+// `month`. Exported alongside ToMonth for the settlement extraction.
+func PreviousMonth(month string) string {
 	t, err := time.Parse("2006-01", month)
 	if err != nil {
 		return month
@@ -209,9 +215,11 @@ func (s *billingService) tryResolvePaymentDestination(ctx context.Context, apart
 	return dest
 }
 
-// applyPaymentSnapshot sets the three payment snapshot fields on a bill.
-// No-op when dest is nil (no rules configured).
-func applyPaymentSnapshot(bill *Bill, dest *apartment.PaymentDestinationInfo) {
+// ApplyPaymentSnapshot sets the three payment snapshot fields on a bill.
+// No-op when dest is nil (no rules configured). Exported so the upcoming
+// settlement sub-package can share the same payment-destination snapshot
+// logic as billing root + monthly. Pre-extraction commit 1 (2026-06-19).
+func ApplyPaymentSnapshot(bill *Bill, dest *apartment.PaymentDestinationInfo) {
 	if dest == nil {
 		return
 	}

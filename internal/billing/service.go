@@ -298,7 +298,7 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		LineItems:    snapshot.ToLineItems(uuid.Nil),
 		TotalAmount:  snapshot.TotalAmount,
 	}
-	applyPaymentSnapshot(&bill, paymentDest)
+	ApplyPaymentSnapshot(&bill, paymentDest)
 
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		if err := s.repo.Create(txCtx, &bill); err != nil {

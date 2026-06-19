@@ -32,7 +32,7 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	// Snapshot payment destination before commit (same pattern as CreateSettlementBill).
 	if c, cErr := s.contracts.FindByIDSimple(ctx, contractID); cErr == nil {
 		aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
-		applyPaymentSnapshot(&plan.Bill, s.tryResolvePaymentDestination(ctx, aptID, roomNum))
+		ApplyPaymentSnapshot(&plan.Bill, s.tryResolvePaymentDestination(ctx, aptID, roomNum))
 	}
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
@@ -131,7 +131,7 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 		if destErr != nil {
 			return nil, fmt.Errorf("resolve payment destination for settlement correction: %w", destErr)
 		}
-		applyPaymentSnapshot(&plan.Bill, dest)
+		ApplyPaymentSnapshot(&plan.Bill, dest)
 	}
 
 	result, err := s.commitSettlementPlan(ctx, plan)

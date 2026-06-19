@@ -143,7 +143,7 @@ func (s *billingService) correctMonthlyBillInTx(
 		LineItems:    snapshot.ToLineItems(uuid.Nil),
 		TotalAmount:  snapshot.TotalAmount,
 	}
-	applyPaymentSnapshot(&newBill, paymentDest)
+	ApplyPaymentSnapshot(&newBill, paymentDest)
 
 	// Persist order MATTERS: void+supersede old FIRST, then create new.
 	// The partial UNIQUE INDEX idx_bills_unique_monthly allows only one

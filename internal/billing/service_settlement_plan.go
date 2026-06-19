@@ -61,7 +61,7 @@ func (s *billingService) prepareSettlementPlan(ctx context.Context, contractID u
 		return nil, ErrExitReadingMissing
 	}
 
-	billingMonth := toMonth(moveOutDate)
+	billingMonth := ToMonth(moveOutDate)
 
 	// Duplicate guard: reject if a non-VOID settlement already exists.
 	// Skipped for preview (read-only) which must work even when a draft exists.
@@ -203,7 +203,7 @@ func (s *billingService) commitSettlementPlan(ctx context.Context, plan *settlem
 // `apartmentID` is passed in (not looked up from `c.RoomID`) so the
 // caller can share one apartment lookup with addConfigFees.
 func (s *billingService) addRentAdjustment(ctx context.Context, items []BillLineItem, order int, c *contract.Contract, moveOutDate time.Time, rentMode SettlementRentMode, apartmentID uuid.UUID) ([]BillLineItem, int, bool, error) {
-	billingMonth := toMonth(moveOutDate)
+	billingMonth := ToMonth(moveOutDate)
 
 	hasPaid, err := s.repo.HasPaidAdvanceRentForMonth(ctx, c.ID, billingMonth)
 	if err != nil {
@@ -353,7 +353,7 @@ func (s *billingService) prepareAbsorption(ctx context.Context, items []BillLine
 		return nil, 0, nil, fmt.Errorf("find unpaid bills: %w", err)
 	}
 
-	advanceRentBillMonth := previousMonth(settlementMonth)
+	advanceRentBillMonth := PreviousMonth(settlementMonth)
 	var toAbsorb []*Bill
 
 	for i := range unpaid {
