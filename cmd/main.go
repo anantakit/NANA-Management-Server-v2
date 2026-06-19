@@ -13,6 +13,7 @@ import (
 	"nana/internal/auth"
 	"nana/internal/billing"
 	"nana/internal/billing/monthly"
+	"nana/internal/billing/settlement"
 	"nana/internal/billdelivery"
 	"nana/internal/billingconfig"
 	"nana/internal/billingreconciliation"
@@ -142,7 +143,23 @@ func main() {
 	monthlyService := monthly.NewService(monthlyAdapter, monthlyAdapter, monthlyAdapter, meterRepo, moveOutRepo, txManager)
 	monthlyHandler := monthly.NewHandler(monthlyService)
 
-	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier)
+	// Wire dependencies — Settlement billing workflow (W4 scaffold).
+	// SettlementAdapter satisfies settlement.BillStore + settlement.AuditStore.
+	// Cross-feature Source ports (Contract/Meter/BillingConfig/MoveOut/
+	// PaymentRouting) are satisfied structurally by the existing
+	// repos/services that already serve billing root's *Querier ports —
+	// no extra adapter struct is needed for those. settlementService is
+	// inert in commit 2 of the W4 plan (no methods yet); workflow methods
+	// migrate from billing root in commits 3-5, handler routes in commit 6.
+	// moveOutService below STILL points at billService — the swap to
+	// settlementService lands in commit 5 once the moveout-port methods
+	// (GenerateSettlement / CorrectSettlement / etc.) have migrated.
+	settlementAdapter := billing.NewSettlementAdapter(billRepo, billAuditRepo)
+	settlementService := settlement.NewService(settlementAdapter, settlementAdapter, contractRepo, meterRepo, bcRepo, moveOutRepo, routingService, txManager)
+	settlementHandler := settlement.NewHandler(settlementService)
+
+	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier).
+	// Will rewire to settlementService in W4 commit 5 — see settlement wiring above.
 	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, billService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
@@ -251,6 +268,11 @@ func main() {
 	// the radix match level. Preserves the original "batches before /:id"
 	// registration order from the pre-extraction handler.
 	monthlyHandler.RegisterRoutes(billGroup)
+	// settlement registers BETWEEN monthly and bill. Empty in W4 commit 2
+	// — pins the registration slot ahead of route migration in commit 6 so
+	// /settlement + /settlement/preview literals win over /:id and the
+	// PATCH /:id/settlement-draft slot is reserved without behavior drift.
+	settlementHandler.RegisterRoutes(billGroup)
 	billHandler.RegisterRoutes(billGroup)
 	paymentHandler.RegisterRoutes(billGroup)
 	deliveryHandler.RegisterRoutes(admin.Group("/bill-deliveries"))
