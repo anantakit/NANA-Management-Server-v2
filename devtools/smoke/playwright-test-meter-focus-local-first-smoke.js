@@ -11,7 +11,7 @@
 //   - Re-entering Focus excludes rooms that already have a local draft
 //   - Drawer escalation opens single-room Focus and returns to drawer
 //
-// 6 cases:
+// 7 cases:
 //   TC1  REGRESSION GUARD #1 — zero API call per Focus Enter
 //   TC2  REGRESSION GUARD #2 — Focus surface has no submit
 //   TC3  Focus exit hydrates Spreadsheet immediately, no DraftBanner
@@ -19,6 +19,7 @@
 //   TC5  Drawer escalation → Focus single-room → return → drawer reopens
 //   TC6  RECOVERY GUARD — reload mid-session shows DraftBanner (no leakage
 //        of auto-restore into recovery paths)
+//   TC7  Shift+Enter skips current room without writing a draft
 //
 // Run:  make smoke-meter-focus-local-first
 //       FRONTEND=http://localhost:3001 node playwright-test-meter-focus-local-first-smoke.js
@@ -409,6 +410,38 @@ async function tc5_drawerEscalationRoundtrip(page, apartmentId) {
   await clearDraft(page, apartmentId)
 }
 
+async function tc7_shiftEnterSkips(page, apartmentId, month) {
+  console.log('\n🧪 TC7 — Shift+Enter skips current room without writing a draft')
+  await clearDraft(page, apartmentId)
+  await gotoMeterReadings(page)
+  await enterFocusMode(page)
+
+  const skippedRoom = await readCurrentFocusRoom(page)
+  // Type a partial value to prove skip discards it (matches the "ข้าม" button's semantics)
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().fill('9999')
+  await page.keyboard.press('Shift+Enter')
+  await page.waitForTimeout(300)
+
+  const afterRoom = await readCurrentFocusRoom(page)
+  check(`TC7.1 Shift+Enter advances cursor (was ${skippedRoom}, now ${afterRoom})`,
+    !!skippedRoom && !!afterRoom && skippedRoom !== afterRoom)
+
+  // Save the next room with explicit values, then assert the draft contains
+  // exactly 1 room — the explicitly-saved one, not the skipped one. (readDraft
+  // returns null on empty so we need the explicit save to make the slot exist.)
+  await saveOneInFocus(page, 5001, 3001)
+  const draft = await readDraft(page, apartmentId, month)
+  const draftRoomCount = draft ? Object.keys(draft.rooms).length : 0
+  check(
+    `TC7.2 skipped room not in draft (draft has ${draftRoomCount} room, expected 1 from explicit save)`,
+    draftRoomCount === 1,
+    `expected 1, got ${draftRoomCount}`,
+  )
+
+  await exitFocusMode(page)
+  await clearDraft(page, apartmentId)
+}
+
 // ─── Runner ─────────────────────────────────────────────────────────────
 
 ;(async () => {
@@ -438,6 +471,7 @@ async function tc5_drawerEscalationRoundtrip(page, apartmentId) {
     await tc4_focusQueueExcludesDrafts(page, apt.id)
     await tc5_drawerEscalationRoundtrip(page, apt.id)
     await tc6_reloadShowsBanner(page, apt.id)
+    await tc7_shiftEnterSkips(page, apt.id, month)
   } finally {
     await browser.close()
   }
