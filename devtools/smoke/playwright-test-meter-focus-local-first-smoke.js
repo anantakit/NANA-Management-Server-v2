@@ -1,19 +1,24 @@
 // Meter Focus Mode — Local-first Architecture Smoke Test
 // ----------------------------------------------------------------------
-// Locks the Phase 1 architecture (commits 27bd1de..acc49c4):
+// Locks the Phase 1 architecture (commits 27bd1de..acc49c4) + Phase 1.1
+// workflow-handoff polish:
 //
 //   - Focus Mode writes drafts to localStorage on Enter, never the API
 //   - Focus surface has no submit affordance (Spreadsheet owns commit)
-//   - Drafts cross the Focus ↔ Spreadsheet boundary via form remount
+//   - Focus exit auto-hydrates the Spreadsheet (handoff, not recovery)
+//   - DraftBanner is a recovery primitive — appears on reload, NOT on
+//     Focus exit. Locked semantic: banner ≠ draft indicator
 //   - Re-entering Focus excludes rooms that already have a local draft
 //   - Drawer escalation opens single-room Focus and returns to drawer
 //
-// 5 cases — the two REGRESSION GUARDS that must hold or Phase 1 is broken:
+// 6 cases:
 //   TC1  REGRESSION GUARD #1 — zero API call per Focus Enter
 //   TC2  REGRESSION GUARD #2 — Focus surface has no submit
-//   TC3  Drafts visible in Spreadsheet after Focus exit
+//   TC3  Focus exit hydrates Spreadsheet immediately, no DraftBanner
 //   TC4  Re-entering Focus excludes drafted rooms from queue
 //   TC5  Drawer escalation → Focus single-room → return → drawer reopens
+//   TC6  RECOVERY GUARD — reload mid-session shows DraftBanner (no leakage
+//        of auto-restore into recovery paths)
 //
 // Run:  make smoke-meter-focus-local-first
 //       FRONTEND=http://localhost:3001 node playwright-test-meter-focus-local-first-smoke.js
@@ -226,8 +231,8 @@ async function tc2_focusHasNoSubmit(page, apartmentId) {
   await exitFocusMode(page)
 }
 
-async function tc3_draftsVisibleInSpreadsheet(page, apartmentId, month) {
-  console.log('\n🧪 TC3 — drafts visible in Spreadsheet after Focus exit')
+async function tc3_focusExitAutoHydrates(page, apartmentId, month) {
+  console.log('\n🧪 TC3 — Focus exit hydrates Spreadsheet immediately (no DraftBanner)')
   await clearDraft(page, apartmentId)
   await gotoMeterReadings(page)
   await enterFocusMode(page)
@@ -237,7 +242,7 @@ async function tc3_draftsVisibleInSpreadsheet(page, apartmentId, month) {
   saved.push(await saveOneInFocus(page, 2002, 1002))
   saved.push(await saveOneInFocus(page, 2003, 1003))
 
-  // localStorage proof first (architecture invariant — independent of UX gating)
+  // localStorage proof first (architecture invariant — independent of UX path)
   const draft = await readDraft(page, apartmentId, month)
   check('TC3.1 draft slot exists for current scope', !!draft)
   check(
@@ -245,30 +250,63 @@ async function tc3_draftsVisibleInSpreadsheet(page, apartmentId, month) {
     !!draft && Object.keys(draft.rooms).length === 3,
   )
 
-  // Exit Focus → form remounts → useMeterDraft loadDraft on mount → DraftBanner
-  // appears. The banner is the existing user-gated restore pattern (same shape
-  // used by mid-session Spreadsheet drafts). Operator confirms via "กู้คืน".
+  // Exit Focus → page sets pendingAutoRestore → form auto-hydrates without
+  // showing the recovery banner. Inputs should be populated on the next render
+  // cycle.
   await exitFocusMode(page)
+  await page.waitForTimeout(400)
 
   const draftBanner = page.locator('text=พบร่างที่ยังไม่ได้บันทึก').first()
   const bannerShown = await draftBanner.isVisible().catch(() => false)
-  check('TC3.3 Spreadsheet surfaces DraftBanner immediately on Focus exit', bannerShown)
+  check('TC3.3 DraftBanner suppressed on Focus exit (handoff, not recovery)', !bannerShown,
+    bannerShown ? 'banner appeared' : '')
+
+  let hydrated = 0
+  for (const roomNumber of saved) {
+    if (!roomNumber) continue
+    const input = page.locator(`input[aria-label="มิเตอร์ไฟห้อง ${roomNumber}"]`).first()
+    try {
+      await input.waitFor({ state: 'attached', timeout: 3000 })
+      const val = await input.inputValue()
+      if (val && val !== '') hydrated++
+    } catch (_) {}
+  }
+  check(`TC3.4 inputs auto-hydrated (${hydrated}/${saved.length})`,
+    hydrated === saved.length, `expected ${saved.length}, got ${hydrated}`)
+
+  await clearDraft(page, apartmentId)
+}
+
+async function tc6_reloadShowsBanner(page, apartmentId) {
+  console.log('\n🧪 TC6 — RECOVERY GUARD: reload mid-session shows DraftBanner')
+  await clearDraft(page, apartmentId)
+  await gotoMeterReadings(page)
+  await enterFocusMode(page)
+  await saveOneInFocus(page, 4001, 2001)
+  await saveOneInFocus(page, 4002, 2002)
+
+  // Simulate "operator closed tab and came back" — full reload, no Focus
+  // exit transition to discriminate. Page mounts cold; pendingAutoRestore is
+  // false (useState initial); banner must appear.
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForTimeout(700)
+
+  const draftBanner = page.locator('text=พบร่างที่ยังไม่ได้บันทึก').first()
+  const bannerShown = await draftBanner.isVisible().catch(() => false)
+  check('TC6.1 DraftBanner appears after page reload (recovery path intact)', bannerShown)
 
   if (bannerShown) {
+    // Confirm the banner's "กู้คืน" still works as expected (recovery flow)
     await page.locator('button', { hasText: 'กู้คืน' }).first().click()
     await page.waitForTimeout(400)
-    let hydrated = 0
-    for (const roomNumber of saved) {
-      if (!roomNumber) continue
-      const input = page.locator(`input[aria-label="มิเตอร์ไฟห้อง ${roomNumber}"]`).first()
-      try {
-        await input.waitFor({ state: 'attached', timeout: 3000 })
-        const val = await input.inputValue()
-        if (val && val !== '') hydrated++
-      } catch (_) {}
-    }
-    check(`TC3.4 inputs hydrate after "กู้คืน" (${hydrated}/${saved.length})`,
-      hydrated === saved.length, `expected ${saved.length}, got ${hydrated}`)
+    const recoveryInput = page.locator('input[aria-label="มิเตอร์ไฟห้อง A108"]').first()
+    let restored = false
+    try {
+      await recoveryInput.waitFor({ state: 'attached', timeout: 3000 })
+      const val = await recoveryInput.inputValue()
+      restored = !!val && val !== ''
+    } catch (_) {}
+    check('TC6.2 "กู้คืน" still hydrates inputs in recovery path', restored)
   }
 
   await clearDraft(page, apartmentId)
@@ -396,9 +434,10 @@ async function tc5_drawerEscalationRoundtrip(page, apartmentId) {
   try {
     await tc1_zeroApiPerEnter(page, apt.id)
     await tc2_focusHasNoSubmit(page, apt.id)
-    await tc3_draftsVisibleInSpreadsheet(page, apt.id, month)
+    await tc3_focusExitAutoHydrates(page, apt.id, month)
     await tc4_focusQueueExcludesDrafts(page, apt.id)
     await tc5_drawerEscalationRoundtrip(page, apt.id)
+    await tc6_reloadShowsBanner(page, apt.id)
   } finally {
     await browser.close()
   }
