@@ -307,17 +307,21 @@ function warn(msg) {
     await page.waitForTimeout(400)
     await page.screenshot({ path: '/tmp/delivery-05a-palette-open.png' })
 
-    const paletteInput = page.locator('input[placeholder="ค้นหา..."]')
-    ok(await paletteInput.isVisible().catch(() => false), `${isMac ? 'Cmd' : 'Ctrl'}+P opens jump picker`)
+    // Palette is now inline (anchored to workspace, not a viewport-centered modal).
+    // The capture input is sr-only — query by aria-label, list by role=listbox.
+    const paletteListbox = page.getByRole('listbox', { name: 'เลือกห้อง' })
+    const paletteInput   = page.locator('input[aria-label="ค้นหาห้อง"]')
+    const paletteOpen = (await paletteListbox.count()) > 0
+    ok(paletteOpen, `${isMac ? 'Cmd' : 'Ctrl'}+P opens jump picker`)
 
-    if (await paletteInput.isVisible().catch(() => false)) {
+    if (paletteOpen) {
       // Search by room number
       const targetRoom = undelivered[undelivered.length - 1].room_number
       await paletteInput.fill(targetRoom)
       await page.waitForTimeout(300)
       await page.screenshot({ path: '/tmp/delivery-05b-search-room.png' })
 
-      const resultRows = page.locator('.fixed button[type="button"]').filter({ hasNotText: /ค้นหา|พิมพ์/ })
+      const resultRows = paletteListbox.getByRole('option')
       const roomSearchCount = await resultRows.count()
       ok(roomSearchCount >= 1, `room number search "${targetRoom}" returns ≥ 1 result`)
 
@@ -329,57 +333,52 @@ function warn(msg) {
         await page.waitForTimeout(300)
         await page.screenshot({ path: '/tmp/delivery-05c-search-tenant.png' })
 
-        const tenantSearchCount = await page.locator('.fixed button[type="button"]').filter({ hasNotText: /ค้นหา|พิมพ์/ }).count()
+        const tenantSearchCount = await paletteListbox.getByRole('option').count()
         ok(tenantSearchCount >= 1, `tenant name search "${targetTenant.slice(0, 4)}" returns ≥ 1 result`)
       } else {
         warn('no tenant_name in fixture — tenant search probe skipped')
       }
 
-      // Reset to show all (empty query = top 10)
+      // Reset filter — open palette now shows the full list with the cursor
+      // anchored on the current room.
       await paletteInput.fill('')
       await page.waitForTimeout(200)
 
-      // ArrowDown moves selection
-      // Initial selected item (index 0) has bg-surface-subtle + left border
+      // ArrowDown moves selection one row down — assert via aria-selected.
       await page.keyboard.press('ArrowDown')
       await page.waitForTimeout(150)
       await page.screenshot({ path: '/tmp/delivery-05d-arrow-down.png' })
 
-      // The SECOND row (now selected) should have bg-surface-subtle.
-      // We verify by checking the primary label has changed from row 0.
-      // Use page.evaluate to get selectedIndex from DOM: selected row is index 1 now.
       const selectionMoved = await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll('.fixed button[type="button"]'))
-          .filter(b => b.getAttribute('placeholder') == null) // exclude input
-        // Row with left-border accent span = selected
-        const selectedIdx = rows.findIndex(r => r.querySelector('span.absolute'))
-        return selectedIdx === 1 // should be index 1 after one ArrowDown
+        const listbox = document.querySelector('[role="listbox"]')
+        if (!listbox) return false
+        const options = Array.from(listbox.querySelectorAll('[role="option"]'))
+        return options.findIndex(o => o.getAttribute('aria-selected') === 'true')
       })
-      ok(selectionMoved, 'ArrowDown moves selection to index 1')
+      ok(selectionMoved >= 1, `ArrowDown advances selection (now index ${selectionMoved})`)
 
       await page.keyboard.press('ArrowUp')
       await page.waitForTimeout(150)
       const selectionBack = await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll('.fixed button[type="button"]'))
-          .filter(b => b.getAttribute('placeholder') == null)
-        const selectedIdx = rows.findIndex(r => r.querySelector('span.absolute'))
-        return selectedIdx === 0 // back to 0 after ArrowUp
+        const listbox = document.querySelector('[role="listbox"]')
+        if (!listbox) return -1
+        const options = Array.from(listbox.querySelectorAll('[role="option"]'))
+        return options.findIndex(o => o.getAttribute('aria-selected') === 'true')
       })
-      ok(selectionBack, 'ArrowUp moves selection back to index 0')
+      ok(selectionBack === selectionMoved - 1, `ArrowUp rewinds selection (now index ${selectionBack})`)
 
-      // Move to index 1 before entering — guarantees a DIFFERENT room from the
-      // current queue cursor (which is at index 0 after TC3's ArrowLeft).
-      // If we entered at index 0, jumpTo(allBills[0]) would call clearJump() because
-      // allBills[0] === queue[0] when no deliveries have been confirmed yet.
+      // Move to a row distinct from queue cursor before pressing Enter.
+      // Queue cursor sits at index 0 after TC3's ArrowLeft; jumping to it would
+      // collapse to clearJump (same item), so step down at least once.
       await page.keyboard.press('ArrowDown')
       await page.waitForTimeout(150)
 
-      // Enter selects the highlighted room (now index 1 — a room different from cursor)
+      // Enter selects the highlighted room and closes the palette
       await page.keyboard.press('Enter')
       await page.waitForTimeout(400)
       await page.screenshot({ path: '/tmp/delivery-05e-jumped.png' })
 
-      ok(!(await paletteInput.isVisible().catch(() => false)), 'Enter selects room and closes palette')
+      ok((await paletteListbox.count()) === 0, 'Enter selects room and closes palette')
     }
 
     // ── TC6: Jump state / resume ──────────────────────────────────────
