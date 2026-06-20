@@ -50,7 +50,7 @@ func (s *replanMoveOutStub) FindRoomIDsWithMoveOutInMonth(_ context.Context, _ [
 type replanEnv struct {
 	db           *gorm.DB
 	svc          Service
-	billRepo     billing.BillingRepository
+	batchRepo    BatchRepository
 	apartmentID  uuid.UUID
 	roomID       uuid.UUID
 	contractID   uuid.UUID
@@ -74,19 +74,21 @@ func newReplanEnv(t *testing.T) *replanEnv {
 	billRepo := billing.NewBillingRepository(db)
 	auditRepo := billing.NewBillAuditRepository(db)
 	adapter := billing.NewMonthlyAdapter(billRepo, auditRepo)
+	batchRepo := NewBatchRepository(db)
 	meters := meterreading.NewMeterReadingRepository(db) // real DB-backed
 	moveOuts := &replanMoveOutStub{}
 	txMgr := database.NewTxManager(db)
 
-	// The MonthlyAdapter satisfies BillStore + AuditStore + BatchStore, so it
-	// is passed three times — matches the production wiring in cmd/main.go.
-	svc := NewService(adapter, adapter, adapter, meters, moveOuts, txMgr)
+	// MonthlyAdapter satisfies BillStore + AuditStore (passed twice); the
+	// monthly-owned BatchRepository covers batch-table persistence —
+	// matches the production wiring in cmd/main.go.
+	svc := NewService(adapter, adapter, batchRepo, meters, moveOuts, txMgr)
 
 	_ = c // keep for symmetry; contract details flow through the planner via the JOIN read
 	_ = contract.ContractStatusActive
 	_ = moveout.MoveOutStatusCompleted
 	return &replanEnv{
-		db: db, svc: svc, billRepo: billRepo,
+		db: db, svc: svc, batchRepo: batchRepo,
 		apartmentID:  apt.ID,
 		roomID:       rm.ID,
 		contractID:   c.ID,
@@ -132,7 +134,7 @@ func (e *replanEnv) runGenerate(t *testing.T) *billing.BillGenerationBatch {
 
 func (e *replanEnv) firstItem(t *testing.T, batchID uuid.UUID) billing.BatchItemWithTenant {
 	t.Helper()
-	items, err := e.billRepo.FindBatchItemsByBatchID(context.Background(), batchID)
+	items, err := e.batchRepo.FindBatchItemsByBatchID(context.Background(), batchID)
 	if err != nil {
 		t.Fatalf("FindBatchItemsByBatchID: %v", err)
 	}
@@ -186,7 +188,7 @@ func TestRePlanBatchItem_FlipsSkippedToCreatedAfterMeterRecord(t *testing.T) {
 	}
 
 	// Verify persistence: re-read from DB and confirm same state.
-	persisted, err := env.billRepo.FindBatchItemByID(context.Background(), item.ID)
+	persisted, err := env.batchRepo.FindBatchItemByID(context.Background(), item.ID)
 	if err != nil {
 		t.Fatalf("re-read item: %v", err)
 	}

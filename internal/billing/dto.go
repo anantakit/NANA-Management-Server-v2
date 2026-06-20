@@ -272,14 +272,15 @@ type BillListItemResponse struct {
 // SettlementOutcome + OutcomeRefund/PayMore/ZeroBalance constants) migrated
 // to internal/billing/settlement/dto.go in W4 commit 3 (2026-06-19).
 
-// --- Batch billing repo params (entities stay here for the repo) ---
+// --- Batch billing repo params (entities stay here, repo lives in monthly) ---
 //
 // BatchListParams is the query-binding DTO for the batch list endpoint.
-// Stays at billing root because BillingRepository.ListBatches takes it
-// (Option B-extended — no repository split in this commit). Monthly's
-// handler binds query params into billing.BatchListParams and passes it
-// straight through. All batch response DTOs + converters moved to
-// internal/billing/monthly/dto.go in commit 2b.
+// Stays at billing root as a reference-shared shape — monthly's handler
+// binds query params into billing.BatchListParams and passes it to
+// monthly.BatchRepository.ListBatches. Moving the type into monthly
+// would force a billing → monthly import cycle (handler bind site is
+// in billing root's DTO surface for historical compatibility).
+// All batch response DTOs + converters live in internal/billing/monthly/dto.go.
 
 type BatchListParams struct {
 	pagination.PaginationParams

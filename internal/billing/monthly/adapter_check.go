@@ -20,5 +20,4 @@ import "nana/internal/billing"
 var (
 	_ BillStore  = (*billing.MonthlyAdapter)(nil)
 	_ AuditStore = (*billing.MonthlyAdapter)(nil)
-	_ BatchStore = (*billing.MonthlyAdapter)(nil)
 )

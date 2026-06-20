@@ -13,9 +13,10 @@ import (
 )
 
 // mockStore is the consolidated test double for the monthly workflow.
-// Implements BillStore + AuditStore + BatchStore so a single instance can
-// be passed three times to NewService — mirroring the production wiring
-// where billing.MonthlyAdapter satisfies all three composite interfaces.
+// Implements BillStore + AuditStore + BatchRepository so a single instance
+// can be passed three times to NewService — mirroring the production
+// wiring where billing.MonthlyAdapter satisfies the first two and
+// monthly.BatchRepository (this same mockStore) satisfies the third.
 //
 // Only the methods the migrated tests actually exercise are implemented;
 // the surface is intentionally narrower than the production BillingRepository
@@ -52,9 +53,9 @@ type mockStore struct {
 }
 
 var (
-	_ BillStore   = (*mockStore)(nil)
-	_ AuditStore  = (*mockStore)(nil)
-	_ BatchStore  = (*mockStore)(nil)
+	_ BillStore       = (*mockStore)(nil)
+	_ AuditStore      = (*mockStore)(nil)
+	_ BatchRepository = (*mockStore)(nil)
 )
 
 // --- BillStore: queries ---
@@ -188,7 +189,7 @@ func (m *mockStore) RecordAudit(_ context.Context, billID uuid.UUID, action bill
 	return nil
 }
 
-// --- BatchStore: queries ---
+// --- BatchRepository: queries ---
 
 func (m *mockStore) FindBatchByID(_ context.Context, _ uuid.UUID) (*billing.BillGenerationBatch, error) {
 	if m.createdBatch != nil {
@@ -245,7 +246,7 @@ func (m *mockStore) ListCommitPendingItems(_ context.Context, _ uuid.UUID) ([]bi
 	return pending, nil
 }
 
-// --- BatchStore: commands ---
+// --- BatchRepository: commands ---
 
 func (m *mockStore) CreateBatch(_ context.Context, batch *billing.BillGenerationBatch, items []billing.BillGenerationBatchItem) error {
 	m.createdBatch = batch

@@ -48,9 +48,6 @@ type mockBillingRepo struct {
 	deletedSourcesByBillID map[uuid.UUID][]LineItemSource
 	createdLineItems       []BillLineItem
 
-	createdBatch         *BillGenerationBatch
-	createdBatchItems    []BillGenerationBatchItem
-	batchItemBillStatuses map[uuid.UUID]BillStatus // bill_id → status, stamped onto BatchItemWithTenant
 }
 
 // defaultMockApartmentID is returned by FindApartmentIDByRoomID when neither
@@ -200,82 +197,6 @@ func (m *mockBillingRepo) CreateLineItems(_ context.Context, items []BillLineIte
 	m.createdLineItems = append(m.createdLineItems, items...)
 	return nil
 }
-func (m *mockBillingRepo) CreateBatch(_ context.Context, batch *BillGenerationBatch, items []BillGenerationBatchItem) error {
-	m.createdBatch = batch
-	m.createdBatchItems = items
-	return nil
-}
-func (m *mockBillingRepo) FindBatchByID(_ context.Context, _ uuid.UUID) (*BillGenerationBatch, error) {
-	if m.createdBatch != nil {
-		return m.createdBatch, nil
-	}
-	return nil, gorm.ErrRecordNotFound
-}
-func (m *mockBillingRepo) FindBatchItemsByBatchID(_ context.Context, _ uuid.UUID) ([]BatchItemWithTenant, error) {
-	result := make([]BatchItemWithTenant, len(m.createdBatchItems))
-	for i, it := range m.createdBatchItems {
-		wrapped := BatchItemWithTenant{BillGenerationBatchItem: it}
-		// Tests can opt into per-item bill_status via batchItemBillStatuses
-		// without needing a custom mock override. Keyed by bill_id so items
-		// with BillID == nil naturally have BillStatus = nil (uncommitted).
-		if it.BillID != nil {
-			if s, ok := m.batchItemBillStatuses[*it.BillID]; ok {
-				bs := s
-				wrapped.BillStatus = &bs
-			}
-		}
-		result[i] = wrapped
-	}
-	return result, nil
-}
-func (m *mockBillingRepo) ListBatches(_ context.Context, _ BatchListParams) ([]BillGenerationBatch, int64, error) {
-	return nil, 0, nil
-}
-
-// Single-item re-plan stubs. Service tests for re-plan live in
-// service_batch_replan_integration_test.go (real Postgres) because the
-// flow touches the planner's joined inputs (contracts + meters + bills)
-// and a mock that returns canned rows would skip the integration risks.
-func (m *mockBillingRepo) FindBatchItemByID(_ context.Context, itemID uuid.UUID) (*BillGenerationBatchItem, error) {
-	for i := range m.createdBatchItems {
-		if m.createdBatchItems[i].ID == itemID {
-			it := m.createdBatchItems[i]
-			return &it, nil
-		}
-	}
-	return nil, gorm.ErrRecordNotFound
-}
-func (m *mockBillingRepo) FindBatchItemByIDWithTenant(_ context.Context, itemID uuid.UUID) (*BatchItemWithTenant, error) {
-	for i := range m.createdBatchItems {
-		if m.createdBatchItems[i].ID == itemID {
-			return &BatchItemWithTenant{BillGenerationBatchItem: m.createdBatchItems[i]}, nil
-		}
-	}
-	return nil, gorm.ErrRecordNotFound
-}
-func (m *mockBillingRepo) UpdateBatchItemPlan(_ context.Context, itemID uuid.UUID, resultType ResultType, reasonCode, reasonText string, billID *uuid.UUID, snapshot ComputedSnapshot) error {
-	for i := range m.createdBatchItems {
-		if m.createdBatchItems[i].ID == itemID {
-			m.createdBatchItems[i].ResultType = resultType
-			m.createdBatchItems[i].ReasonCode = reasonCode
-			m.createdBatchItems[i].ReasonText = reasonText
-			m.createdBatchItems[i].BillID = billID
-			m.createdBatchItems[i].ComputedSnapshot = snapshot
-			return nil
-		}
-	}
-	return gorm.ErrRecordNotFound
-}
-
-// --- Commit flow mocks ---
-
-func (m *mockBillingRepo) LockBatchForCommit(_ context.Context, _ uuid.UUID) (*BillGenerationBatch, error) {
-	if m.createdBatch != nil {
-		return m.createdBatch, nil
-	}
-	return nil, gorm.ErrRecordNotFound
-}
-
 // LockBillForCorrection mirrors FindByID semantics so correction tests can
 // inject the "old bill" via findByIDFn (or createdBill fallback). In real
 // production the SELECT FOR UPDATE locks the row; here the lock is a no-op
@@ -294,42 +215,6 @@ func (m *mockBillingRepo) FindCorrectedFromBillID(ctx context.Context, billID uu
 	}
 	return nil, nil
 }
-func (m *mockBillingRepo) ListCommitPendingItems(_ context.Context, _ uuid.UUID) ([]BillGenerationBatchItem, error) {
-	var pending []BillGenerationBatchItem
-	for _, it := range m.createdBatchItems {
-		if it.ResultType == ResultCreated && it.BillID == nil {
-			pending = append(pending, it)
-		}
-	}
-	return pending, nil
-}
-func (m *mockBillingRepo) UpdateBatchItemCommitted(_ context.Context, itemID uuid.UUID, billID uuid.UUID) error {
-	for i := range m.createdBatchItems {
-		if m.createdBatchItems[i].ID == itemID {
-			m.createdBatchItems[i].BillID = &billID
-			break
-		}
-	}
-	return nil
-}
-func (m *mockBillingRepo) UpdateBatchItemCommitError(_ context.Context, itemID uuid.UUID, reasonText string) error {
-	for i := range m.createdBatchItems {
-		if m.createdBatchItems[i].ID == itemID {
-			m.createdBatchItems[i].ReasonCode = ReasonCodeCommitError
-			m.createdBatchItems[i].ReasonText = reasonText
-			break
-		}
-	}
-	return nil
-}
-func (m *mockBillingRepo) UpdateBatchCommitStatus(_ context.Context, _ uuid.UUID, status CommitStatus, committedAt *time.Time) error {
-	if m.createdBatch != nil {
-		m.createdBatch.CommitStatus = &status
-		m.createdBatch.CommittedAt = committedAt
-	}
-	return nil
-}
-
 func (m *mockBillingRepo) LockBillForPayment(ctx context.Context, id uuid.UUID) (*Bill, error) {
 	if m.findByIDFn != nil {
 		return m.findByIDFn(ctx, id)

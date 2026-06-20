@@ -24,34 +24,31 @@
 // If no, it belongs elsewhere.
 // ===========================================================================
 //
-// CURRENT STAGE OWNERSHIP (Commit 2b, 2026-06-19):
+// CURRENT STAGE OWNERSHIP (post batch-repo split, 2026-06-20):
 //
-//   - monthly currently owns the MONTHLY BILLING WORKFLOW ORCHESTRATION.
+//   - monthly owns the MONTHLY BILLING WORKFLOW ORCHESTRATION.
 //     The 9 workflow operations (PreflightMonthly, BatchCreateMonthlyBills,
 //     CommitBatch, BatchFinalizeAll, FinalizeAllByMonth, GetBatchByID,
 //     GetBatchItems, ListBatches, RePlanBatchItem) plus their handler +
 //     DTOs + planning logic live here.
 //
-//   - billing root STILL owns batch persistence types + repository during
-//     this stage: BillGenerationBatch, BillGenerationBatchItem,
-//     BatchItemWithTenant, BatchStatus, CommitStatus, ResultType,
-//     Reason* constants, CommitBatchResult, BatchListParams, plus all the
-//     SQL methods on BillingRepository that mutate the batch tables.
-//     Monthly reads/writes those via monthly.BillStore / AuditStore /
-//     BatchStore ports, satisfied by billing.MonthlyAdapter.
+//   - monthly ALSO owns batch-table persistence via
+//     monthly.BatchRepository (repository.go) — bill_generation_batches +
+//     bill_generation_batch_items. SQL for those tables moved out of
+//     billing.BillingRepository in the batch-repo split. MonthlyAdapter
+//     shrunk from 23 → 11 methods accordingly.
+//
+//   - billing root still owns the batch entity TYPES (BillGenerationBatch,
+//     BillGenerationBatchItem, BatchItemWithTenant, BatchStatus,
+//     CommitStatus, ResultType, Reason* constants, CommitBatchResult,
+//     BatchListParams). They stay as reference-shared types because
+//     handler DTOs + the monthly.Service interface reference them, and
+//     moving them would force a billing → monthly import cycle (billing
+//     handler.go binds billing.BatchListParams from query params).
 //
 //   - monthly is NOT a generic batch package. It is a workflow package
 //     that happens to use batch mechanics today. The scope boundary above
 //     is load-bearing — see it for the explicit reject list.
-//
-//   - A FUTURE PR may move repository + model ownership into this package
-//     ONLY WHEN the import cycles caused by that move can be resolved
-//     safely. Today, batch types stay at billing root because moving them
-//     would force billing.BillingRepository's batch-method signatures to
-//     return monthly.* types, which would create a billing → monthly
-//     import cycle. That cycle goes away only after the broader monthly
-//     migration completes (single CreateMonthlyBill, monthly draft, monthly
-//     correction) and the reconciliation adapter has been re-routed.
 //
 // Staged ownership (intentional, NOT omissions — to be migrated later):
 //   - Single one-off CreateMonthlyBill remains at billing root.

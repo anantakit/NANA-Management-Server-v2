@@ -42,14 +42,16 @@ type Service interface {
 	RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID) (*billing.BatchItemWithTenant, error)
 }
 
-// All ports (BillStore, AuditStore, BatchStore, MeterReadingSource,
-// MoveOutSource) are declared in port.go. The Service holds them as fields
-// here and exposes a single NewService constructor for DI.
+// Ports BillStore, AuditStore, MeterReadingSource, MoveOutSource are declared
+// in port.go and satisfied by external providers (billing.MonthlyAdapter,
+// meterreading + moveout repos). batches is the monthly-owned BatchRepository
+// (see repository.go) — local impl, no port indirection because the
+// implementation lives in this package.
 
 type service struct {
 	bills    BillStore
 	audit    AuditStore
-	batches  BatchStore
+	batches  BatchRepository
 	meters   MeterReadingSource
 	moveOuts MoveOutSource
 	tx       database.TxManager
@@ -60,7 +62,7 @@ var _ Service = (*service)(nil)
 func NewService(
 	bills BillStore,
 	audit AuditStore,
-	batches BatchStore,
+	batches BatchRepository,
 	meters MeterReadingSource,
 	moveOuts MoveOutSource,
 	tx database.TxManager,

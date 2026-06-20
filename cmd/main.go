@@ -134,13 +134,16 @@ func main() {
 	billHandler := billing.NewBillingHandler(billService)
 
 	// Wire dependencies — Monthly billing workflow (W2 batch mechanics).
-	// One MonthlyAdapter satisfies all six monthly ports (BillReader,
-	// BillCommander, AuditReader, AuditEmitter, BatchReader, BatchCommander)
-	// — passed three times to NewService for the composite store slots.
+	// MonthlyAdapter satisfies monthly.BillStore + monthly.AuditStore over
+	// the shared bills + bill_audit_log tables. Batch persistence
+	// (bill_generation_batches + bill_generation_batch_items) is owned by
+	// monthly.BatchRepository directly — no adapter indirection needed
+	// because the impl lives in the monthly package itself.
 	// Meter + MoveOut repos satisfy monthly's narrower query ports via
 	// structural typing (same method shapes as billing's existing ports).
 	monthlyAdapter := billing.NewMonthlyAdapter(billRepo, billAuditRepo)
-	monthlyService := monthly.NewService(monthlyAdapter, monthlyAdapter, monthlyAdapter, meterRepo, moveOutRepo, txManager)
+	monthlyBatchRepo := monthly.NewBatchRepository(db)
+	monthlyService := monthly.NewService(monthlyAdapter, monthlyAdapter, monthlyBatchRepo, meterRepo, moveOutRepo, txManager)
 	monthlyHandler := monthly.NewHandler(monthlyService)
 
 	// Wire dependencies — Settlement billing workflow (W4 scaffold).

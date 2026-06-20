@@ -2,7 +2,6 @@ package monthly
 
 import (
 	"context"
-	"time"
 
 	"nana/internal/billing"
 	"nana/internal/meterreading"
@@ -22,30 +21,31 @@ import (
 // Batch entities (BillGenerationBatch, BillGenerationBatchItem, BatchStatus,
 // CommitStatus, ResultType, Reason* constants, BatchItemWithTenant,
 // CommitBatchResult, BatchListParams) remain in the billing root package
-// because the repository that owns their SQL stays there (Option B-extended,
-// "no repository split in this commit"). Monthly owns the workflow logic
-// over those types — generation, classification, commit, finalize, replan
-// — without owning the data structures themselves. A future PR may move
-// types + repo together when the broader monthly migration completes.
+// even after the batch-repo split — they're shared shapes that handler
+// DTOs + the service interface reference, and moving them would multiply
+// rename churn without changing the persistence-ownership win. Monthly
+// owns batch persistence via monthly.BatchRepository (repository.go);
+// these types are reference-shared, not workflow-private.
 //
 // ===========================================================================
 // STEWARDSHIP CONTRACT — READ BEFORE WIDENING THESE PORTS
 // ===========================================================================
 //
-// This port surface is INTENTIONALLY WIDE in this stage (5 ports total: 3
-// onto billing root + 2 cross-feature). The width is a consequence of
-// the deferred repository split — monthly currently reaches every batch-
-// table operation through ports that billing.MonthlyAdapter satisfies as
-// pure delegation. The width is load-bearing here, not a smell.
+// Port surface scope: 2 ports onto billing root (BillStore + AuditStore) +
+// 2 cross-feature read ports (MeterReadingSource + MoveOutSource). The
+// previous BatchStore port was retired when batch persistence moved into
+// monthly.BatchRepository (see repository.go) — monthly now talks to its
+// own batch tables directly without going through billing.MonthlyAdapter
+// for those calls.
 //
 // Port naming uses MONTHLY-LOCAL INTENT (Store / Source) rather than the
-// generic Reader / Commander Q/C split. After widening, a single read-only
-// port over the bills table is no longer "narrow" enough that Reader vs
-// Commander carries meaningful design intent — what matters to a monthly
-// reader is "this is how monthly reaches bills" (BillStore). Locked
-// 2026-06-19. The Q/C split doctrine in cross-feature-patterns.md remains
-// the default for cross-feature ports; monthly is an intentional deviation
-// because it is a sub-workflow of billing, not a separate bounded context.
+// generic Reader / Commander Q/C split. A single read-only port over the
+// bills table is no longer "narrow" enough that Reader vs Commander
+// carries meaningful design intent — what matters to a monthly reader is
+// "this is how monthly reaches bills" (BillStore). Locked 2026-06-19. The
+// Q/C split doctrine in cross-feature-patterns.md remains the default for
+// cross-feature ports; monthly is an intentional deviation because it is
+// a sub-workflow of billing, not a separate bounded context.
 //
 // Stewardship rules:
 //
@@ -60,11 +60,9 @@ import (
 //     deliberate — see above. Re-splitting would multiply the port count
 //     without adding design value.
 //
-//  3. When the repository split eventually lands, this port surface
-//     shrinks — batch methods migrate to a monthly-owned repository, and
-//     the corresponding BillStore / BatchStore methods disappear from
-//     here. Until then, growth is permitted but every addition must
-//     satisfy rule 1.
+//  3. New batch-table persistence belongs on monthly.BatchRepository, not
+//     on these ports. Cross the BillStore / AuditStore boundary only for
+//     reads/writes against the shared bills / bill_audit_log tables.
 // ===========================================================================
 
 // --- Bill table port ---
@@ -129,47 +127,6 @@ type AuditStore interface {
 	// the bill. Must be called with a txCtx if the audit row must roll
 	// back alongside the bill mutation (standard contract).
 	RecordAudit(ctx context.Context, billID uuid.UUID, action billing.BillAuditAction, actor *uuid.UUID, payload any) error
-}
-
-// --- Batch tables port ---
-//
-// SQL for these methods lives on billing.BillingRepository (no repo split
-// in commit 2b). The port surface uses billing.* types verbatim because
-// the entity definitions also live in billing root for the same reason.
-
-// BatchStore is the monthly workflow's combined read+write surface over
-// the bill_generation_batches + bill_generation_batch_items tables.
-// LockBatchForCommit is a locking read (SELECT FOR UPDATE) — kept here
-// because it has a TX requirement and is used together with the writes.
-type BatchStore interface {
-	// --- queries ---
-
-	FindBatchByID(ctx context.Context, id uuid.UUID) (*billing.BillGenerationBatch, error)
-	FindBatchItemsByBatchID(ctx context.Context, batchID uuid.UUID) ([]billing.BatchItemWithTenant, error)
-	FindBatchItemByID(ctx context.Context, itemID uuid.UUID) (*billing.BillGenerationBatchItem, error)
-	FindBatchItemByIDWithTenant(ctx context.Context, itemID uuid.UUID) (*billing.BatchItemWithTenant, error)
-	ListBatches(ctx context.Context, params billing.BatchListParams) ([]billing.BillGenerationBatch, int64, error)
-
-	// ListCommitPendingItems returns batch items that have not yet produced
-	// a bill. Used by the commit loop; idempotent rerun semantics depend
-	// on this query.
-	ListCommitPendingItems(ctx context.Context, batchID uuid.UUID) ([]billing.BillGenerationBatchItem, error)
-
-	// --- commands ---
-
-	CreateBatch(ctx context.Context, batch *billing.BillGenerationBatch, items []billing.BillGenerationBatchItem) error
-	LockBatchForCommit(ctx context.Context, batchID uuid.UUID) (*billing.BillGenerationBatch, error)
-	UpdateBatchItemCommitError(ctx context.Context, itemID uuid.UUID, reasonText string) error
-	UpdateBatchCommitStatus(ctx context.Context, batchID uuid.UUID, status billing.CommitStatus, committedAt *time.Time) error
-	UpdateBatchItemCommitted(ctx context.Context, itemID uuid.UUID, billID uuid.UUID) error
-	UpdateBatchItemPlan(
-		ctx context.Context,
-		itemID uuid.UUID,
-		resultType billing.ResultType,
-		reasonCode, reasonText string,
-		billID *uuid.UUID,
-		snapshot billing.ComputedSnapshot,
-	) error
 }
 
 // --- Cross-feature read ports ---
