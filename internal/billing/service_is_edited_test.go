@@ -37,7 +37,7 @@ func newIsEditedService(detail *BillWithRelations, listBills []BillWithRelations
 		}
 	}
 	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, nil, &mockTxManager{})
 	return svc, repo, audit
 }
 

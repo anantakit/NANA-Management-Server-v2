@@ -1,6 +1,6 @@
 //go:build integration
 
-package billing
+package settlement
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"nana/internal/billing"
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
@@ -57,11 +58,11 @@ import (
 // real audits during workflow setup (CREATE_DRAFT / FINALIZE) and then
 // fail on SUPERSEDE during the correction call itself.
 type correctionFailingAuditRepo struct {
-	wrapped BillAuditRepository
-	failFor map[BillAuditAction]bool
+	wrapped billing.BillAuditRepository
+	failFor map[billing.BillAuditAction]bool
 }
 
-func (f *correctionFailingAuditRepo) Create(ctx context.Context, log *BillAuditLog) error {
+func (f *correctionFailingAuditRepo) Create(ctx context.Context, log *billing.BillAuditLog) error {
 	if f.failFor[log.Action] {
 		return fmt.Errorf("audit failure injected for action %s", log.Action)
 	}
@@ -83,7 +84,7 @@ func (f *correctionFailingAuditRepo) FindLatestSupersedeReason(ctx context.Conte
 type correctionEnv struct {
 	db         *gorm.DB
 	moveOutSvc moveout.MoveOutService
-	billSvc    BillingService
+	billSvc    *Service
 	ctx        context.Context
 
 	apartmentID      uuid.UUID
@@ -103,7 +104,7 @@ type envOptions struct {
 	withAbsorbedMonthly bool
 	// auditOverride lets the rollback test inject a failing audit. nil →
 	// use the real BillAuditRepository.
-	auditOverride BillAuditRepository
+	auditOverride billing.BillAuditRepository
 }
 
 // newCorrectionEnv seeds + walks the production move-out workflow to the
@@ -146,7 +147,7 @@ func newCorrectionEnv(t *testing.T, opts envOptions) *correctionEnv {
 	env.noticeID = notice.ID
 
 	// ── Wire the real service graph (with optional audit override) ──
-	env.billSvc = buildRealBillingServiceWithAudit(t, db, opts.auditOverride)
+	env.billSvc = buildRealSettlementServiceWithAudit(t, db, opts.auditOverride)
 	env.moveOutSvc = buildRealMoveOutService(t, db, env.billSvc)
 
 	// ── Walk to the target status via production paths ──
@@ -208,27 +209,27 @@ func walkToTargetStatus(t *testing.T, env *correctionEnv, target moveout.MoveOut
 	t.Fatalf("unsupported target status %q", target)
 }
 
-// buildRealBillingServiceWithAudit mirrors buildRealBillingService from the
-// settlement integration test, with an optional audit override for the
-// rollback scenario.
-func buildRealBillingServiceWithAudit(t *testing.T, db *gorm.DB, override BillAuditRepository) BillingService {
+// buildRealSettlementServiceWithAudit mirrors buildRealSettlementService,
+// with an optional audit override for the rollback scenario.
+func buildRealSettlementServiceWithAudit(t *testing.T, db *gorm.DB, override billing.BillAuditRepository) *Service {
 	t.Helper()
 	txMgr := database.NewTxManager(db)
-	billRepo := NewBillingRepository(db)
-	billAuditRepo := BillAuditRepository(NewBillAuditRepository(db))
+	billRepo := billing.NewBillingRepository(db)
+	billAuditRepo := billing.BillAuditRepository(billing.NewBillAuditRepository(db))
 	if override != nil {
 		billAuditRepo = override
 	}
+	adapter := billing.NewSettlementAdapter(billRepo, billAuditRepo)
 	contractRepo := contract.NewContractRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	bcRepo := billingconfig.NewBillingConfigRepository(db)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
-	return NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, nil, txMgr)
+	return NewService(adapter, adapter, contractRepo, meterRepo, bcRepo, moveOutRepo, nil, txMgr)
 }
 
 // buildRealMoveOutService wires the moveout service end-to-end against the
 // test DB. Mirrors cmd/main.go's DI graph.
-func buildRealMoveOutService(t *testing.T, db *gorm.DB, billSvc BillingService) moveout.MoveOutService {
+func buildRealMoveOutService(t *testing.T, db *gorm.DB, billSvc *Service) moveout.MoveOutService {
 	t.Helper()
 	txMgr := database.NewTxManager(db)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
@@ -244,20 +245,20 @@ func buildRealMoveOutService(t *testing.T, db *gorm.DB, billSvc BillingService) 
 // the bill ID for later assertions.
 func seedFinalizedMonthly(t *testing.T, db *gorm.DB, contractID uuid.UUID, billingMonth string) uuid.UUID {
 	t.Helper()
-	bill := Bill{
+	bill := billing.Bill{
 		ContractID:   contractID,
 		BillingMonth: billingMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusFinalized,
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusFinalized,
 		TotalAmount:  416000, // 4,160 baht — matches existing settlement integration test
 	}
 	if err := db.Create(&bill).Error; err != nil {
 		t.Fatalf("seed finalized monthly: %v", err)
 	}
-	items := []BillLineItem{
-		{BillID: bill.ID, LineType: LineItemRoomRent, Source: LineItemSourceAuto, Description: "ค่าเช่า", Amount: 300000, SortOrder: 1},
-		{BillID: bill.ID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ 20 หน่วย", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 2},
-		{BillID: bill.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Description: "ค่าไฟฟ้า 100 หน่วย", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 3},
+	items := []billing.BillLineItem{
+		{BillID: bill.ID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: 300000, SortOrder: 1},
+		{BillID: bill.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 20 หน่วย", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 2},
+		{BillID: bill.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 100 หน่วย", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 3},
 	}
 	if err := db.Create(&items).Error; err != nil {
 		t.Fatalf("seed finalized monthly line items: %v", err)
@@ -340,7 +341,7 @@ func TestSettlementCorrection_AbsorbedMonthlyRoundTrip(t *testing.T) {
 	// Precondition: the seeded monthly is absorbed by the FIRST settlement
 	// (workflow walk in env setup already did GenerateSettlement which
 	// triggers absorption). Verify before driving correction.
-	var beforeMonthly Bill
+	var beforeMonthly billing.Bill
 	if err := env.db.Where("id = ?", env.absorbedMonthlyBillID).First(&beforeMonthly).Error; err != nil {
 		t.Fatalf("re-fetch absorbed monthly (before): %v", err)
 	}
@@ -357,7 +358,7 @@ func TestSettlementCorrection_AbsorbedMonthlyRoundTrip(t *testing.T) {
 	}
 
 	// ── Same monthly bill ID — no duplicate, no replacement ──
-	var afterMonthly Bill
+	var afterMonthly billing.Bill
 	if err := env.db.Where("id = ?", env.absorbedMonthlyBillID).First(&afterMonthly).Error; err != nil {
 		t.Fatalf("re-fetch absorbed monthly (after): %v", err)
 	}
@@ -369,9 +370,9 @@ func TestSettlementCorrection_AbsorbedMonthlyRoundTrip(t *testing.T) {
 	// ── Exactly ONE absorbed monthly for this contract (no duplicates,
 	//     no ghosts from a half-applied restore) ──
 	var absorbedCount int64
-	if err := env.db.Model(&Bill{}).
+	if err := env.db.Model(&billing.Bill{}).
 		Where("contract_id = ? AND bill_type = ? AND status = ? AND void_reason = ?",
-			env.contractID, BillTypeMonthly, BillStatusVoid, "ABSORBED_BY_SETTLEMENT").
+			env.contractID, billing.BillTypeMonthly, billing.BillStatusVoid, "ABSORBED_BY_SETTLEMENT").
 		Count(&absorbedCount).Error; err != nil {
 		t.Fatalf("count absorbed monthlies: %v", err)
 	}
@@ -382,8 +383,8 @@ func TestSettlementCorrection_AbsorbedMonthlyRoundTrip(t *testing.T) {
 	// ── Total monthly bills for this contract still 1 (no duplicate row
 	//     created during the restore/re-absorb cycle) ──
 	var monthlyTotal int64
-	if err := env.db.Unscoped().Model(&Bill{}).
-		Where("contract_id = ? AND bill_type = ?", env.contractID, BillTypeMonthly).
+	if err := env.db.Unscoped().Model(&billing.Bill{}).
+		Where("contract_id = ? AND bill_type = ?", env.contractID, billing.BillTypeMonthly).
 		Count(&monthlyTotal).Error; err != nil {
 		t.Fatalf("count monthly bills: %v", err)
 	}
@@ -403,9 +404,9 @@ func TestSettlementCorrection_AbsorbedMonthlyRoundTrip(t *testing.T) {
 	if newNotice.SettlementBillID == nil {
 		t.Fatal("notice has no settlement bill after correction")
 	}
-	var outstandingLines []BillLineItem
+	var outstandingLines []billing.BillLineItem
 	if err := env.db.
-		Where("bill_id = ? AND line_type = ?", *newNotice.SettlementBillID, LineItemOutstandingBill).
+		Where("bill_id = ? AND line_type = ?", *newNotice.SettlementBillID, billing.LineItemOutstandingBill).
 		Find(&outstandingLines).Error; err != nil {
 		t.Fatalf("fetch OUTSTANDING_BILL on new settlement: %v", err)
 	}
@@ -443,9 +444,9 @@ func TestSettlementCorrection_PaidBlocked(t *testing.T) {
 
 	// Mark the settlement bill as PAID directly (skip the payment workflow —
 	// we just need the bill in PAID status to exercise the billing guard).
-	if err := env.db.Model(&Bill{}).
+	if err := env.db.Model(&billing.Bill{}).
 		Where("id = ?", env.settlementBillID).
-		Update("status", BillStatusPaid).Error; err != nil {
+		Update("status", billing.BillStatusPaid).Error; err != nil {
 		t.Fatalf("mark settlement PAID: %v", err)
 	}
 
@@ -456,8 +457,8 @@ func TestSettlementCorrection_PaidBlocked(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from PAID guard, got nil")
 	}
-	if !strings.Contains(err.Error(), ErrAlreadyPaid.Error()) {
-		t.Errorf("err = %q, want to contain %q", err.Error(), ErrAlreadyPaid.Error())
+	if !strings.Contains(err.Error(), billing.ErrAlreadyPaid.Error()) {
+		t.Errorf("err = %q, want to contain %q", err.Error(), billing.ErrAlreadyPaid.Error())
 	}
 
 	// No state changes — snapshot must be byte-identical.
@@ -561,9 +562,9 @@ func TestSettlementCorrection_ConcurrentRace(t *testing.T) {
 			// Exactly ONE new DRAFT settlement exists for this contract
 			// (winner's). No half-applied state from the loser.
 			var draftCount int64
-			if err := env.db.Model(&Bill{}).
+			if err := env.db.Model(&billing.Bill{}).
 				Where("contract_id = ? AND bill_type = ? AND status = ?",
-					env.contractID, BillTypeSettlement, BillStatusDraft).
+					env.contractID, billing.BillTypeSettlement, billing.BillStatusDraft).
 				Count(&draftCount).Error; err != nil {
 				t.Fatalf("count draft settlements: %v", err)
 			}
@@ -573,8 +574,8 @@ func TestSettlementCorrection_ConcurrentRace(t *testing.T) {
 
 			// Audit pair exists exactly once for this scenario (winner's).
 			var auditCount int64
-			if err := env.db.Model(&BillAuditLog{}).
-				Where("bill_id = ? AND action = ?", env.settlementBillID, AuditSupersede).
+			if err := env.db.Model(&billing.BillAuditLog{}).
+				Where("bill_id = ? AND action = ?", env.settlementBillID, billing.AuditSupersede).
 				Count(&auditCount).Error; err != nil {
 				t.Fatalf("count SUPERSEDE audits: %v", err)
 			}
@@ -612,13 +613,13 @@ func TestSettlementCorrection_ConcurrentRace(t *testing.T) {
 func TestSettlementCorrection_AuditFailureRollsBack(t *testing.T) {
 	cases := []struct {
 		name    string
-		failFor BillAuditAction
+		failFor billing.BillAuditAction
 	}{
 		// Fails before new bill is inserted — short path.
-		{"fail_on_supersede", AuditSupersede},
+		{"fail_on_supersede", billing.AuditSupersede},
 		// Fails AFTER new bill + re-absorbed monthlies are written —
 		// longest path; biggest blast radius if rollback isn't tight.
-		{"fail_on_create_from_correction", AuditCreateFromCorrection},
+		{"fail_on_create_from_correction", billing.AuditCreateFromCorrection},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -636,10 +637,10 @@ func TestSettlementCorrection_AuditFailureRollsBack(t *testing.T) {
 			// already used real audit — those CREATE_DRAFT + FINALIZE rows
 			// persist).
 			failingAudit := &correctionFailingAuditRepo{
-				wrapped: NewBillAuditRepository(env.db),
-				failFor: map[BillAuditAction]bool{tc.failFor: true},
+				wrapped: billing.NewBillAuditRepository(env.db),
+				failFor: map[billing.BillAuditAction]bool{tc.failFor: true},
 			}
-			failingBill := buildRealBillingServiceWithAudit(t, env.db, failingAudit)
+			failingBill := buildRealSettlementServiceWithAudit(t, env.db, failingAudit)
 			failingMoveOut := buildRealMoveOutService(t, env.db, failingBill)
 
 			_, err := failingMoveOut.CorrectSettlement(env.ctx, env.noticeID,
@@ -658,9 +659,9 @@ func TestSettlementCorrection_AuditFailureRollsBack(t *testing.T) {
 			//     critical assertion — the INSERT already ran inside the
 			//     tx; only ROLLBACK unwinds it.)
 			var draftCount int64
-			if err := env.db.Model(&Bill{}).
+			if err := env.db.Model(&billing.Bill{}).
 				Where("contract_id = ? AND bill_type = ? AND status = ?",
-					env.contractID, BillTypeSettlement, BillStatusDraft).
+					env.contractID, billing.BillTypeSettlement, billing.BillStatusDraft).
 				Count(&draftCount).Error; err != nil {
 				t.Fatalf("count drafts: %v", err)
 			}
@@ -673,8 +674,8 @@ func TestSettlementCorrection_AuditFailureRollsBack(t *testing.T) {
 			//     the CREATE_FROM_CORRECTION failure in the long path —
 			//     tx rollback must wipe it. ──
 			var correctionAuditCount int64
-			if err := env.db.Model(&BillAuditLog{}).
-				Where("action IN ?", []BillAuditAction{AuditSupersede, AuditCreateFromCorrection}).
+			if err := env.db.Model(&billing.BillAuditLog{}).
+				Where("action IN ?", []billing.BillAuditAction{billing.AuditSupersede, billing.AuditCreateFromCorrection}).
 				Count(&correctionAuditCount).Error; err != nil {
 				t.Fatalf("count correction audits: %v", err)
 			}
@@ -714,10 +715,10 @@ func TestSettlementCorrection_AuditEventShape(t *testing.T) {
 	newBillID := *notice.SettlementBillID
 
 	// ── Fetch + classify audit rows for the correction event pair ──
-	var rows []BillAuditLog
+	var rows []billing.BillAuditLog
 	if err := env.db.Where("bill_id IN ? AND action IN ?",
 		[]uuid.UUID{env.settlementBillID, newBillID},
-		[]BillAuditAction{AuditSupersede, AuditCreateFromCorrection}).
+		[]billing.BillAuditAction{billing.AuditSupersede, billing.AuditCreateFromCorrection}).
 		Order("action ASC").Find(&rows).Error; err != nil {
 		t.Fatalf("fetch audit rows: %v", err)
 	}
@@ -725,12 +726,12 @@ func TestSettlementCorrection_AuditEventShape(t *testing.T) {
 		t.Fatalf("correction audit row count = %d, want 2 (SUPERSEDE + CREATE_FROM_CORRECTION)", len(rows))
 	}
 
-	var supersede, createFrom *BillAuditLog
+	var supersede, createFrom *billing.BillAuditLog
 	for i := range rows {
 		switch rows[i].Action {
-		case AuditSupersede:
+		case billing.AuditSupersede:
 			supersede = &rows[i]
-		case AuditCreateFromCorrection:
+		case billing.AuditCreateFromCorrection:
 			createFrom = &rows[i]
 		}
 	}
@@ -745,11 +746,11 @@ func TestSettlementCorrection_AuditEventShape(t *testing.T) {
 	if supersede.BillID != env.settlementBillID {
 		t.Errorf("SUPERSEDE.bill_id = %v, want %v (old)", supersede.BillID, env.settlementBillID)
 	}
-	var supPayload AuditSupersedePayload
+	var supPayload billing.AuditSupersedePayload
 	if err := json.Unmarshal([]byte(supersede.Payload), &supPayload); err != nil {
 		t.Fatalf("unmarshal SUPERSEDE payload: %v", err)
 	}
-	if supPayload.PreviousStatus != string(BillStatusFinalized) {
+	if supPayload.PreviousStatus != string(billing.BillStatusFinalized) {
 		t.Errorf("SUPERSEDE.previous_status = %q, want FINALIZED", supPayload.PreviousStatus)
 	}
 	if supPayload.NewBillID != newBillID {
@@ -763,7 +764,7 @@ func TestSettlementCorrection_AuditEventShape(t *testing.T) {
 	if createFrom.BillID != newBillID {
 		t.Errorf("CREATE_FROM_CORRECTION.bill_id = %v, want %v (new)", createFrom.BillID, newBillID)
 	}
-	var cfcPayload AuditCreateFromCorrectionPayload
+	var cfcPayload billing.AuditCreateFromCorrectionPayload
 	if err := json.Unmarshal([]byte(createFrom.Payload), &cfcPayload); err != nil {
 		t.Fatalf("unmarshal CREATE_FROM_CORRECTION payload: %v", err)
 	}
@@ -794,7 +795,7 @@ func TestSettlementCorrection_AuditEventShape(t *testing.T) {
 // void_reason=CORRECTION and superseded_by_bill_id pointing at the new bill.
 func assertOldSettlementVoided(t *testing.T, env *correctionEnv) {
 	t.Helper()
-	var old Bill
+	var old billing.Bill
 	if err := env.db.Where("id = ?", env.settlementBillID).First(&old).Error; err != nil {
 		t.Fatalf("re-fetch old settlement: %v", err)
 	}
@@ -832,14 +833,14 @@ func assertNewDraftAttached(t *testing.T, env *correctionEnv, scenarioLabel stri
 		t.Errorf("[%s] notice.net_amount = nil, want recomputed value", scenarioLabel)
 	}
 	// New bill is DRAFT
-	var newBill Bill
+	var newBill billing.Bill
 	if err := env.db.Where("id = ?", *notice.SettlementBillID).First(&newBill).Error; err != nil {
 		t.Fatalf("[%s] re-fetch new bill: %v", scenarioLabel, err)
 	}
-	if newBill.Status != BillStatusDraft {
+	if newBill.Status != billing.BillStatusDraft {
 		t.Errorf("[%s] new bill status = %s, want DRAFT", scenarioLabel, newBill.Status)
 	}
-	if newBill.BillType != BillTypeSettlement {
+	if newBill.BillType != billing.BillTypeSettlement {
 		t.Errorf("[%s] new bill type = %s, want SETTLEMENT", scenarioLabel, newBill.BillType)
 	}
 }
@@ -870,9 +871,9 @@ func assertPaymentMetadataCleared(t *testing.T, env *correctionEnv) {
 // still trips the assertSnapshotUnchanged check.
 type stateSnapshot struct {
 	notice                   moveout.MoveOutNotice
-	oldSettlement            Bill
+	oldSettlement            billing.Bill
 	oldSettlementLineCount   int64 // line-items on old settlement (catches partial INSERT/DELETE leaks)
-	absorbedMonthly          *Bill // nil if env has no absorbed bill
+	absorbedMonthly          *billing.Bill // nil if env has no absorbed bill
 	absorbedMonthlyLineCount int64
 	billsTotal               int64
 	billAuditTotal           int64
@@ -887,18 +888,18 @@ func snapshotNoticeAndBills(t *testing.T, env *correctionEnv) stateSnapshot {
 	if err := env.db.Where("id = ?", env.settlementBillID).First(&s.oldSettlement).Error; err != nil {
 		t.Fatalf("snapshot old settlement: %v", err)
 	}
-	if err := env.db.Model(&BillLineItem{}).
+	if err := env.db.Model(&billing.BillLineItem{}).
 		Where("bill_id = ?", env.settlementBillID).
 		Count(&s.oldSettlementLineCount).Error; err != nil {
 		t.Fatalf("snapshot old settlement line items: %v", err)
 	}
 	if env.absorbedMonthlyBillID != uuid.Nil {
-		var m Bill
+		var m billing.Bill
 		if err := env.db.Where("id = ?", env.absorbedMonthlyBillID).First(&m).Error; err != nil {
 			t.Fatalf("snapshot absorbed monthly: %v", err)
 		}
 		s.absorbedMonthly = &m
-		if err := env.db.Model(&BillLineItem{}).
+		if err := env.db.Model(&billing.BillLineItem{}).
 			Where("bill_id = ?", env.absorbedMonthlyBillID).
 			Count(&s.absorbedMonthlyLineCount).Error; err != nil {
 			t.Fatalf("snapshot absorbed monthly line items: %v", err)
@@ -907,10 +908,10 @@ func snapshotNoticeAndBills(t *testing.T, env *correctionEnv) stateSnapshot {
 	// Both totals use Unscoped so soft-deleted rows count too — symmetry
 	// guards against a regression that soft-deletes mid-tx without
 	// rolling back, on either bills or audit_log.
-	if err := env.db.Unscoped().Model(&Bill{}).Count(&s.billsTotal).Error; err != nil {
+	if err := env.db.Unscoped().Model(&billing.Bill{}).Count(&s.billsTotal).Error; err != nil {
 		t.Fatalf("snapshot bills count: %v", err)
 	}
-	if err := env.db.Unscoped().Model(&BillAuditLog{}).Count(&s.billAuditTotal).Error; err != nil {
+	if err := env.db.Unscoped().Model(&billing.BillAuditLog{}).Count(&s.billAuditTotal).Error; err != nil {
 		t.Fatalf("snapshot audit count: %v", err)
 	}
 	return s

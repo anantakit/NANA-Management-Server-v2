@@ -34,7 +34,7 @@ func TestFindExistingBillsByContractsAndMonth_MapsBillToSnapshot(t *testing.T) {
 			}, nil
 		},
 	}
-	a := newReconcileAdapter(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	a := newReconcileAdapter(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{})
 
 	got, err := a.FindExistingBillsByContractsAndMonth(
 		context.Background(),
@@ -66,7 +66,7 @@ func TestFindExistingBillsByContractsAndMonth_EmptyShortCircuits(t *testing.T) {
 			return nil, nil
 		},
 	}
-	a := newReconcileAdapter(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	a := newReconcileAdapter(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{})
 
 	got, err := a.FindExistingBillsByContractsAndMonth(context.Background(), nil, "2026-06")
 	if err != nil {
@@ -102,7 +102,7 @@ func TestCreateMonthlyBillForReconciliation_DelegatesToCreateMonthlyBill(t *test
 			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: reading}, nil
 		},
 	}
-	a := newReconcileAdapter(repo, &mockContractQuerier{contract: c}, meters, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	a := newReconcileAdapter(repo, &mockContractQuerier{contract: c}, meters, &mockConfigQuerier{})
 
 	got, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
@@ -132,7 +132,7 @@ func TestCreateMonthlyBillForReconciliation_DelegatesToCreateMonthlyBill(t *test
 func TestCreateMonthlyBillForReconciliation_MissingMeterMapsToLostReady(t *testing.T) {
 	c := testContract()
 	a := newReconcileAdapter(&mockBillingRepo{}, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+		&mockMeterQuerier{}, &mockConfigQuerier{})
 
 	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
@@ -149,7 +149,7 @@ func TestCreateMonthlyBillForReconciliation_MissingMeterMapsToLostReady(t *testi
 
 func TestCreateMonthlyBillForReconciliation_ContractMissingMapsToLostReady(t *testing.T) {
 	a := newReconcileAdapter(&mockBillingRepo{}, &mockContractQuerier{}, // empty → ErrRecordNotFound
-		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+		&mockMeterQuerier{}, &mockConfigQuerier{})
 
 	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
@@ -164,7 +164,7 @@ func TestCreateMonthlyBillForReconciliation_ContractMissingMapsToLostReady(t *te
 func TestCreateMonthlyBillForReconciliation_BadBillingMonth(t *testing.T) {
 	c := testContract()
 	a := newReconcileAdapter(&mockBillingRepo{}, &mockContractQuerier{contract: c},
-		&mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+		&mockMeterQuerier{}, &mockConfigQuerier{})
 
 	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
@@ -194,7 +194,7 @@ func TestCreateMonthlyBillForReconciliation_DuplicateMapsToAlreadyBilled(t *test
 				return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: reading}, nil
 			},
 		},
-		&mockConfigQuerier{}, &mockMoveOutQuerier{})
+		&mockConfigQuerier{})
 
 	_, err := a.CreateMonthlyBillForReconciliation(context.Background(),
 		billingreconciliation.CreateMonthlyBillForReconciliationRequest{
@@ -207,9 +207,9 @@ func TestCreateMonthlyBillForReconciliation_DuplicateMapsToAlreadyBilled(t *test
 }
 
 // newReconcileAdapter wires the adapter on top of a fully mocked billing
-// service. Keeps the per-test setup ergonomic (same 5 args as newSvc) while
-// the production type is exactly the one wired in cmd/main.go.
-func newReconcileAdapter(repo *mockBillingRepo, contracts *mockContractQuerier, meters *mockMeterQuerier, configs *mockConfigQuerier, moveOuts *mockMoveOutQuerier) *ReconciliationAdapter {
-	svc := newSvc(repo, contracts, meters, configs, moveOuts)
+// service. Keeps the per-test setup ergonomic while the production type
+// is exactly the one wired in cmd/main.go.
+func newReconcileAdapter(repo *mockBillingRepo, contracts *mockContractQuerier, meters *mockMeterQuerier, configs *mockConfigQuerier) *ReconciliationAdapter {
+	svc := newSvc(repo, contracts, meters, configs)
 	return NewReconciliationAdapter(repo, contracts, meters, svc)
 }

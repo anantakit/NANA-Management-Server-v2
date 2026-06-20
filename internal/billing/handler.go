@@ -19,24 +19,26 @@ func NewBillingHandler(svc BillingService) *BillingHandler {
 	return &BillingHandler{svc: svc}
 }
 
-// RegisterRoutes mounts the billing-core routes (W1 single bill, W3 monthly
-// draft, W4 settlement, W5 correction) under the caller-supplied router.
+// RegisterRoutes mounts the billing-core routes (W1 single monthly bill,
+// W3 monthly draft, W5 monthly correction) under the caller-supplied router.
 //
 // The 9 monthly batch routes (/batches/*, /preflight, /batch-monthly,
 // /finalize-all-by-month) live on monthly.Handler — mount it BEFORE this
 // handler in cmd/main.go so its literal segments register first and beat
 // /:id at the radix match level.
+//
+// The 3 settlement routes (POST /settlement, POST /settlement/preview,
+// PATCH /:id/settlement-draft) moved to settlement.Handler in W4 commit 3
+// (2026-06-19). Mount settlement.Handler BETWEEN monthly and bill on
+// cmd/main.go to preserve literal-before-param order.
 func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/summary", h.Summary)
 	r.Get("/", h.List)
 	r.Get("/:id", h.GetByID)
 	r.Post("/monthly", h.CreateMonthly)
-	r.Post("/settlement/preview", h.PreviewSettlement)
-	r.Post("/settlement", h.CreateSettlement)
 	r.Patch("/:id/finalize", h.Finalize)
 	r.Patch("/:id/void", h.Void)
 	r.Patch("/:id/paid", h.MarkPaid)
-	r.Patch("/:id/settlement-draft", h.UpdateSettlementDraft)
 	r.Patch("/:id/monthly-draft", h.UpdateMonthlyDraft)
 	r.Post("/:id/correct", h.Correct)
 }
@@ -112,45 +114,8 @@ func (h *BillingHandler) CreateMonthly(c fiber.Ctx) error {
 	return respond.Created(c, "สร้างบิลร่างรายเดือนแล้ว", ToBillResponseWithRelations(*bill))
 }
 
-func (h *BillingHandler) PreviewSettlement(c fiber.Ctx) error {
-	var req PreviewSettlementRequest
-	if err := bind.Body(c, &req); err != nil {
-		return err
-	}
-
-	contractID, err := uuid.Parse(req.ContractID)
-	if err != nil {
-		return respond.Error(c, respond.ErrBadRequest.WithMessage("contract_id ไม่ถูกต้อง"))
-	}
-
-	input := PreviewSettlementInput{
-		ContractID: contractID,
-	}
-	if req.RentMode != "" {
-		input.RentMode = SettlementRentMode(req.RentMode)
-	}
-
-	preview, err := h.svc.PreviewSettlement(c.Context(), input)
-	if err != nil {
-		return respond.Error(c, err)
-	}
-
-	return respond.Success(c, "สำเร็จ", ToSettlementPreviewResponse(preview))
-}
-
-func (h *BillingHandler) CreateSettlement(c fiber.Ctx) error {
-	var req CreateSettlementBillRequest
-	if err := bind.Body(c, &req); err != nil {
-		return err
-	}
-
-	bill, err := h.svc.CreateSettlementBill(c.Context(), req, middleware.ActorFromCtx(c))
-	if err != nil {
-		return respond.Error(c, err)
-	}
-
-	return respond.Created(c, "สร้างบิลร่างปิดสัญญาแล้ว", ToBillResponseWithRelations(*bill))
-}
+// PreviewSettlement + CreateSettlement handlers migrated to
+// internal/billing/settlement/handler.go in W4 commit 3 (2026-06-19).
 
 func (h *BillingHandler) Finalize(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
@@ -211,24 +176,7 @@ func (h *BillingHandler) Correct(c fiber.Ctx) error {
 	return respond.Created(c, "สร้างบิลร่างใหม่แทนใบเดิมแล้ว", ToBillResponseWithRelations(*bill))
 }
 
-func (h *BillingHandler) UpdateSettlementDraft(c fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
-	}
-
-	var req UpdateSettlementDraftRequest
-	if err := bind.Body(c, &req); err != nil {
-		return err
-	}
-
-	bill, err := h.svc.UpdateSettlementDraft(c.Context(), id, req, middleware.ActorFromCtx(c))
-	if err != nil {
-		return respond.Error(c, err)
-	}
-
-	return respond.Success(c, "อัปเดตบิลปิดสัญญาแล้ว", ToBillResponseWithRelations(*bill))
-}
+// UpdateSettlementDraft handler migrated to settlement.Handler in W4 commit 3 (2026-06-19).
 
 func (h *BillingHandler) UpdateMonthlyDraft(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))

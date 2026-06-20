@@ -36,7 +36,7 @@ func newMonthlyDraftService(bill *Bill) (BillingService, *mockBillingRepo, *mock
 		return bill, nil
 	}
 	audit := &mockBillAuditRepo{}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, nil, &mockTxManager{})
 	return svc, repo, audit
 }
 

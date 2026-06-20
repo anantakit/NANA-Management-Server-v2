@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"nana/internal/billingconfig"
-	"nana/internal/moveout"
 	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
@@ -20,36 +19,28 @@ type BillingService interface {
 	GetSummary(ctx context.Context, params BillSummaryParams) (*BillSummaryRaw, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	CreateMonthlyBill(ctx context.Context, req CreateMonthlyBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
-	CreateSettlementBill(ctx context.Context, req CreateSettlementBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error)
 	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	CorrectBill(ctx context.Context, id uuid.UUID, req CorrectBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 
-	// Settlement preview (non-persisting)
-	PreviewSettlement(ctx context.Context, input PreviewSettlementInput) (*SettlementPreview, error)
-
-	// Settlement draft editing
-	UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req UpdateSettlementDraftRequest, actor *uuid.UUID) (*BillWithRelations, error)
-
 	// Monthly draft editing
 	UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, req UpdateMonthlyDraftRequest, actor *uuid.UUID) (*BillWithRelations, error)
-
-	// Move-out workflow ports (satisfies moveout.BillingCommander + moveout.BillingQuerier)
-	GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error)
-	RegenerateSettlement(ctx context.Context, existingBillID uuid.UUID, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error)
-	CorrectSettlement(ctx context.Context, in moveout.CorrectSettlementInput) (*moveout.SettlementBillResult, error)
-	PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error)
-	FinalizeSettlement(ctx context.Context, billID uuid.UUID) error
-	VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error
 }
 
-// NOTE: the 9 batch-related methods (BatchCreateMonthlyBills, PreflightMonthly,
-// CommitBatch, BatchFinalizeAll, FinalizeAllByMonth, RePlanBatchItem,
-// GetBatchByID, GetBatchItems, ListBatches) moved to internal/billing/monthly
-// in commit 2b (2026-06-19). cmd/main.go now constructs monthly.NewService +
-// monthly.NewHandler alongside this service. See
-// project_billing_extraction_plan_locked.md.
+// NOTE: history of method migrations off this interface:
+//   - W2 (28381ff, 2026-06-19): 9 batch-related methods moved to
+//     internal/billing/monthly (BatchCreateMonthlyBills, PreflightMonthly,
+//     CommitBatch, BatchFinalizeAll, FinalizeAllByMonth, RePlanBatchItem,
+//     GetBatchByID, GetBatchItems, ListBatches).
+//   - W4 commit 3 (this commit, 2026-06-19): 9 settlement methods moved to
+//     internal/billing/settlement (PreviewSettlement, CreateSettlementBill,
+//     UpdateSettlementDraft, FinalizeSettlement, RegenerateSettlement,
+//     GenerateSettlement, CorrectSettlement, VoidSettlement,
+//     PreviewSettlementForNotice). moveout.BillingCommander and
+//     moveout.BillingQuerier are now satisfied by *settlement.Service —
+//     billingService no longer satisfies them.
+// See project_billing_extraction_plan_locked.md.
 
 type billingService struct {
 	repo           BillingRepository
@@ -57,7 +48,6 @@ type billingService struct {
 	contracts      ContractQuerier
 	meters         MeterReadingQuerier
 	configs        BillingConfigQuerier
-	moveOuts       MoveOutQuerier
 	paymentRouting PaymentRoutingQuerier
 	tx             database.TxManager
 }
@@ -70,7 +60,6 @@ func NewBillingService(
 	contracts ContractQuerier,
 	meters MeterReadingQuerier,
 	configs BillingConfigQuerier,
-	moveOuts MoveOutQuerier,
 	paymentRouting PaymentRoutingQuerier,
 	tx database.TxManager,
 ) BillingService {
@@ -80,7 +69,6 @@ func NewBillingService(
 		contracts:      contracts,
 		meters:         meters,
 		configs:        configs,
-		moveOuts:       moveOuts,
 		paymentRouting: paymentRouting,
 		tx:             tx,
 	}

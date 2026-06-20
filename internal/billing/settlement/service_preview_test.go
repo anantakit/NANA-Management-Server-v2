@@ -1,36 +1,16 @@
-package billing
+package settlement
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"nana/internal/contract"
-
-	"github.com/google/uuid"
+	"nana/internal/billing"
 )
 
 // ============================================================
 // Settlement Preview Tests
 // ============================================================
-
-func previewSetup(c *contract.Contract, moveOutDate time.Time, unpaidBills []Bill) (*mockBillingRepo, BillingService) {
-	exitReading := testExitReading(c.RoomID, moveOutDate)
-	notice := completedNotice(c.ID, moveOutDate)
-
-	repo := &mockBillingRepo{
-		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
-			return unpaidBills, nil
-		},
-	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{notice: notice},
-	)
-	return repo, svc
-}
 
 func TestPreviewSettlement_HappyPath_Prorated(t *testing.T) {
 	c := normalExitContract()
@@ -44,7 +24,7 @@ func TestPreviewSettlement_HappyPath_Prorated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if preview.RentMode != RentModeProrated {
+	if preview.RentMode != billing.RentModeProrated {
 		t.Errorf("RentMode = %s, want PRORATED", preview.RentMode)
 	}
 	if preview.MoveOutDate != moveOut {
@@ -76,20 +56,20 @@ func TestPreviewSettlement_FullMonthKeepDeposit(t *testing.T) {
 
 	preview, err := svc.PreviewSettlement(context.Background(), PreviewSettlementInput{
 		ContractID: c.ID,
-		RentMode:   RentModeFullMonthKeepDeposit,
+		RentMode:   billing.RentModeFullMonthKeepDeposit,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if preview.RentMode != RentModeFullMonthKeepDeposit {
+	if preview.RentMode != billing.RentModeFullMonthKeepDeposit {
 		t.Errorf("RentMode = %s, want FULL_MONTH_KEEP_DEPOSIT", preview.RentMode)
 	}
 
 	// Full-month mode should produce ROOM_RENT (not PRORATE_RENT)
 	var hasFullRent bool
 	for _, li := range preview.Plan.Bill.LineItems {
-		if li.LineType == LineItemRoomRent {
+		if li.LineType == billing.LineItemRoomRent {
 			hasFullRent = true
 			if li.Amount != c.MonthlyRent {
 				t.Errorf("rent amount = %d, want %d (full month)", li.Amount, c.MonthlyRent)
@@ -105,7 +85,7 @@ func TestPreviewSettlement_DoesNotPersist(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	bill := unpaidBill(c.ID, "2026-02", 620000)
-	repo, svc := previewSetup(c, moveOut, []Bill{bill})
+	bills, svc := previewSetup(c, moveOut, []billing.Bill{bill})
 
 	_, err := svc.PreviewSettlement(context.Background(), PreviewSettlementInput{
 		ContractID: c.ID,
@@ -114,11 +94,11 @@ func TestPreviewSettlement_DoesNotPersist(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if repo.createdBill != nil {
+	if bills.createdBill != nil {
 		t.Error("preview must not create a bill")
 	}
-	if len(repo.updatedBills) > 0 {
-		t.Errorf("preview must not update any bills, got %d updates", len(repo.updatedBills))
+	if len(bills.updatedBills) > 0 {
+		t.Errorf("preview must not update any bills, got %d updates", len(bills.updatedBills))
 	}
 }
 
@@ -126,7 +106,7 @@ func TestPreviewSettlement_IncludesAbsorbedBills(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	bill := unpaidBill(c.ID, "2026-02", 620000)
-	_, svc := previewSetup(c, moveOut, []Bill{bill})
+	_, svc := previewSetup(c, moveOut, []billing.Bill{bill})
 
 	preview, err := svc.PreviewSettlement(context.Background(), PreviewSettlementInput{
 		ContractID: c.ID,
@@ -189,7 +169,7 @@ func TestPreviewSettlement_ZeroBalanceOutcome(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Manually set deposit to exactly match charges to verify ZERO_BALANCE
+	// Manually set deposit to exactly match charges to verify ZERO_BALANCE.
 	// We test the outcome derivation directly via the DTO converter
 	// by crafting a SettlementPreview where deposit covers charges exactly.
 	zeroPlan := *preview.Plan
@@ -226,7 +206,7 @@ func TestPreviewSettlement_ParityWithCreate(t *testing.T) {
 	bill := unpaidBill(c.ID, "2026-02", 620000)
 
 	// --- Preview ---
-	_, previewSvc := previewSetup(c, moveOut, []Bill{bill})
+	_, previewSvc := previewSetup(c, moveOut, []billing.Bill{bill})
 	preview, err := previewSvc.PreviewSettlement(context.Background(), PreviewSettlementInput{
 		ContractID: c.ID,
 	})
@@ -235,12 +215,12 @@ func TestPreviewSettlement_ParityWithCreate(t *testing.T) {
 	}
 
 	// --- Create (via GenerateSettlement — same prepareSettlementPlan path) ---
-	_, createSvc := settlementSetup(c, moveOut, []Bill{bill})
+	createBills, createSvc := settlementSetup(c, moveOut, []billing.Bill{bill})
 	_, err = createSvc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("create error: %v", err)
 	}
-	created := extractMockRepo(createSvc).createdBill
+	created := createBills.createdBill
 
 	// 1. Line items: count, types, amounts
 	previewItems := preview.Plan.Bill.LineItems
@@ -259,7 +239,7 @@ func TestPreviewSettlement_ParityWithCreate(t *testing.T) {
 
 	// 2. Deposit breakdown (recompute from created bill to compare)
 	pd := preview.Plan.Deposit
-	returnable := isDepositReturnable(c.StartDate, effectiveMoveOutDate(moveOut, RentModeProrated), c.MinMonths)
+	returnable := isDepositReturnable(c.StartDate, effectiveMoveOutDate(moveOut, billing.RentModeProrated), c.MinMonths)
 	cd := computeDepositSettlement(created.DepositAmount, created.TotalAmount, returnable)
 	if pd.OriginalAmount != cd.OriginalAmount {
 		t.Errorf("deposit original: preview=%d, create=%d", pd.OriginalAmount, cd.OriginalAmount)
@@ -284,13 +264,13 @@ func TestPreviewSettlement_ParityWithCreate(t *testing.T) {
 
 	// 4. Effective move-out date
 	effPreview := effectiveMoveOutDate(preview.MoveOutDate, preview.RentMode)
-	effCreate := effectiveMoveOutDate(moveOut, RentModeProrated)
+	effCreate := effectiveMoveOutDate(moveOut, billing.RentModeProrated)
 	if !effPreview.Equal(effCreate) {
 		t.Errorf("effective move-out: preview=%v, create=%v", effPreview, effCreate)
 	}
 
 	// 5. Rent mode
-	if preview.RentMode != RentModeProrated {
+	if preview.RentMode != billing.RentModeProrated {
 		t.Errorf("rent mode: preview=%s, want PRORATED", preview.RentMode)
 	}
 
@@ -298,9 +278,4 @@ func TestPreviewSettlement_ParityWithCreate(t *testing.T) {
 	if preview.Plan.Bill.TotalAmount != created.TotalAmount {
 		t.Errorf("total: preview=%d, create=%d", preview.Plan.Bill.TotalAmount, created.TotalAmount)
 	}
-}
-
-// extractMockRepo recovers the mock repo from the service for test assertions.
-func extractMockRepo(svc BillingService) *mockBillingRepo {
-	return svc.(*billingService).repo.(*mockBillingRepo)
 }

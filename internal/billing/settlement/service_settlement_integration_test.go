@@ -1,12 +1,13 @@
 //go:build integration
 
-package billing
+package settlement
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"nana/internal/billing"
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
@@ -55,27 +56,27 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	// (Must be BEFORE M-1 to trigger full-absorption path that creates
 	// OUTSTANDING_BILL line items.)
 	oldMonth := moveOutDate.AddDate(0, -3, 0).Format("2006-01")
-	oldBill := Bill{
+	oldBill := billing.Bill{
 		ContractID:   c.ID,
 		BillingMonth: oldMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusFinalized,
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusFinalized,
 		TotalAmount:  416000,
 	}
 	if err := db.Create(&oldBill).Error; err != nil {
 		t.Fatalf("create old monthly bill: %v", err)
 	}
-	oldItems := []BillLineItem{
-		{BillID: oldBill.ID, LineType: LineItemRoomRent, Source: LineItemSourceAuto, Description: "ค่าเช่า", Amount: 300000, SortOrder: 1},
-		{BillID: oldBill.ID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ 20 หน่วย", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 2},
-		{BillID: oldBill.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Description: "ค่าไฟฟ้า 100 หน่วย", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 3},
+	oldItems := []billing.BillLineItem{
+		{BillID: oldBill.ID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: 300000, SortOrder: 1},
+		{BillID: oldBill.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 20 หน่วย", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 2},
+		{BillID: oldBill.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 100 หน่วย", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 3},
 	}
 	if err := db.Create(&oldItems).Error; err != nil {
 		t.Fatalf("create old bill line items: %v", err)
 	}
 
 	// ── Wire the real service graph ──
-	svc := buildRealBillingService(t, db)
+	svc := buildRealSettlementService(t, db)
 
 	// ── Act ──
 	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOutDate, "")
@@ -87,14 +88,14 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	}
 
 	// ── Load the persisted settlement bill (with line items) ──
-	var settlement Bill
+	var settlement billing.Bill
 	if err := db.Preload("LineItems").Where("id = ?", result.BillID).First(&settlement).Error; err != nil {
 		t.Fatalf("reload settlement bill: %v", err)
 	}
-	if settlement.BillType != BillTypeSettlement {
+	if settlement.BillType != billing.BillTypeSettlement {
 		t.Errorf("bill_type = %s, want SETTLEMENT", settlement.BillType)
 	}
-	if settlement.Status != BillStatusDraft {
+	if settlement.Status != billing.BillStatusDraft {
 		t.Errorf("status = %s, want DRAFT", settlement.Status)
 	}
 
@@ -104,16 +105,16 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	//
 	// Note: ROOM_RENT vs PRORATE_RENT depends on whether advance rent was
 	// already paid; for this scenario (no PAID M-1 bill) it's PRORATE_RENT.
-	byType := make(map[LineItemType][]BillLineItem, len(settlement.LineItems))
+	byType := make(map[billing.LineItemType][]billing.BillLineItem, len(settlement.LineItems))
 	for _, li := range settlement.LineItems {
 		byType[li.LineType] = append(byType[li.LineType], li)
 	}
-	requiredTypes := []LineItemType{
-		LineItemProrateRent,
-		LineItemWater,
-		LineItemElectricity,
-		LineItemCleaningFee,
-		LineItemOutstandingBill,
+	requiredTypes := []billing.LineItemType{
+		billing.LineItemProrateRent,
+		billing.LineItemWater,
+		billing.LineItemElectricity,
+		billing.LineItemCleaningFee,
+		billing.LineItemOutstandingBill,
 	}
 	for _, lt := range requiredTypes {
 		if len(byType[lt]) == 0 {
@@ -126,7 +127,7 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	// the OUTSTANDING_BILL line amount must equal oldBill.TotalAmount (416000).
 	// If this drifts, either absorption logic changed or M-1 special-case leaked
 	// into pre-M-1 months.
-	if got := byType[LineItemOutstandingBill]; len(got) != 1 {
+	if got := byType[billing.LineItemOutstandingBill]; len(got) != 1 {
 		t.Errorf("expected exactly 1 OUTSTANDING_BILL line, got %d", len(got))
 	} else if got[0].Amount != oldBill.TotalAmount {
 		t.Errorf("OUTSTANDING_BILL amount = %d, want %d (full old bill total)", got[0].Amount, oldBill.TotalAmount)
@@ -144,7 +145,7 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 
 	// ── Assert: all AUTO-source line items are populated (no MANUAL on fresh draft) ──
 	for _, li := range settlement.LineItems {
-		if li.Source != LineItemSourceAuto {
+		if li.Source != billing.LineItemSourceAuto {
 			t.Errorf("fresh draft has non-AUTO line item: type=%s source=%s", li.LineType, li.Source)
 		}
 	}
@@ -158,11 +159,11 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	}
 
 	// ── Assert: absorbed bill transitioned to VOID with reason ABSORBED_BY_SETTLEMENT ──
-	var absorbed Bill
+	var absorbed billing.Bill
 	if err := db.Where("id = ?", oldBill.ID).First(&absorbed).Error; err != nil {
 		t.Fatalf("reload absorbed bill: %v", err)
 	}
-	if absorbed.Status != BillStatusVoid {
+	if absorbed.Status != billing.BillStatusVoid {
 		t.Errorf("absorbed bill status = %s, want VOID", absorbed.Status)
 	}
 	if absorbed.VoidReason == nil || *absorbed.VoidReason != "ABSORBED_BY_SETTLEMENT" {
@@ -170,18 +171,20 @@ func TestGenerateSettlement_PersistsOutstandingBillLineItems(t *testing.T) {
 	}
 }
 
-// buildRealBillingService wires the billing service with real repositories
-// from each feature package, backed by the test DB.
-func buildRealBillingService(t *testing.T, db *gorm.DB) BillingService {
+// buildRealSettlementService wires the settlement service with real repositories
+// from each feature package, backed by the test DB. SettlementAdapter wraps the
+// billing root repos to satisfy BillStore + AuditStore.
+func buildRealSettlementService(t *testing.T, db *gorm.DB) *Service {
 	t.Helper()
 	txMgr := database.NewTxManager(db)
-	billRepo := NewBillingRepository(db)
-	billAuditRepo := NewBillAuditRepository(db)
+	billRepo := billing.NewBillingRepository(db)
+	billAuditRepo := billing.NewBillAuditRepository(db)
+	adapter := billing.NewSettlementAdapter(billRepo, billAuditRepo)
 	contractRepo := contract.NewContractRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	bcRepo := billingconfig.NewBillingConfigRepository(db)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
-	return NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, nil, txMgr)
+	return NewService(adapter, adapter, contractRepo, meterRepo, bcRepo, moveOutRepo, nil, txMgr)
 }
 
 func truncateToDate(t time.Time) time.Time {

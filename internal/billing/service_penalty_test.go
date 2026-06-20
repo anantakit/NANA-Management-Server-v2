@@ -50,7 +50,6 @@ func TestGetByID_PopulatesOverdueDaysAndPenaltyReference(t *testing.T) {
 		&mockConfigQuerier{configs: []billingconfig.BillingConfig{
 			{FeeType: billingconfig.FeeTypeLatePenalty, DefaultAmount: 10000, IsActive: true}, // ฿100
 		}},
-		&mockMoveOutQuerier{},
 	)
 
 	got, err := svc.GetByID(context.Background(), billID)
@@ -93,7 +92,6 @@ func TestGetByID_OverdueDaysIndependentOfPenaltyConfig(t *testing.T) {
 		// Empty configs slice — no LATE_PENALTY at all. Contrast with
 		// the happy-path test above.
 		&mockConfigQuerier{configs: []billingconfig.BillingConfig{}},
-		&mockMoveOutQuerier{},
 	)
 
 	got, err := svc.GetByID(context.Background(), billID)
@@ -138,7 +136,6 @@ func TestGetByID_SettlementBillSuppressesBothHints(t *testing.T) {
 		&mockConfigQuerier{configs: []billingconfig.BillingConfig{
 			{FeeType: billingconfig.FeeTypeLatePenalty, DefaultAmount: 10000, IsActive: true},
 		}},
-		&mockMoveOutQuerier{},
 	)
 
 	got, err := svc.GetByID(context.Background(), billID)

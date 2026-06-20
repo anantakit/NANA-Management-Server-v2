@@ -10,18 +10,18 @@ package billing
 // Paths covered:
 //   - CreateMonthlyBill (monthly, with and without rules)
 //   - CorrectBill (correction re-snapshots from current rules, not old bill)
-//   - GenerateSettlement (via move-out port)
-//   - RegenerateSettlement (void+recreate settlement)
+//
+// Settlement snapshot tests (TestGenerateSettlement_SnapshotsPaymentDestination
+// + TestRegenerateSettlement_SnapshotsPaymentDestination) migrate alongside
+// the settlement workflow in a follow-up commit — see W4 commit 3 message.
 
 import (
 	"context"
 	"testing"
-	"time"
 
 	"nana/internal/apartment"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
-	"nana/internal/moveout"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -55,7 +55,6 @@ func snapshotSvc(repo *mockBillingRepo, c *contract.Contract, reading *meterread
 		&mockContractQuerier{contract: c},
 		&mockMeterQuerier{reading: reading},
 		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
 		routing,
 		&mockTxManager{},
 	)
@@ -210,7 +209,6 @@ func TestCorrection_ReSnapshotsFromCurrentRules(t *testing.T) {
 		&mockContractQuerier{contract: c},
 		meters,
 		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
 		routing,
 		&mockTxManager{},
 	)
@@ -231,178 +229,6 @@ func TestCorrection_ReSnapshotsFromCurrentRules(t *testing.T) {
 	}
 	if *got.PaymentBankName == oldBankName {
 		t.Errorf("new bill inherited old bank name — re-snapshot did not happen")
-	}
-}
-
-// ============================================================
-// TestGenerateSettlement_SnapshotsPaymentDestination
-// ============================================================
-
-func TestGenerateSettlement_SnapshotsPaymentDestination(t *testing.T) {
-	c := testContract()
-	moveOutDate := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
-	bm := "2026-06"
-
-	// Wire the dependencies GenerateSettlement needs.
-	exitReading := &meterreading.MeterReading{
-		ID:                  uuid.New(),
-		RoomID:              c.RoomID,
-		ReadingType:         meterreading.ReadingTypeExit,
-		ReadingDateActual:   &moveOutDate,
-		ElectricityPrevious: 1000,
-		ElectricityCurrent:  1050,
-		WaterPrevious:       100,
-		WaterCurrent:        105,
-	}
-
-	repo := &mockBillingRepo{}
-	repo.findByIDWithRelationsFn = func(_ context.Context, _ uuid.UUID) (*BillWithRelations, error) {
-		if repo.createdBill != nil {
-			return &BillWithRelations{Bill: *repo.createdBill}, nil
-		}
-		return nil, gorm.ErrRecordNotFound
-	}
-	// FindByContractAndMonth must return gorm.ErrRecordNotFound (no existing bill).
-	repo.findByContractAndMonthFn = func(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
-		return nil, gorm.ErrRecordNotFound
-	}
-	// FindAbsorbedByContractID must return empty slice (nothing to absorb).
-	repo.findAbsorbedFn = func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
-		return nil, nil
-	}
-	repo.hasPaidAdvanceRentFn = func(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
-		return true, nil // advance rent already paid for the move-out month
-	}
-
-	routing := &mockPaymentRoutingQuerier{dest: snapshotDest}
-	meterQuerier := &mockMeterQuerier{
-		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
-			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: exitReading}, nil
-		},
-	}
-	moveOutQuerier := &mockMoveOutQuerier{
-		notice: &moveout.MoveOutNotice{
-			ID:                uuid.New(),
-			ContractID:        c.ID,
-			Status:            moveout.MoveOutStatusPendingSettlement,
-			ActualMoveOutDate: &moveOutDate,
-		},
-	}
-
-	svc := NewBillingService(
-		repo,
-		&mockBillAuditRepo{},
-		&mockContractQuerier{contract: c},
-		meterQuerier,
-		&mockConfigQuerier{},
-		moveOutQuerier,
-		routing,
-		&mockTxManager{},
-	)
-
-	_, err := svc.(interface {
-		GenerateSettlement(context.Context, uuid.UUID, time.Time, moveout.RentMode) (*moveout.SettlementBillResult, error)
-	}).GenerateSettlement(context.Background(), c.ID, moveOutDate, "")
-	if err != nil {
-		// Settlement plan might fail due to stub deps. We only care that the
-		// bill creation was attempted with the snapshot. Check via createdBill.
-		if repo.createdBill == nil {
-			t.Skipf("settlement plan failed (stub deps incomplete): %v — snapshot assertion skipped", err)
-		}
-	}
-
-	if repo.createdBill == nil {
-		t.Skip("no settlement bill created — skipping snapshot assertion (stub setup incomplete)")
-	}
-	_ = bm
-	got := repo.createdBill
-	if got.PaymentBankName == nil || *got.PaymentBankName != snapshotDest.BankName {
-		t.Errorf("settlement PaymentBankName = %v, want %q", got.PaymentBankName, snapshotDest.BankName)
-	}
-}
-
-// ============================================================
-// TestRegenerateSettlement_SnapshotsPaymentDestination
-// ============================================================
-
-func TestRegenerateSettlement_SnapshotsPaymentDestination(t *testing.T) {
-	c := testContract()
-	moveOutDate := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
-
-	existingBill := &Bill{
-		ID:                    uuid.New(),
-		ContractID:            c.ID,
-		BillingMonth:          "2026-06",
-		BillType:              BillTypeSettlement,
-		Status:                BillStatusDraft,
-		SettlementRentMode:    RentModeProrated,
-		PaymentBankName:       strPtr("ธนาคารเก่า"),
-		PaymentAccountNumber:  strPtr("old-acct"),
-		PaymentAccountName:    strPtr("บัญชีเก่า"),
-	}
-
-	repo := repoWithFindByID(existingBill)
-	repo.findByContractAndMonthFn = func(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
-		return nil, gorm.ErrRecordNotFound
-	}
-	repo.findAbsorbedFn = func(_ context.Context, _ uuid.UUID) ([]Bill, error) { return nil, nil }
-	repo.hasPaidAdvanceRentFn = func(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
-		return true, nil
-	}
-
-	exitReading := &meterreading.MeterReading{
-		ID:                  uuid.New(),
-		RoomID:              c.RoomID,
-		ReadingType:         meterreading.ReadingTypeExit,
-		ReadingDateActual:   &moveOutDate,
-		ElectricityPrevious: 1000,
-		ElectricityCurrent:  1050,
-		WaterPrevious:       100,
-		WaterCurrent:        105,
-	}
-
-	routing := &mockPaymentRoutingQuerier{dest: snapshotDest}
-	meterQuerier := &mockMeterQuerier{
-		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
-			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: exitReading}, nil
-		},
-	}
-	moveOutQuerier := &mockMoveOutQuerier{
-		notice: &moveout.MoveOutNotice{
-			ID: uuid.New(), ContractID: c.ID,
-			Status: moveout.MoveOutStatusPendingSettlement, ActualMoveOutDate: &moveOutDate,
-		},
-	}
-
-	svc := NewBillingService(
-		repo,
-		&mockBillAuditRepo{},
-		&mockContractQuerier{contract: c},
-		meterQuerier,
-		&mockConfigQuerier{},
-		moveOutQuerier,
-		routing,
-		&mockTxManager{},
-	)
-
-	_, err := svc.(interface {
-		RegenerateSettlement(context.Context, uuid.UUID, uuid.UUID, time.Time, moveout.RentMode) (*moveout.SettlementBillResult, error)
-	}).RegenerateSettlement(context.Background(), existingBill.ID, c.ID, moveOutDate, "")
-	if err != nil {
-		if repo.createdBill == nil {
-			t.Skipf("regen failed (stub deps): %v — snapshot assertion skipped", err)
-		}
-	}
-	if repo.createdBill == nil {
-		t.Skip("no bill created by regen — skipping snapshot assertion")
-	}
-
-	got := repo.createdBill
-	if got.PaymentBankName == nil || *got.PaymentBankName != snapshotDest.BankName {
-		t.Errorf("regen PaymentBankName = %v, want %q", got.PaymentBankName, snapshotDest.BankName)
-	}
-	if got.PaymentBankName != nil && *got.PaymentBankName == "ธนาคารเก่า" {
-		t.Error("regen bill inherited old bank name — re-snapshot did not happen")
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
-	"nana/internal/moveout"
 
 	"github.com/google/uuid"
 )
@@ -28,17 +27,6 @@ type MeterReadingQuerier interface {
 // BillingConfigQuerier looks up configurable fees for settlement bills.
 type BillingConfigQuerier interface {
 	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]billingconfig.BillingConfig, error)
-}
-
-// MoveOutQuerier looks up move-out notices for settlement and batch billing.
-type MoveOutQuerier interface {
-	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*moveout.MoveOutNotice, error)
-	// FindRoomIDsWithMoveOutInMonth returns rooms whose non-terminal move-out
-	// notice has scheduled_move_out_date inside the given billing month
-	// (YYYY-MM). Used by the monthly batch flow to skip ONLY current-month
-	// move-outs (settlement will cover them); rooms with future-month notices
-	// still get a normal monthly bill.
-	FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
 }
 
 // PaymentRoutingQuerier resolves the payment destination for a room.

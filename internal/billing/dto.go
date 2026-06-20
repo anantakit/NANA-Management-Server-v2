@@ -17,11 +17,6 @@ type CreateMonthlyBillRequest struct {
 	MeterReadingID string `json:"meter_reading_id" validate:"required,uuid"`
 }
 
-type CreateSettlementBillRequest struct {
-	ContractID string `json:"contract_id" validate:"required,uuid"`
-	RentMode   string `json:"rent_mode" validate:"omitempty,oneof=PRORATED FULL_MONTH_KEEP_DEPOSIT"`
-}
-
 type VoidBillRequest struct {
 	Reason string `json:"reason" validate:"required,min=1,max=100"`
 }
@@ -39,16 +34,10 @@ type CorrectBillRequest struct {
 	CorrectionReason string `json:"correction_reason" validate:"required,min=5,max=500"`
 }
 
-// UpdateSettlementDraftRequest replaces all MANUAL line items + note on a DRAFT settlement bill.
-// Also supports overrides (AUTO item amount adjustments) and deposit application mode.
-type UpdateSettlementDraftRequest struct {
-	ManualItems          []ManualLineItemRequest `json:"manual_items" validate:"dive"`
-	Note                 *string                 `json:"note"`
-	Overrides            map[string]float64      `json:"overrides"`                                              // override_key → baht
-	DepositApplication   *string                 `json:"deposit_application" validate:"omitempty,oneof=FULL NONE CUSTOM"` // FULL|NONE|CUSTOM
-	CustomDepositApplied *float64                `json:"custom_deposit_applied" validate:"omitempty,min=0"`              // baht, when CUSTOM
-}
-
+// ManualLineItemRequest is the shared shape for manual line item inputs.
+// Used by both UpdateMonthlyDraftRequest (in this file) and
+// UpdateSettlementDraftRequest (in internal/billing/settlement/dto.go).
+// Stays at billing root because both workflows reference it.
 type ManualLineItemRequest struct {
 	LineType    string  `json:"line_type" validate:"required"`
 	Description string  `json:"description" validate:"required,min=1,max=200"`
@@ -118,26 +107,8 @@ type BillSummaryResponse struct {
 	VoidedAmount  float64 `json:"voided_amount"`
 }
 
-// --- Service-level input (not transport) ---
-
-// PreviewSettlementInput is the service-layer input for settlement preview.
-// Decoupled from handler request DTO.
-// MoveOutDate is resolved from the move-out notice (same as CreateSettlementBill).
-type PreviewSettlementInput struct {
-	ContractID uuid.UUID
-	RentMode   SettlementRentMode // empty = PRORATED
-}
-
-// SettlementPreview is the service-level result of a settlement preview.
-// Contains all data needed by the handler to build the response DTO.
-type SettlementPreview struct {
-	Plan                 *settlementPlan
-	MinMonths            int
-	Returnable           bool
-	MoveOutDate          time.Time
-	EffectiveMoveOutDate time.Time
-	RentMode             SettlementRentMode
-}
+// Settlement service-level types (PreviewSettlementInput, SettlementPreview)
+// migrated to internal/billing/settlement/dto.go in W4 commit 3 (2026-06-19).
 
 // --- Response DTOs ---
 
@@ -296,64 +267,10 @@ type BillListItemResponse struct {
 	PaymentAccountName   *string `json:"payment_account_name,omitempty"`
 }
 
-// --- Settlement preview DTOs ---
-
-// SettlementOutcome summarizes the net result of a settlement.
-type SettlementOutcome string
-
-const (
-	OutcomeRefund      SettlementOutcome = "REFUND"
-	OutcomePayMore     SettlementOutcome = "PAY_MORE"
-	OutcomeZeroBalance SettlementOutcome = "ZERO_BALANCE"
-)
-
-// PreviewSettlementRequest is the handler-level request DTO.
-type PreviewSettlementRequest struct {
-	ContractID string `json:"contract_id" validate:"required,uuid"`
-	RentMode   string `json:"rent_mode" validate:"omitempty,oneof=PRORATED FULL_MONTH_KEEP_DEPOSIT"`
-}
-
-// SettlementPreviewResponse is the non-persisted preview of a settlement.
-// Distinct from BillResponse — preview is not a persisted bill.
-type SettlementPreviewResponse struct {
-	ContractID          uuid.UUID                `json:"contract_id"`
-	BillingMonth        string                   `json:"billing_month"`
-	ActualMoveOutDate   string                   `json:"actual_move_out_date"`
-	EffectiveMoveOutDate string                  `json:"effective_move_out_date"`
-	RentMode            string                   `json:"rent_mode"`
-	RentPaid            bool                     `json:"rent_paid"`
-	MinMonths           int                      `json:"min_months"`
-	DepositReturnable   bool                     `json:"deposit_returnable"`
-	LineItems           []PreviewLineItemResponse `json:"line_items"`
-	TotalAmount         float64                  `json:"total_amount"`
-	Deposit             DepositBreakdownResponse `json:"deposit"`
-	AbsorbedBills       []AbsorbedBillResponse   `json:"absorbed_bills"`
-	Outcome             SettlementOutcome        `json:"outcome"`
-}
-
-type PreviewLineItemResponse struct {
-	LineType    string  `json:"line_type"`
-	Source      string  `json:"source"`
-	Description string  `json:"description"`
-	Amount      float64 `json:"amount"`
-	Quantity    int     `json:"quantity"`
-	UnitPrice   float64 `json:"unit_price"`
-	SortOrder   int     `json:"sort_order"`
-}
-
-type DepositBreakdownResponse struct {
-	Original  float64 `json:"original"`
-	Forfeited float64 `json:"forfeited"`
-	Applied   float64 `json:"applied"`
-	Refund    float64 `json:"refund"`
-	Due       float64 `json:"due"`
-}
-
-type AbsorbedBillResponse struct {
-	BillID       uuid.UUID `json:"bill_id"`
-	BillingMonth string    `json:"billing_month"`
-	TotalAmount  float64   `json:"total_amount"`
-}
+// Settlement transport DTOs (PreviewSettlementRequest, SettlementPreviewResponse,
+// PreviewLineItemResponse, DepositBreakdownResponse, AbsorbedBillResponse,
+// SettlementOutcome + OutcomeRefund/PayMore/ZeroBalance constants) migrated
+// to internal/billing/settlement/dto.go in W4 commit 3 (2026-06-19).
 
 // --- Batch billing repo params (entities stay here for the repo) ---
 //
@@ -512,66 +429,8 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 	return resp
 }
 
-func ToSettlementPreviewResponse(p *SettlementPreview) SettlementPreviewResponse {
-	plan := p.Plan
-
-	items := make([]PreviewLineItemResponse, len(plan.Bill.LineItems))
-	for i, li := range plan.Bill.LineItems {
-		items[i] = PreviewLineItemResponse{
-			LineType:    string(li.LineType),
-			Source:      string(li.Source),
-			Description: li.Description,
-			Amount:      money.ToBaht(li.Amount),
-			Quantity:    li.Quantity,
-			UnitPrice:   money.ToBaht(li.UnitPrice),
-			SortOrder:   li.SortOrder,
-		}
-	}
-
-	absorbed := make([]AbsorbedBillResponse, len(plan.BillsToAbsorb))
-	for i, b := range plan.BillsToAbsorb {
-		absorbed[i] = AbsorbedBillResponse{
-			BillID:       b.ID,
-			BillingMonth: b.BillingMonth,
-			TotalAmount:  money.ToBaht(b.TotalAmount),
-		}
-	}
-
-	d := plan.Deposit
-	deposit := DepositBreakdownResponse{
-		Original:  money.ToBaht(d.OriginalAmount),
-		Forfeited: money.ToBaht(d.ForfeitedAmount),
-		Applied:   money.ToBaht(d.AppliedAmount),
-		Refund:    money.ToBaht(d.RefundAmount),
-		Due:       money.ToBaht(d.AmountDue),
-	}
-
-	var outcome SettlementOutcome
-	switch {
-	case d.RefundAmount > 0:
-		outcome = OutcomeRefund
-	case d.AmountDue > 0:
-		outcome = OutcomePayMore
-	default:
-		outcome = OutcomeZeroBalance
-	}
-
-	return SettlementPreviewResponse{
-		ContractID:           plan.Bill.ContractID,
-		BillingMonth:         plan.Bill.BillingMonth,
-		ActualMoveOutDate:    p.MoveOutDate.Format("2006-01-02"),
-		EffectiveMoveOutDate: p.EffectiveMoveOutDate.Format("2006-01-02"),
-		RentMode:             string(p.RentMode),
-		RentPaid:             plan.Bill.RentPaid,
-		MinMonths:            p.MinMonths,
-		DepositReturnable:    p.Returnable,
-		LineItems:            items,
-		TotalAmount:          money.ToBaht(plan.Bill.TotalAmount),
-		Deposit:              deposit,
-		AbsorbedBills:        absorbed,
-		Outcome:              outcome,
-	}
-}
+// ToSettlementPreviewResponse migrated to internal/billing/settlement/dto.go
+// in W4 commit 3 (2026-06-19).
 
 func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 	r := BillListItemResponse{

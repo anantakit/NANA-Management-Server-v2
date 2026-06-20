@@ -13,7 +13,6 @@ import (
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
-	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/testutil/fixtures"
 	"nana/internal/testutil/testdb"
@@ -69,14 +68,8 @@ func (s *integrationConfigStub) FindByApartmentID(_ context.Context, _ uuid.UUID
 	return nil, nil
 }
 
-type integrationMoveOutStub struct{}
-
-func (s *integrationMoveOutStub) FindActiveByContractID(_ context.Context, _ uuid.UUID) (*moveout.MoveOutNotice, error) {
-	return nil, gorm.ErrRecordNotFound
-}
-func (s *integrationMoveOutStub) FindRoomIDsWithMoveOutInMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]bool, error) {
-	return map[uuid.UUID]bool{}, nil
-}
+// integrationMoveOutStub was removed in W4 commit 3 — billingService no longer
+// depends on MoveOutQuerier (settlement absorbed all uses).
 
 // correctionTestEnv is the shared scaffolding for every test in this file.
 // Provides a wired-up real BillingService backed by Postgres + a seeded
@@ -127,9 +120,8 @@ func newCorrectionTestEnv(t *testing.T, audit BillAuditRepository) *correctionTe
 	contracts := &integrationContractStub{c: c}
 	meters := meterreading.NewMeterReadingRepository(db) // real DB-backed
 	configs := &integrationConfigStub{}
-	moveOuts := &integrationMoveOutStub{}
 	txMgr := database.NewTxManager(db)
-	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, moveOuts, nil, txMgr)
+	svc := NewBillingService(billRepo, auditRepo, contracts, meters, configs, nil, txMgr)
 
 	// Seed the FINALIZED MONTHLY bill that tests will correct.
 	// TotalAmount intentionally wrong (999999) so we can prove the new

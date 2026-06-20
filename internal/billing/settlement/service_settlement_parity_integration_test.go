@@ -1,6 +1,6 @@
 //go:build integration
 
-package billing
+package settlement
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"nana/internal/billing"
 	"nana/internal/testutil/fixtures"
 	"nana/internal/testutil/testdb"
 )
@@ -47,27 +48,27 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 
 	// One FINALIZED monthly bill from 3 months ago — triggers OUTSTANDING_BILL.
 	oldMonth := moveOutDate.AddDate(0, -3, 0).Format("2006-01")
-	oldBill := Bill{
+	oldBill := billing.Bill{
 		ContractID:   c.ID,
 		BillingMonth: oldMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusFinalized,
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusFinalized,
 		TotalAmount:  416000,
 	}
 	if err := db.Create(&oldBill).Error; err != nil {
 		t.Fatalf("create old monthly bill: %v", err)
 	}
-	oldItems := []BillLineItem{
-		{BillID: oldBill.ID, LineType: LineItemRoomRent, Source: LineItemSourceAuto, Description: "ค่าเช่า", Amount: 300000, SortOrder: 1},
-		{BillID: oldBill.ID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ 20 หน่วย", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 2},
-		{BillID: oldBill.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Description: "ค่าไฟฟ้า 100 หน่วย", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 3},
+	oldItems := []billing.BillLineItem{
+		{BillID: oldBill.ID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: 300000, SortOrder: 1},
+		{BillID: oldBill.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ 20 หน่วย", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 2},
+		{BillID: oldBill.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า 100 หน่วย", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 3},
 	}
 	if err := db.Create(&oldItems).Error; err != nil {
 		t.Fatalf("create old bill line items: %v", err)
 	}
 
 	// ── Wire the real service graph ──
-	svc := buildRealBillingService(t, db)
+	svc := buildRealSettlementService(t, db)
 	ctx := context.Background()
 
 	// ── Step 1: Preview (read-only) ──
@@ -89,7 +90,7 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 	}
 
 	// ── Step 3: Load persisted bill ──
-	var persisted Bill
+	var persisted billing.Bill
 	if err := db.Preload("LineItems").Where("id = ?", result.BillID).First(&persisted).Error; err != nil {
 		t.Fatalf("reload persisted bill: %v", err)
 	}
@@ -198,9 +199,9 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 
 	// Absorbed bills — preview listed them; commit must have voided them AND
 	// created matching OUTSTANDING_BILL line items. Check both sides.
-	var outstanding []BillLineItem
+	var outstanding []billing.BillLineItem
 	for _, li := range persisted.LineItems {
-		if li.LineType == LineItemOutstandingBill {
+		if li.LineType == billing.LineItemOutstandingBill {
 			outstanding = append(outstanding, li)
 		}
 	}
@@ -224,11 +225,11 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 
 	// Verify every absorbed bill was actually voided in DB.
 	for _, pab := range previewAbsorbed {
-		var reloaded Bill
+		var reloaded billing.Bill
 		if err := db.Where("id = ?", pab.ID).First(&reloaded).Error; err != nil {
 			t.Fatalf("reload absorbed bill %s: %v", pab.ID, err)
 		}
-		if reloaded.Status != BillStatusVoid {
+		if reloaded.Status != billing.BillStatusVoid {
 			t.Errorf("absorbed bill %s status=%s, want VOID", pab.ID, reloaded.Status)
 		}
 	}
@@ -236,8 +237,8 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 
 // sortLineItems returns a stable-sorted copy of items keyed by
 // (line_type, sort_order, amount). Order-independent comparison.
-func sortLineItems(items []BillLineItem) []BillLineItem {
-	out := make([]BillLineItem, len(items))
+func sortLineItems(items []billing.BillLineItem) []billing.BillLineItem {
+	out := make([]billing.BillLineItem, len(items))
 	copy(out, items)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].LineType != out[j].LineType {

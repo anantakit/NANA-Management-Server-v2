@@ -130,7 +130,7 @@ func main() {
 	// Wire dependencies — Billing
 	billRepo := billing.NewBillingRepository(db)
 	billAuditRepo := billing.NewBillAuditRepository(db)
-	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, moveOutRepo, routingService, txManager)
+	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, routingService, txManager)
 	billHandler := billing.NewBillingHandler(billService)
 
 	// Wire dependencies — Monthly billing workflow (W2 batch mechanics).
@@ -158,9 +158,13 @@ func main() {
 	settlementService := settlement.NewService(settlementAdapter, settlementAdapter, contractRepo, meterRepo, bcRepo, moveOutRepo, routingService, txManager)
 	settlementHandler := settlement.NewHandler(settlementService)
 
-	// Wire Move-Out service (needs billingService as BillingCommander + BillingQuerier).
-	// Will rewire to settlementService in W4 commit 5 — see settlement wiring above.
-	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, billService, billService, txManager)
+	// Wire Move-Out service. settlementService satisfies both
+	// moveout.BillingCommander (Generate / Regenerate / Finalize / Void /
+	// Correct) and moveout.BillingQuerier (PreviewSettlementForNotice) —
+	// compile-time check pinned in settlement/adapter_check.go. W4 commit 3
+	// swapped from billService → settlementService when the settlement
+	// workflow methods migrated.
+	moveOutService := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterService, settlementService, settlementService, txManager)
 	moveOutHandler := moveout.NewMoveOutHandler(moveOutService)
 
 	// Wire dependencies — Payment recording

@@ -1,16 +1,28 @@
-package billing
+package settlement
 
 import (
 	"context"
 	"fmt"
 	"time"
 
+	"nana/internal/billing"
 	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
 )
+
+// Methods in this file satisfy moveout.BillingCommander and
+// moveout.BillingQuerier — they are called by the move-out workflow
+// orchestrator via DI in cmd/main.go. The move-out service owns the parent
+// transaction; settlement methods here MUST NOT start their own.
+//
+// FinalizeSettlement + RegenerateSettlement also belong to
+// moveout.BillingCommander but live in service.go because they are also
+// reachable from settlement's own user-facing surface. Splitting them by
+// file would be ceremony; the moveout-port comment in their headers there
+// is the load-bearing distinction.
 
 // GenerateSettlement creates a DRAFT settlement bill for the given contract
 // and move-out date. Called by the move-out service within its transaction
@@ -20,10 +32,10 @@ import (
 // commitSettlementPlan (persistence). Same path as CreateSettlementBill.
 // Emits CREATE_DRAFT audit with actor=nil because the cross-feature port
 // does not currently thread admin userID through.
-func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error) {
-	opts := DefaultSettlementOptions()
+func (s *Service) GenerateSettlement(ctx context.Context, contractID uuid.UUID, moveOutDate time.Time, rentMode moveout.RentMode) (*moveout.SettlementBillResult, error) {
+	opts := billing.DefaultSettlementOptions()
 	if rentMode != "" {
-		opts.RentMode = SettlementRentMode(rentMode)
+		opts.RentMode = billing.SettlementRentMode(rentMode)
 	}
 	plan, err := s.prepareSettlementPlan(ctx, contractID, moveOutDate, opts)
 	if err != nil {
@@ -31,14 +43,14 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 	}
 	// Snapshot payment destination before commit (same pattern as CreateSettlementBill).
 	if c, cErr := s.contracts.FindByIDSimple(ctx, contractID); cErr == nil {
-		aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
-		ApplyPaymentSnapshot(&plan.Bill, s.tryResolvePaymentDestination(ctx, aptID, roomNum))
+		aptID, roomNum, _ := s.bills.FindRoomApartmentInfo(ctx, c.RoomID)
+		billing.ApplyPaymentSnapshot(&plan.Bill, s.tryResolvePaymentDestination(ctx, aptID, roomNum))
 	}
 	result, err := s.commitSettlementPlan(ctx, plan)
 	if err != nil {
 		return nil, err
 	}
-	if err := recordAudit(ctx, s.audit, result.BillID, AuditCreateDraft, nil, AuditCreateDraftPayload{
+	if err := s.audit.RecordAudit(ctx, result.BillID, billing.AuditCreateDraft, nil, billing.AuditCreateDraftPayload{
 		LineItemCount: len(plan.Bill.LineItems),
 		TotalAmount:   plan.Bill.TotalAmount,
 	}); err != nil {
@@ -56,11 +68,11 @@ func (s *billingService) GenerateSettlement(ctx context.Context, contractID uuid
 // restore absorbed monthlies → prepare fresh plan → commit new. The new
 // bill's ID is pre-generated and threaded through plan.Bill.ID so the
 // supersede link resolves at COMMIT.
-func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.CorrectSettlementInput) (*moveout.SettlementBillResult, error) {
-	old, err := s.repo.LockBillForCorrection(ctx, in.ExistingBillID)
+func (s *Service) CorrectSettlement(ctx context.Context, in moveout.CorrectSettlementInput) (*moveout.SettlementBillResult, error) {
+	old, err := s.bills.LockBillForCorrection(ctx, in.ExistingBillID)
 	if err != nil {
 		if database.IsNotFound(err) {
-			return nil, ErrBillNotFound
+			return nil, billing.ErrBillNotFound
 		}
 		return nil, fmt.Errorf("lock settlement for correction: %w", err)
 	}
@@ -89,7 +101,7 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 	if err := old.MarkSupersededByCorrection(newBillID); err != nil {
 		return nil, respond.ErrBadRequest.WithMessage(err.Error())
 	}
-	if err := s.repo.Update(ctx, old); err != nil {
+	if err := s.bills.UpdateBill(ctx, old); err != nil {
 		return nil, fmt.Errorf("supersede old settlement: %w", err)
 	}
 
@@ -103,9 +115,9 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 	// Phase 3: fresh settlement plan. Rent mode defaults to the old bill's
 	// setting unless the caller overrides — correction is for fixing
 	// numbers, not changing policy.
-	opts := SettlementOptions{RentMode: old.SettlementRentMode}
+	opts := billing.SettlementOptions{RentMode: old.SettlementRentMode}
 	if in.RentMode != "" {
-		opts.RentMode = SettlementRentMode(in.RentMode)
+		opts.RentMode = billing.SettlementRentMode(in.RentMode)
 	}
 	plan, err := s.prepareSettlementPlan(ctx, in.ContractID, in.MoveOutDate, opts)
 	if err != nil {
@@ -123,7 +135,7 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 		if cErr != nil {
 			return nil, fmt.Errorf("find contract for routing (settlement correction): %w", cErr)
 		}
-		aptID, roomNum, rErr := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+		aptID, roomNum, rErr := s.bills.FindRoomApartmentInfo(ctx, c.RoomID)
 		if rErr != nil {
 			return nil, fmt.Errorf("find room info for routing (settlement correction): %w", rErr)
 		}
@@ -131,7 +143,7 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 		if destErr != nil {
 			return nil, fmt.Errorf("resolve payment destination for settlement correction: %w", destErr)
 		}
-		ApplyPaymentSnapshot(&plan.Bill, dest)
+		billing.ApplyPaymentSnapshot(&plan.Bill, dest)
 	}
 
 	result, err := s.commitSettlementPlan(ctx, plan)
@@ -140,14 +152,14 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 	}
 
 	// Phase 4: emit the correction audit pair (mirrors MONTHLY).
-	if err := recordAudit(ctx, s.audit, old.ID, AuditSupersede, in.Actor, AuditSupersedePayload{
+	if err := s.audit.RecordAudit(ctx, old.ID, billing.AuditSupersede, in.Actor, billing.AuditSupersedePayload{
 		PreviousStatus:   previousStatus,
 		NewBillID:        newBillID,
 		CorrectionReason: in.CorrectionReason,
 	}); err != nil {
 		return nil, err
 	}
-	if err := recordAudit(ctx, s.audit, newBillID, AuditCreateFromCorrection, in.Actor, AuditCreateFromCorrectionPayload{
+	if err := s.audit.RecordAudit(ctx, newBillID, billing.AuditCreateFromCorrection, in.Actor, billing.AuditCreateFromCorrectionPayload{
 		SupersededBillID: old.ID,
 		CorrectionReason: in.CorrectionReason,
 	}); err != nil {
@@ -162,11 +174,11 @@ func (s *billingService) CorrectSettlement(ctx context.Context, in moveout.Corre
 // so they can be re-absorbed by a new settlement or collected normally.
 // Called by the move-out service within its transaction context.
 // Emits VOID audit with actor=nil (cross-feature port).
-func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error {
-	b, err := s.repo.FindByID(ctx, billID)
+func (s *Service) VoidSettlement(ctx context.Context, billID uuid.UUID, reason string) error {
+	b, err := s.bills.FindByID(ctx, billID)
 	if err != nil {
 		if database.IsNotFound(err) {
-			return ErrBillNotFound
+			return billing.ErrBillNotFound
 		}
 		return fmt.Errorf("find bill for void: %w", err)
 	}
@@ -174,10 +186,10 @@ func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, r
 	if err := b.Void(reason); err != nil {
 		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
-	if err := s.repo.Update(ctx, b); err != nil {
+	if err := s.bills.UpdateBill(ctx, b); err != nil {
 		return fmt.Errorf("void settlement: %w", err)
 	}
-	if err := recordAudit(ctx, s.audit, b.ID, AuditVoid, nil, AuditVoidPayload{
+	if err := s.audit.RecordAudit(ctx, b.ID, billing.AuditVoid, nil, billing.AuditVoidPayload{
 		PreviousStatus: previousStatus,
 		Reason:         reason,
 	}); err != nil {
@@ -189,10 +201,10 @@ func (s *billingService) VoidSettlement(ctx context.Context, billID uuid.UUID, r
 
 // PreviewSettlementForNotice satisfies moveout.BillingQuerier.
 // Delegates to the existing PreviewSettlement and maps to the moveout result type.
-func (s *billingService) PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error) {
+func (s *Service) PreviewSettlementForNotice(ctx context.Context, contractID uuid.UUID, rentMode moveout.RentMode) (*moveout.SettlementPreviewResult, error) {
 	input := PreviewSettlementInput{ContractID: contractID}
 	if rentMode != "" {
-		input.RentMode = SettlementRentMode(rentMode)
+		input.RentMode = billing.SettlementRentMode(rentMode)
 	}
 
 	preview, err := s.PreviewSettlement(ctx, input)

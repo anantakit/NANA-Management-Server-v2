@@ -13,13 +13,14 @@ var (
 	ErrContractNotActive   = respond.ErrBadRequest.WithMessage("สัญญาไม่ได้อยู่ในสถานะใช้งาน")
 	ErrMeterNotFound       = respond.ErrNotFound.WithMessage("ไม่พบข้อมูลมิเตอร์สำหรับเดือนที่ระบุ")
 	ErrBillAlreadyExists   = respond.ErrConflict.WithMessage("มีบิลสำหรับเดือนนี้อยู่แล้ว")
-	ErrMoveOutNotFound    = respond.ErrNotFound.WithMessage("ไม่พบใบแจ้งย้ายออก")
-	ErrActualDateRequired = respond.ErrBadRequest.WithMessage("ต้องระบุวันย้ายออกจริงก่อนสร้างบิลปิดสัญญา")
-	ErrExitReadingMissing = respond.ErrBadRequest.WithMessage("ไม่พบข้อมูลมิเตอร์ย้ายออก กรุณาจดมิเตอร์ย้ายออกก่อน")
 	ErrMeterTypeMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ที่ระบุไม่ใช่ประเภทรายเดือน")
 	ErrMeterRoomMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ไม่ตรงกับห้องในสัญญา")
 	ErrMeterMonthMismatch  = respond.ErrBadRequest.WithMessage("เดือนของมิเตอร์ไม่ตรงกับเดือนที่ออกบิล")
 )
+
+// Settlement-only sentinels (ErrMoveOutNotFound, ErrActualDateRequired,
+// ErrExitReadingMissing) migrated to internal/billing/settlement/errors.go in
+// W4 commit 3 (2026-06-19).
 
 // IsDuplicateBillError detects a PG unique-constraint violation on the
 // bills table. Translates a race-window duplicate INSERT into the

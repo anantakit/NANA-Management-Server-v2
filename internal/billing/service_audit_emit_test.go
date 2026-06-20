@@ -26,7 +26,7 @@ func TestFinalizeBill_EmitsFinalizeAudit(t *testing.T) {
 	repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) { return draft, nil }
 	audit := &mockBillAuditRepo{}
 	actor := uuid.New()
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, nil, &mockTxManager{})
 
 	if _, err := svc.FinalizeBill(context.Background(), billID, &actor); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -69,7 +69,7 @@ func TestVoidBill_EmitsVoidAudit(t *testing.T) {
 	repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) { return finalized, nil }
 	audit := &mockBillAuditRepo{}
 	actor := uuid.New()
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, nil, &mockTxManager{})
 
 	reason := "ออกบิลผิดเดือน"
 	if _, err := svc.VoidBill(context.Background(), billID, VoidBillRequest{Reason: reason}, &actor); err != nil {

@@ -58,6 +58,25 @@ func recordAudit(
 	return nil
 }
 
+// AuditEmitter is the narrow interface that EmitDraftEditAudit needs to
+// write each diff row. Both billing root (via the wrap on *billingService
+// — see RecordAudit method below) and the settlement sub-package's
+// AuditStore port satisfy it via their RecordAudit method. The settlement
+// AuditStore port is intentionally shaped to match this signature so
+// EmitDraftEditAudit stays the single source of truth for diff emission.
+type AuditEmitter interface {
+	RecordAudit(ctx context.Context, billID uuid.UUID, action BillAuditAction, actor *uuid.UUID, payload any) error
+}
+
+// RecordAudit lets *billingService satisfy AuditEmitter so EmitDraftEditAudit
+// can be called with `s` directly from UpdateMonthlyDraft. Method is NOT in
+// the BillingService interface — it's a struct-level helper that bridges
+// recordAudit's repo-arg signature to the AuditEmitter shape settlement +
+// monthly both need.
+func (s *billingService) RecordAudit(ctx context.Context, billID uuid.UUID, action BillAuditAction, actor *uuid.UUID, payload any) error {
+	return recordAudit(ctx, s.audit, billID, action, actor, payload)
+}
+
 // EmitDraftEditAudit emits one audit row per mutation diff for a draft-edit
 // call (UpdateMonthlyDraft / UpdateSettlementDraft). Caller passes the before
 // and after snapshots it captured around the mutation. Order of emission is
@@ -70,17 +89,19 @@ func recordAudit(
 //     in one side are treated as nil (semantically distinct from explicit 0).
 //   - Note: UPDATE_NOTE only when before != after.
 //
-// Any recordAudit failure aborts immediately and propagates — the caller is
+// Any emit failure aborts immediately and propagates — the caller is
 // running inside RunInTx, so the parent mutation rolls back.
 //
-// Package-level function (not a method on billingService) so the upcoming
-// settlement sub-package's UpdateSettlementDraft can share the exact same
-// diff-audit path without depending on billingService internals. Mirrors the
-// recordAudit / finalizeBillInTx package-function pattern locked during the
-// monthly extraction. Pre-extraction commit 1 (2026-06-19).
+// Package-level function (not a method on billingService) so the settlement
+// sub-package's UpdateSettlementDraft can share the exact same diff-audit
+// path without depending on billingService internals. Takes AuditEmitter
+// (narrow interface) so both billing root (*billingService) and
+// settlement.Service (via its AuditStore port) can be threaded in
+// uniformly. Pre-extraction commit 1 introduced the export; W4 commit 3
+// (2026-06-19) widened to AuditEmitter for the settlement extraction.
 func EmitDraftEditAudit(
 	txCtx context.Context,
-	audit BillAuditRepository,
+	emit AuditEmitter,
 	billID uuid.UUID,
 	actor *uuid.UUID,
 	oldManuals []BillLineItem,
@@ -97,7 +118,7 @@ func EmitDraftEditAudit(
 			Description: m.Description,
 			Amount:      m.Amount,
 		}
-		if err := recordAudit(txCtx, audit, billID, AuditRemoveManualItem, actor, payload); err != nil {
+		if err := emit.RecordAudit(txCtx, billID, AuditRemoveManualItem, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -117,7 +138,7 @@ func EmitDraftEditAudit(
 			u := m.UnitPrice
 			payload.UnitPrice = &u
 		}
-		if err := recordAudit(txCtx, audit, billID, AuditAddManualItem, actor, payload); err != nil {
+		if err := emit.RecordAudit(txCtx, billID, AuditAddManualItem, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -151,7 +172,7 @@ func EmitDraftEditAudit(
 			v := newVal
 			payload.After = &v
 		}
-		if err := recordAudit(txCtx, audit, billID, AuditUpdateOverride, actor, payload); err != nil {
+		if err := emit.RecordAudit(txCtx, billID, AuditUpdateOverride, actor, payload); err != nil {
 			return err
 		}
 	}
@@ -159,7 +180,7 @@ func EmitDraftEditAudit(
 	// Note — single comparison, single row if changed.
 	if oldNote != newNote {
 		payload := AuditUpdateNotePayload{Before: oldNote, After: newNote}
-		if err := recordAudit(txCtx, audit, billID, AuditUpdateNote, actor, payload); err != nil {
+		if err := emit.RecordAudit(txCtx, billID, AuditUpdateNote, actor, payload); err != nil {
 			return err
 		}
 	}

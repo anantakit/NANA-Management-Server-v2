@@ -64,7 +64,7 @@ func TestCorrectMonthlyBill_HappyPath(t *testing.T) {
 		},
 	}
 	svc := NewBillingService(repo, audit, &mockContractQuerier{contract: c}, meters,
-		&mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+		&mockConfigQuerier{}, nil, &mockTxManager{})
 
 	reason := "ออกบิลผิดอัตราค่าไฟ ขอออกใหม่"
 	newBill, err := svc.CorrectBill(context.Background(), oldID, CorrectBillRequest{CorrectionReason: reason}, &actor)
@@ -187,7 +187,7 @@ func TestCorrectBill_GuardsPropagate(t *testing.T) {
 			repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) { return old, nil }
 			audit := &mockBillAuditRepo{}
 			svc := NewBillingService(repo, audit, &mockContractQuerier{contract: c}, &mockMeterQuerier{},
-				&mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+				&mockConfigQuerier{}, nil, &mockTxManager{})
 
 			_, err := svc.CorrectBill(context.Background(), oldID, CorrectBillRequest{CorrectionReason: "เหตุผลทดสอบ"}, nil)
 			if err == nil {
@@ -230,7 +230,7 @@ func TestCorrectMonthlyBill_MeterMissing(t *testing.T) {
 		},
 	}
 	svc := NewBillingService(repo, audit, &mockContractQuerier{contract: c}, meters,
-		&mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+		&mockConfigQuerier{}, nil, &mockTxManager{})
 
 	_, err := svc.CorrectBill(context.Background(), oldID, CorrectBillRequest{CorrectionReason: "เหตุผลทดสอบ"}, nil)
 	if err != ErrMeterNotFound {
@@ -251,7 +251,7 @@ func TestCorrectBill_NotFound(t *testing.T) {
 	repo := &mockBillingRepo{} // empty — FindByID returns ErrRecordNotFound
 	audit := &mockBillAuditRepo{}
 	svc := NewBillingService(repo, audit, &mockContractQuerier{}, &mockMeterQuerier{},
-		&mockConfigQuerier{}, &mockMoveOutQuerier{}, nil, &mockTxManager{})
+		&mockConfigQuerier{}, nil, &mockTxManager{})
 
 	_, err := svc.CorrectBill(context.Background(), uuid.New(), CorrectBillRequest{CorrectionReason: "เหตุผลทดสอบ"}, nil)
 	if err != ErrBillNotFound {

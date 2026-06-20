@@ -93,7 +93,7 @@ func TestUpdateMonthlyDraft_AuditFailureRollsBackDBState(t *testing.T) {
 	billRepo := NewBillingRepository(db)
 	realAuditRepo := NewBillAuditRepository(db)
 	audit := &failingAuditRepo{wrapped: realAuditRepo, err: errors.New("audit-store-down (rollback probe)")}
-	svc := NewBillingService(billRepo, audit, nil, nil, nil, nil, nil, txMgr)
+	svc := NewBillingService(billRepo, audit, nil, nil, nil, nil, txMgr)
 
 	// ── Drive the mutation that would touch every editable field ──
 	newNote := "หลังถูกแก้ — ห้ามบันทึก"

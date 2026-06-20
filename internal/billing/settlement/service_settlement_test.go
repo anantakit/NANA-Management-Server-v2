@@ -1,4 +1,4 @@
-package billing
+package settlement
 
 import (
 	"context"
@@ -6,89 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"nana/internal/billing"
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
+	"nana/internal/meterreading"
 
 	"github.com/google/uuid"
 )
 
-// --- Settlement test helpers ---
-
-func earlyExitContract() *contract.Contract {
-	return &contract.Contract{
-		ID:                     uuid.New(),
-		RoomID:                 uuid.New(),
-		Status:                 contract.ContractStatusActive,
-		StartDate:              time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		MinMonths:              6, // eligible at July 1
-		MonthlyRent:            500000,
-		DepositAmount:          1000000, // 10,000 baht
-		ElectricityRatePerUnit: 800,
-		WaterRatePerUnit:       1800,
+// findLineByType locates the first BillLineItem of the given type in the slice.
+// Returns the zero value when no match is found. Mirrored from billing root's
+// test helper of the same name.
+func findLineByType(items []billing.BillLineItem, lt billing.LineItemType) billing.BillLineItem {
+	for _, li := range items {
+		if li.LineType == lt {
+			return li
+		}
 	}
-}
-
-func normalExitContract() *contract.Contract {
-	return &contract.Contract{
-		ID:                     uuid.New(),
-		RoomID:                 uuid.New(),
-		Status:                 contract.ContractStatusActive,
-		StartDate:              time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
-		MinMonths:              6, // eligible at Dec 1
-		MonthlyRent:            500000,
-		DepositAmount:          1000000,
-		ElectricityRatePerUnit: 800,
-		WaterRatePerUnit:       1800,
-	}
-}
-
-func unpaidBill(contractID uuid.UUID, billingMonth string, total int64) Bill {
-	return Bill{
-		ID:           uuid.New(),
-		ContractID:   contractID,
-		BillingMonth: billingMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusFinalized,
-		TotalAmount:  total,
-		LineItems: []BillLineItem{
-			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 500000, SortOrder: 1},
-			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: total - 500000 - 18000, SortOrder: 2},
-			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 18000, SortOrder: 3},
-		},
-	}
-}
-
-func unpaidBillWithUtility(contractID uuid.UUID, billingMonth string, rent, elec, water int64) Bill {
-	return Bill{
-		ID:           uuid.New(),
-		ContractID:   contractID,
-		BillingMonth: billingMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusFinalized,
-		TotalAmount:  rent + elec + water,
-		LineItems: []BillLineItem{
-			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: rent, SortOrder: 1},
-			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: elec, SortOrder: 2},
-			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: water, SortOrder: 3},
-		},
-	}
-}
-
-func settlementSetup(c *contract.Contract, moveOutDate time.Time, unpaidBills []Bill) (*mockBillingRepo, BillingService) {
-	exitReading := testExitReading(c.RoomID, moveOutDate)
-
-	repo := &mockBillingRepo{
-		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
-			return unpaidBills, nil
-		},
-	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
-	)
-	return repo, svc
+	return billing.BillLineItem{}
 }
 
 // ============================================================
@@ -100,18 +35,18 @@ func TestGenerateSettlement_AbsorbsSingleUnpaidBill(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	// Unpaid bill from 2026-02 (older than M-1) — absorb entirely
 	bill := unpaidBill(c.ID, "2026-02", 620000) // 6,200 baht
-	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
+	bills, svc := settlementSetup(c, moveOut, []billing.Bill{bill})
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	created := repo.createdBill
+	created := bills.createdBill
 	// Find OUTSTANDING_BILL line item
 	var found bool
 	for _, li := range created.LineItems {
-		if li.LineType == LineItemOutstandingBill {
+		if li.LineType == billing.LineItemOutstandingBill {
 			found = true
 			if li.Amount != 620000 {
 				t.Errorf("outstanding amount = %d, want 620000", li.Amount)
@@ -126,11 +61,11 @@ func TestGenerateSettlement_AbsorbsSingleUnpaidBill(t *testing.T) {
 func TestGenerateSettlement_AbsorbsMultipleUnpaidBills(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
-	bills := []Bill{
+	bills := []billing.Bill{
 		unpaidBill(c.ID, "2026-01", 600000),
 		unpaidBill(c.ID, "2026-02", 620000),
 	}
-	repo, svc := settlementSetup(c, moveOut, bills)
+	billStore, svc := settlementSetup(c, moveOut, bills)
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
@@ -139,8 +74,8 @@ func TestGenerateSettlement_AbsorbsMultipleUnpaidBills(t *testing.T) {
 
 	var outstandingCount int
 	var outstandingTotal int64
-	for _, li := range repo.createdBill.LineItems {
-		if li.LineType == LineItemOutstandingBill {
+	for _, li := range billStore.createdBill.LineItems {
+		if li.LineType == billing.LineItemOutstandingBill {
 			outstandingCount++
 			outstandingTotal += li.Amount
 		}
@@ -158,15 +93,15 @@ func TestGenerateSettlement_DoesNotAbsorbPaidBills(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	// Only unpaid bills are returned by FindUnpaidMonthlyByContractID
 	// A paid bill won't appear in the query results
-	repo, svc := settlementSetup(c, moveOut, nil) // no unpaid bills
+	bills, svc := settlementSetup(c, moveOut, nil) // no unpaid bills
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, li := range repo.createdBill.LineItems {
-		if li.LineType == LineItemOutstandingBill {
+	for _, li := range bills.createdBill.LineItems {
+		if li.LineType == billing.LineItemOutstandingBill {
 			t.Error("should not have OUTSTANDING_BILL when no unpaid bills exist")
 		}
 	}
@@ -176,7 +111,7 @@ func TestGenerateSettlement_MarksAbsorbedBillsVoid(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	bill := unpaidBill(c.ID, "2026-02", 620000)
-	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
+	bills, svc := settlementSetup(c, moveOut, []billing.Bill{bill})
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
@@ -185,7 +120,7 @@ func TestGenerateSettlement_MarksAbsorbedBillsVoid(t *testing.T) {
 
 	// Check the absorbed bill was voided via MarkAbsorbedBySettlement
 	var voidedAbsorbed bool
-	for _, b := range repo.updatedBills {
+	for _, b := range bills.updatedBills {
 		if b.ID == bill.ID && b.IsAbsorbedBySettlement() {
 			voidedAbsorbed = true
 		}
@@ -223,7 +158,7 @@ func TestGenerateSettlement_DepositInsufficientRequiresPayment(t *testing.T) {
 	c.DepositAmount = 10000 // only 100 baht — way less than charges
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 
-	bills := []Bill{unpaidBill(c.ID, "2026-02", 620000)} // large outstanding
+	bills := []billing.Bill{unpaidBill(c.ID, "2026-02", 620000)} // large outstanding
 	_, svc := settlementSetup(c, moveOut, bills)
 
 	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
@@ -255,14 +190,14 @@ func TestGenerateSettlement_DepositExceedsReturnsRefund(t *testing.T) {
 func TestGenerateSettlement_EarlyExitDepositForfeited(t *testing.T) {
 	c := earlyExitContract() // start=Jan 1, minMonths=6, deposit=10,000
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC) // 3.5 months = early exit
-	repo, svc := settlementSetup(c, moveOut, nil)
+	bills, svc := settlementSetup(c, moveOut, nil)
 
 	result, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	created := repo.createdBill
+	created := bills.createdBill
 
 	// Deposit should be full amount (recorded for display)
 	if created.DepositAmount != c.DepositAmount {
@@ -292,18 +227,18 @@ func TestGenerateSettlement_EarlyExitDepositForfeited(t *testing.T) {
 func TestGenerateSettlement_IsSingleDocument(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
-	bills := []Bill{
+	bills := []billing.Bill{
 		unpaidBill(c.ID, "2026-01", 600000),
 		unpaidBill(c.ID, "2026-02", 620000),
 	}
-	repo, svc := settlementSetup(c, moveOut, bills)
+	billStore, svc := settlementSetup(c, moveOut, bills)
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	created := repo.createdBill
+	created := billStore.createdBill
 	if !created.IsSettlement() {
 		t.Error("expected SETTLEMENT bill type")
 	}
@@ -317,11 +252,11 @@ func TestGenerateSettlement_IsSingleDocument(t *testing.T) {
 	outstandingCount := 0
 	for _, li := range created.LineItems {
 		switch li.LineType {
-		case LineItemWater:
+		case billing.LineItemWater:
 			hasWater = true
-		case LineItemElectricity:
+		case billing.LineItemElectricity:
 			hasElec = true
-		case LineItemOutstandingBill:
+		case billing.LineItemOutstandingBill:
 			outstandingCount++
 		}
 	}
@@ -348,7 +283,7 @@ func TestGenerateSettlement_AbsorbsOnlyUtilityFromAdvanceRentBill(t *testing.T) 
 	// Bill "2026-03" is M-1 (advance rent for April) — only utility should be absorbed
 	bill := unpaidBillWithUtility(c.ID, "2026-03", 500000, 120000, 18000) // rent=5000, elec=1200, water=180
 
-	repo, svc := settlementSetup(c, moveOut, []Bill{bill})
+	bills, svc := settlementSetup(c, moveOut, []billing.Bill{bill})
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
@@ -356,8 +291,8 @@ func TestGenerateSettlement_AbsorbsOnlyUtilityFromAdvanceRentBill(t *testing.T) 
 	}
 
 	var outstandingAmount int64
-	for _, li := range repo.createdBill.LineItems {
-		if li.LineType == LineItemOutstandingBill {
+	for _, li := range bills.createdBill.LineItems {
+		if li.LineType == billing.LineItemOutstandingBill {
 			outstandingAmount += li.Amount
 		}
 	}
@@ -378,13 +313,13 @@ func TestVoidSettlement_RestoresAbsorbedBills(t *testing.T) {
 	contractID := uuid.New()
 
 	// Build an absorbed bill using the model method
-	absorbedBill := Bill{
-		ID:         uuid.New(),
-		ContractID: contractID,
+	absorbedBill := billing.Bill{
+		ID:           uuid.New(),
+		ContractID:   contractID,
 		BillingMonth: "2026-02",
-		BillType:   BillTypeMonthly,
-		Status:     BillStatusFinalized,
-		LineItems:  []BillLineItem{{LineType: LineItemWater, Amount: 1000, SortOrder: 1}},
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusFinalized,
+		LineItems:    []billing.BillLineItem{{LineType: billing.LineItemWater, Amount: 1000, SortOrder: 1}},
 	}
 	_ = absorbedBill.MarkAbsorbedBySettlement()
 
@@ -392,21 +327,21 @@ func TestVoidSettlement_RestoresAbsorbedBills(t *testing.T) {
 		t.Fatal("precondition: bill should be absorbed")
 	}
 
-	repo := &mockBillingRepo{
-		findByIDFn: func(_ context.Context, id uuid.UUID) (*Bill, error) {
-			return &Bill{
+	bills := &mockBillStore{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*billing.Bill, error) {
+			return &billing.Bill{
 				ID:         settlementID,
 				ContractID: contractID,
-				BillType:   BillTypeSettlement,
-				Status:     BillStatusDraft,
-				LineItems:  []BillLineItem{{LineType: LineItemWater, Amount: 1000, SortOrder: 1}},
+				BillType:   billing.BillTypeSettlement,
+				Status:     billing.BillStatusDraft,
+				LineItems:  []billing.BillLineItem{{LineType: billing.LineItemWater, Amount: 1000, SortOrder: 1}},
 			}, nil
 		},
-		findAbsorbedFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
-			return []Bill{absorbedBill}, nil
+		findAbsorbedFn: func(_ context.Context, _ uuid.UUID) ([]billing.Bill, error) {
+			return []billing.Bill{absorbedBill}, nil
 		},
 	}
-	svc := newSvc(repo, &mockContractQuerier{}, &mockMeterQuerier{}, &mockConfigQuerier{}, &mockMoveOutQuerier{})
+	svc := newSvcWithMocks(bills, &mockContractSource{}, &mockMeterReadingSource{}, &mockBillingConfigSource{}, &mockMoveOutSource{})
 
 	err := svc.VoidSettlement(context.Background(), settlementID, "MOVE_OUT_CANCELLED")
 	if err != nil {
@@ -415,8 +350,8 @@ func TestVoidSettlement_RestoresAbsorbedBills(t *testing.T) {
 
 	// Check: absorbed bill restored via RestoreFromAbsorbed
 	var restoredCount int
-	for _, b := range repo.updatedBills {
-		if b.ID == absorbedBill.ID && b.Status == BillStatusFinalized && b.VoidReason == nil {
+	for _, b := range bills.updatedBills {
+		if b.ID == absorbedBill.ID && b.Status == billing.BillStatusFinalized && b.VoidReason == nil {
 			restoredCount++
 		}
 	}
@@ -431,7 +366,7 @@ func TestVoidSettlement_RestoresAbsorbedBills(t *testing.T) {
 
 func TestBill_AbsorptionLifecycle(t *testing.T) {
 	t.Run("mark + check + restore", func(t *testing.T) {
-		b := Bill{Status: BillStatusFinalized, LineItems: []BillLineItem{{Amount: 100, SortOrder: 1}}}
+		b := billing.Bill{Status: billing.BillStatusFinalized, LineItems: []billing.BillLineItem{{Amount: 100, SortOrder: 1}}}
 
 		if b.IsAbsorbedBySettlement() {
 			t.Error("should not be absorbed initially")
@@ -453,7 +388,7 @@ func TestBill_AbsorptionLifecycle(t *testing.T) {
 		if b.IsAbsorbedBySettlement() {
 			t.Error("should not be absorbed after restore")
 		}
-		if b.Status != BillStatusFinalized {
+		if b.Status != billing.BillStatusFinalized {
 			t.Errorf("status = %s, want FINALIZED", b.Status)
 		}
 		if b.VoidReason != nil {
@@ -462,7 +397,7 @@ func TestBill_AbsorptionLifecycle(t *testing.T) {
 	})
 
 	t.Run("restore rejects non-absorbed void bill", func(t *testing.T) {
-		b := Bill{Status: BillStatusFinalized, LineItems: []BillLineItem{{Amount: 100, SortOrder: 1}}}
+		b := billing.Bill{Status: billing.BillStatusFinalized, LineItems: []billing.BillLineItem{{Amount: 100, SortOrder: 1}}}
 		_ = b.Void("REGENERATED")
 
 		if err := b.RestoreFromAbsorbed(); err == nil {
@@ -471,7 +406,7 @@ func TestBill_AbsorptionLifecycle(t *testing.T) {
 	})
 
 	t.Run("restore rejects non-void bill", func(t *testing.T) {
-		b := Bill{Status: BillStatusFinalized}
+		b := billing.Bill{Status: billing.BillStatusFinalized}
 		if err := b.RestoreFromAbsorbed(); err == nil {
 			t.Error("RestoreFromAbsorbed should reject non-void bill")
 		}
@@ -492,15 +427,15 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 	feb := unpaidBill(c.ID, "2026-02", 620000)
 
 	// Track bill states across cycles
-	billStates := map[uuid.UUID]*Bill{
+	billStates := map[uuid.UUID]*billing.Bill{
 		jan.ID: &jan,
 		feb.ID: &feb,
 	}
 
-	repo := &mockBillingRepo{
-		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+	bills := &mockBillStore{
+		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]billing.Bill, error) {
 			// Return only FINALIZED bills (simulating real DB filter)
-			var result []Bill
+			var result []billing.Bill
 			for _, b := range billStates {
 				if b.IsFinalized() {
 					result = append(result, *b)
@@ -508,8 +443,8 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 			}
 			return result, nil
 		},
-		findAbsorbedFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
-			var result []Bill
+		findAbsorbedFn: func(_ context.Context, _ uuid.UUID) ([]billing.Bill, error) {
+			var result []billing.Bill
 			for _, b := range billStates {
 				if b.IsAbsorbedBySettlement() {
 					result = append(result, *b)
@@ -517,7 +452,7 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 			}
 			return result, nil
 		},
-		updateFn: func(_ context.Context, bill *Bill) error {
+		updateFn: func(_ context.Context, bill *billing.Bill) error {
 			// Track state changes in our map
 			if st, ok := billStates[bill.ID]; ok {
 				st.Status = bill.Status
@@ -526,11 +461,11 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 			return nil
 		},
 	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
+	svc := newSvcWithMocks(bills,
+		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
+		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockBillingConfigSource{},
+		&mockMoveOutSource{},
 	)
 
 	// --- Cycle 1: Generate ---
@@ -546,15 +481,15 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 		}
 	}
 
-	created1 := repo.createdBill
-	outstanding1 := countLineItemsByType(created1, LineItemOutstandingBill)
+	created1 := bills.createdBill
+	outstanding1 := countLineItemsByType(created1, billing.LineItemOutstandingBill)
 	if outstanding1 != 2 {
 		t.Errorf("generate 1: outstanding items = %d, want 2", outstanding1)
 	}
 
 	// --- Cycle 2: Void settlement ---
 	// We need findByIDFn to return the settlement for voiding
-	repo.findByIDFn = func(_ context.Context, id uuid.UUID) (*Bill, error) {
+	bills.findByIDFn = func(_ context.Context, id uuid.UUID) (*billing.Bill, error) {
 		if id == result1.BillID {
 			return created1, nil
 		}
@@ -574,8 +509,8 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 	}
 
 	// --- Cycle 3: Generate again ---
-	repo.createdBill = nil
-	repo.findByIDFn = nil
+	bills.createdBill = nil
+	bills.findByIDFn = nil
 
 	_, err = svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
@@ -589,14 +524,14 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 		}
 	}
 
-	created2 := repo.createdBill
-	outstanding2 := countLineItemsByType(created2, LineItemOutstandingBill)
+	created2 := bills.createdBill
+	outstanding2 := countLineItemsByType(created2, billing.LineItemOutstandingBill)
 	if outstanding2 != 2 {
 		t.Errorf("generate 2: outstanding items = %d, want 2 (no duplicates)", outstanding2)
 	}
 }
 
-func countLineItemsByType(b *Bill, lt LineItemType) int {
+func countLineItemsByType(b *billing.Bill, lt billing.LineItemType) int {
 	n := 0
 	for _, li := range b.LineItems {
 		if li.LineType == lt {
@@ -614,29 +549,29 @@ func TestGenerateSettlement_SkipsDraftBills(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 
-	draftBill := Bill{
+	draftBill := billing.Bill{
 		ID:           uuid.New(),
 		ContractID:   c.ID,
 		BillingMonth: "2026-02",
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusDraft, // not finalized
+		BillType:     billing.BillTypeMonthly,
+		Status:       billing.BillStatusDraft, // not finalized
 		TotalAmount:  620000,
-		LineItems: []BillLineItem{
-			{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: 500000, SortOrder: 1},
-			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 102000, SortOrder: 2},
-			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 18000, SortOrder: 3},
+		LineItems: []billing.BillLineItem{
+			{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Amount: 500000, SortOrder: 1},
+			{LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Amount: 102000, SortOrder: 2},
+			{LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Amount: 18000, SortOrder: 3},
 		},
 	}
 
-	repo, svc := settlementSetup(c, moveOut, []Bill{draftBill})
+	bills, svc := settlementSetup(c, moveOut, []billing.Bill{draftBill})
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, li := range repo.createdBill.LineItems {
-		if li.LineType == LineItemOutstandingBill {
+	for _, li := range bills.createdBill.LineItems {
+		if li.LineType == billing.LineItemOutstandingBill {
 			t.Error("DRAFT bill should NOT be absorbed into settlement")
 		}
 	}
@@ -651,16 +586,16 @@ func TestGenerateSettlement_ReturnsErrorOnCreateFailure(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	exitReading := testExitReading(c.RoomID, moveOut)
 
-	repo := &mockBillingRepo{
-		createFn: func(_ context.Context, _ *Bill) error {
+	bills := &mockBillStore{
+		createFn: func(_ context.Context, _ *billing.Bill) error {
 			return errors.New("db connection lost")
 		},
 	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
+	svc := newSvcWithMocks(bills,
+		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
+		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockBillingConfigSource{},
+		&mockMoveOutSource{},
 	)
 
 	_, err := svc.GenerateSettlement(context.Background(), c.ID, moveOut, "")
@@ -674,25 +609,25 @@ func TestGenerateSettlement_ReturnsErrorOnCreateFailure(t *testing.T) {
 // ============================================================
 
 // prepareWithMode is a test helper that runs prepareSettlementPlan with options.
-func prepareWithMode(t *testing.T, c *contract.Contract, moveOut time.Time, unpaidBills []Bill, mode SettlementRentMode) *settlementPlan {
+func prepareWithMode(t *testing.T, c *contract.Contract, moveOut time.Time, unpaidBills []billing.Bill, mode billing.SettlementRentMode) *settlementPlan {
 	t.Helper()
 	exitReading := testExitReading(c.RoomID, moveOut)
 
-	repo := &mockBillingRepo{
-		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]Bill, error) {
+	bills := &mockBillStore{
+		findUnpaidMonthlyFn: func(_ context.Context, _ uuid.UUID) ([]billing.Bill, error) {
 			return unpaidBills, nil
 		},
 	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
+	svc := newSvcWithMocks(bills,
+		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
+		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockBillingConfigSource{},
+		&mockMoveOutSource{},
 	)
 
-	plan, err := svc.(*billingService).prepareSettlementPlan(
+	plan, err := svc.prepareSettlementPlan(
 		context.Background(), c.ID, moveOut,
-		SettlementOptions{RentMode: mode},
+		billing.SettlementOptions{RentMode: mode},
 	)
 	if err != nil {
 		t.Fatalf("prepareSettlementPlan: %v", err)
@@ -704,9 +639,9 @@ func TestRentMode_ProratedChargesProrate(t *testing.T) {
 	c := normalExitContract() // start June 1 2025, minMonths=6 → eligible Dec 1
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 
-	plan := prepareWithMode(t, c, moveOut, nil, RentModeProrated)
+	plan := prepareWithMode(t, c, moveOut, nil, billing.RentModeProrated)
 
-	prorate := findLineByType(plan.Bill.LineItems, LineItemProrateRent)
+	prorate := findLineByType(plan.Bill.LineItems, billing.LineItemProrateRent)
 	if prorate.Amount <= 0 {
 		t.Fatal("PRORATED should produce a PRORATE_RENT line")
 	}
@@ -714,7 +649,7 @@ func TestRentMode_ProratedChargesProrate(t *testing.T) {
 		t.Errorf("prorate days = %d, want 14", prorate.Quantity)
 	}
 
-	roomRent := findLineByType(plan.Bill.LineItems, LineItemRoomRent)
+	roomRent := findLineByType(plan.Bill.LineItems, billing.LineItemRoomRent)
 	if roomRent.Amount != 0 {
 		t.Error("PRORATED should not produce a ROOM_RENT line")
 	}
@@ -724,14 +659,14 @@ func TestRentMode_FullMonthChargesFullRent(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 
-	plan := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+	plan := prepareWithMode(t, c, moveOut, nil, billing.RentModeFullMonthKeepDeposit)
 
-	roomRent := findLineByType(plan.Bill.LineItems, LineItemRoomRent)
+	roomRent := findLineByType(plan.Bill.LineItems, billing.LineItemRoomRent)
 	if roomRent.Amount != c.MonthlyRent {
 		t.Errorf("ROOM_RENT = %d, want %d (full month)", roomRent.Amount, c.MonthlyRent)
 	}
 
-	prorate := findLineByType(plan.Bill.LineItems, LineItemProrateRent)
+	prorate := findLineByType(plan.Bill.LineItems, billing.LineItemProrateRent)
 	if prorate.Amount != 0 {
 		t.Error("FULL_MONTH should not produce a PRORATE_RENT line")
 	}
@@ -742,29 +677,29 @@ func TestRentMode_FullMonthRentPaidNoCharge(t *testing.T) {
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 	exitReading := testExitReading(c.RoomID, moveOut)
 
-	repo := &mockBillingRepo{
+	bills := &mockBillStore{
 		hasPaidAdvanceRentFn: func(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
 			return true, nil
 		},
 	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
+	svc := newSvcWithMocks(bills,
+		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
+		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockBillingConfigSource{},
+		&mockMoveOutSource{},
 	)
 
-	plan, err := svc.(*billingService).prepareSettlementPlan(
+	plan, err := svc.prepareSettlementPlan(
 		context.Background(), c.ID, moveOut,
-		SettlementOptions{RentMode: RentModeFullMonthKeepDeposit},
+		billing.SettlementOptions{RentMode: billing.RentModeFullMonthKeepDeposit},
 	)
 	if err != nil {
 		t.Fatalf("prepareSettlementPlan: %v", err)
 	}
 
 	// Rent already paid — no rent line regardless of mode
-	roomRent := findLineByType(plan.Bill.LineItems, LineItemRoomRent)
-	prorate := findLineByType(plan.Bill.LineItems, LineItemProrateRent)
+	roomRent := findLineByType(plan.Bill.LineItems, billing.LineItemRoomRent)
+	prorate := findLineByType(plan.Bill.LineItems, billing.LineItemProrateRent)
 	if roomRent.Amount != 0 || prorate.Amount != 0 {
 		t.Error("rent paid → no rent charge expected in any mode")
 	}
@@ -782,8 +717,8 @@ func TestRentMode_FullMonthReachesMinMonths(t *testing.T) {
 	//                     FULL_MONTH: effective July 31 >= July 15 → returnable
 	moveOut := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 
-	prorated := prepareWithMode(t, c, moveOut, nil, RentModeProrated)
-	fullMonth := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+	prorated := prepareWithMode(t, c, moveOut, nil, billing.RentModeProrated)
+	fullMonth := prepareWithMode(t, c, moveOut, nil, billing.RentModeFullMonthKeepDeposit)
 
 	// PRORATED: deposit forfeited (ForfeitedAmount > 0)
 	if prorated.Deposit.ForfeitedAmount == 0 {
@@ -805,7 +740,7 @@ func TestRentMode_FullMonthStillBelowMinMonths(t *testing.T) {
 	// Move-out March 10 — even with end-of-month (March 31), only 3 months < 6
 	moveOut := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
 
-	plan := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
+	plan := prepareWithMode(t, c, moveOut, nil, billing.RentModeFullMonthKeepDeposit)
 
 	if plan.Deposit.ForfeitedAmount == 0 {
 		t.Error("FULL_MONTH March 10: deposit should still be forfeited (3 months < 6)")
@@ -816,13 +751,13 @@ func TestRentMode_PersistedOnBill(t *testing.T) {
 	c := normalExitContract()
 	moveOut := time.Date(2026, 4, 14, 0, 0, 0, 0, time.UTC)
 
-	prorated := prepareWithMode(t, c, moveOut, nil, RentModeProrated)
-	if prorated.Bill.SettlementRentMode != RentModeProrated {
+	prorated := prepareWithMode(t, c, moveOut, nil, billing.RentModeProrated)
+	if prorated.Bill.SettlementRentMode != billing.RentModeProrated {
 		t.Errorf("bill.SettlementRentMode = %q, want PRORATED", prorated.Bill.SettlementRentMode)
 	}
 
-	fullMonth := prepareWithMode(t, c, moveOut, nil, RentModeFullMonthKeepDeposit)
-	if fullMonth.Bill.SettlementRentMode != RentModeFullMonthKeepDeposit {
+	fullMonth := prepareWithMode(t, c, moveOut, nil, billing.RentModeFullMonthKeepDeposit)
+	if fullMonth.Bill.SettlementRentMode != billing.RentModeFullMonthKeepDeposit {
 		t.Errorf("bill.SettlementRentMode = %q, want FULL_MONTH_KEEP_DEPOSIT", fullMonth.Bill.SettlementRentMode)
 	}
 }
@@ -833,36 +768,36 @@ func TestRegenerateSettlement_PreservesRentMode(t *testing.T) {
 	exitReading := testExitReading(c.RoomID, moveOut)
 
 	// First generate with FULL_MONTH_KEEP_DEPOSIT
-	existingBill := &Bill{
+	existingBill := &billing.Bill{
 		ID:                 uuid.New(),
 		ContractID:         c.ID,
 		BillingMonth:       "2026-04",
-		BillType:           BillTypeSettlement,
-		Status:             BillStatusDraft,
-		SettlementRentMode: RentModeFullMonthKeepDeposit,
+		BillType:           billing.BillTypeSettlement,
+		Status:             billing.BillStatusDraft,
+		SettlementRentMode: billing.RentModeFullMonthKeepDeposit,
 		DepositAmount:      c.DepositAmount,
-		LineItems:          []BillLineItem{{LineType: LineItemRoomRent, Source: LineItemSourceAuto, Amount: c.MonthlyRent, SortOrder: 1}},
+		LineItems:          []billing.BillLineItem{{LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Amount: c.MonthlyRent, SortOrder: 1}},
 	}
 	existingBill.CalculateTotal()
 
-	var createdBill *Bill
-	repo := &mockBillingRepo{
-		findByIDFn: func(_ context.Context, id uuid.UUID) (*Bill, error) {
+	var createdBill *billing.Bill
+	bills := &mockBillStore{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*billing.Bill, error) {
 			if createdBill != nil && id == createdBill.ID {
 				return createdBill, nil
 			}
 			return existingBill, nil
 		},
-		createFn: func(_ context.Context, bill *Bill) error {
+		createFn: func(_ context.Context, bill *billing.Bill) error {
 			createdBill = bill
 			return nil
 		},
 	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{},
-		&mockMoveOutQuerier{},
+	svc := newSvcWithMocks(bills,
+		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
+		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockBillingConfigSource{},
+		&mockMoveOutSource{},
 	)
 
 	_, err := svc.RegenerateSettlement(context.Background(), existingBill.ID, c.ID, moveOut, "")
@@ -873,12 +808,12 @@ func TestRegenerateSettlement_PreservesRentMode(t *testing.T) {
 	if createdBill == nil {
 		t.Fatal("no bill created")
 	}
-	if createdBill.SettlementRentMode != RentModeFullMonthKeepDeposit {
+	if createdBill.SettlementRentMode != billing.RentModeFullMonthKeepDeposit {
 		t.Errorf("regenerated bill.SettlementRentMode = %q, want FULL_MONTH_KEEP_DEPOSIT", createdBill.SettlementRentMode)
 	}
 
 	// Verify it charged full rent (not prorated)
-	roomRent := findLineByType(createdBill.LineItems, LineItemRoomRent)
+	roomRent := findLineByType(createdBill.LineItems, billing.LineItemRoomRent)
 	if roomRent.Amount != c.MonthlyRent {
 		t.Errorf("regenerated ROOM_RENT = %d, want %d (full month preserved)", roomRent.Amount, c.MonthlyRent)
 	}
@@ -907,27 +842,27 @@ func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
 
 	// Initial draft intentionally handcrafted without KEY_SERVICE to mirror
 	// the smoke-seed shape that caused the original drift report.
-	initialBill := &Bill{
+	initialBill := &billing.Bill{
 		ID:                 uuid.New(),
 		ContractID:         c.ID,
 		BillingMonth:       "2026-04",
-		BillType:           BillTypeSettlement,
-		Status:             BillStatusDraft,
-		SettlementRentMode: RentModeProrated,
+		BillType:           billing.BillTypeSettlement,
+		Status:             billing.BillStatusDraft,
+		SettlementRentMode: billing.RentModeProrated,
 		DepositAmount:      c.DepositAmount,
-		LineItems:          []BillLineItem{{LineType: LineItemProrateRent, Source: LineItemSourceAuto, Amount: 100000, SortOrder: 1}},
+		LineItems:          []billing.BillLineItem{{LineType: billing.LineItemProrateRent, Source: billing.LineItemSourceAuto, Amount: 100000, SortOrder: 1}},
 	}
 	initialBill.CalculateTotal()
 
 	currentBill := initialBill
-	repo := &mockBillingRepo{
-		findByIDFn: func(_ context.Context, id uuid.UUID) (*Bill, error) {
+	bills := &mockBillStore{
+		findByIDFn: func(_ context.Context, id uuid.UUID) (*billing.Bill, error) {
 			if id == currentBill.ID {
 				return currentBill, nil
 			}
 			return initialBill, nil
 		},
-		createFn: func(_ context.Context, bill *Bill) error {
+		createFn: func(_ context.Context, bill *billing.Bill) error {
 			if bill.ID == uuid.Nil {
 				bill.ID = uuid.New()
 			}
@@ -935,11 +870,11 @@ func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
 			return nil
 		},
 	}
-	svc := newSvc(repo,
-		&mockContractQuerier{contract: c},
-		&mockMeterQuerier{reading: exitReading},
-		&mockConfigQuerier{configs: configs},
-		&mockMoveOutQuerier{},
+	svc := newSvcWithMocks(bills,
+		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
+		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockBillingConfigSource{configs: configs},
+		&mockMoveOutSource{},
 	)
 
 	// Regen 1 — runs canonical planner, should include KEY_SERVICE.
@@ -947,7 +882,7 @@ func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
 		t.Fatalf("regen 1: %v", err)
 	}
 	regen1Total := currentBill.TotalAmount
-	regen1Items := append([]BillLineItem(nil), currentBill.LineItems...)
+	regen1Items := append([]billing.BillLineItem(nil), currentBill.LineItems...)
 	regen1ID := currentBill.ID
 
 	// Regen 2 — feeds regen1's bill ID, must produce same output.
@@ -964,7 +899,7 @@ func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
 		t.Fatalf("line-item count drift: regen1=%d, regen2=%d", len(regen1Items), len(currentBill.LineItems))
 	}
 	// Match by line_type + amount (ignore IDs / SortOrder shuffle).
-	byType := make(map[LineItemType]int64, len(regen1Items))
+	byType := make(map[billing.LineItemType]int64, len(regen1Items))
 	for _, li := range regen1Items {
 		byType[li.LineType] += li.Amount
 	}
@@ -989,7 +924,7 @@ func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
 	// stops asserting the property the smoke drift was about.
 	var foundKey bool
 	for _, li := range currentBill.LineItems {
-		if li.LineType == LineItemKeyService {
+		if li.LineType == billing.LineItemKeyService {
 			foundKey = true
 			if li.Amount != 5000 {
 				t.Errorf("KEY_SERVICE amount = %d, want 5000", li.Amount)
