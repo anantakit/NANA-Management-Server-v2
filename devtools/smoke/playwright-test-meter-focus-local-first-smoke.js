@@ -11,7 +11,7 @@
 //   - Re-entering Focus excludes rooms that already have a local draft
 //   - Drawer escalation opens single-room Focus and returns to drawer
 //
-// 7 cases:
+// 9 cases:
 //   TC1  REGRESSION GUARD #1 — zero API call per Focus Enter
 //   TC2  REGRESSION GUARD #2 — Focus surface has no submit
 //   TC3  Focus exit hydrates Spreadsheet immediately, no DraftBanner
@@ -20,6 +20,10 @@
 //   TC6  RECOVERY GUARD — reload mid-session shows DraftBanner (no leakage
 //        of auto-restore into recovery paths)
 //   TC7  Shift+Enter skips current room without writing a draft
+//   TC8  Arrow nav buttons wired (Skip advances, Previous goes back) +
+//        palette jump to a drafted room hydrates inputs from draft
+//   TC9  Input ergonomics: ArrowUp/Down no-op on meter inputs; Tab from
+//        elec → water input (not toggle), Tab from water → save+advance
 //
 // Run:  make smoke-meter-focus-local-first
 //       FRONTEND=http://localhost:3001 node playwright-test-meter-focus-local-first-smoke.js
@@ -442,6 +446,147 @@ async function tc7_shiftEnterSkips(page, apartmentId, month) {
   await clearDraft(page, apartmentId)
 }
 
+async function tc8_arrowButtonsAndJumpHydration(page, apartmentId, month) {
+  console.log('\n🧪 TC8 — Arrow nav (button + keyboard) + palette jump hydrates draft room')
+  await clearDraft(page, apartmentId)
+  await gotoMeterReadings(page)
+  await enterFocusMode(page)
+
+  // Skip advances cursor (button onClick wired to focusMode.handleNext)
+  const room0 = await readCurrentFocusRoom(page)
+  await page.locator('button', { hasText: /^ข้าม$/ }).first().click()
+  await page.waitForTimeout(300)
+  const room1 = await readCurrentFocusRoom(page)
+  check(`TC8.1 "ข้าม" click advances cursor (${room0} → ${room1})`,
+    !!room0 && !!room1 && room0 !== room1)
+
+  // Previous goes back (button onClick wired to focusMode.handlePrevious)
+  await page.locator('button', { hasText: /^ก่อนหน้า$/ }).first().click()
+  await page.waitForTimeout(300)
+  const room2 = await readCurrentFocusRoom(page)
+  check(`TC8.2 "ก่อนหน้า" click goes back (${room1} → ${room2}, expected ${room0})`,
+    !!room2 && room2 === room0)
+
+  // Keyboard arrow contract (DIFFERS from Delivery Mode — Meter Focus has
+  // editable number inputs that auto-focus on room change):
+  //   - Arrows WHILE input focused → cursor movement only, NO queue nav.
+  //     Operator may need to edit a digit they just mistyped.
+  //   - Arrows ONLY navigate the queue when focus is OUTSIDE editable
+  //     fields (after toggle click, drawer close, etc.).
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().click()
+  const roomBeforeKeyArrow = await readCurrentFocusRoom(page)
+  await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(200)
+  await page.keyboard.press('ArrowLeft')
+  await page.waitForTimeout(200)
+  const roomAfterArrowsInInput = await readCurrentFocusRoom(page)
+  check(
+    `TC8.2a ArrowLeft/Right inside input do NOT change room (${roomBeforeKeyArrow} stays ${roomAfterArrowsInInput})`,
+    roomBeforeKeyArrow === roomAfterArrowsInInput,
+  )
+
+  // Blur the input → arrows now drive queue navigation. Re-blur between
+  // presses because the auto-focus effect refocuses the elec input on each
+  // room change.
+  const blurActive = () => page.evaluate(() => (document.activeElement instanceof HTMLElement) && document.activeElement.blur())
+  await blurActive()
+  await page.waitForTimeout(120)
+  await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(300)
+  const roomAfterRightBlur = await readCurrentFocusRoom(page)
+  check(`TC8.2b ArrowRight with focus outside input advances (${roomBeforeKeyArrow} → ${roomAfterRightBlur})`,
+    !!roomAfterRightBlur && roomAfterRightBlur !== roomBeforeKeyArrow)
+  await blurActive()
+  await page.waitForTimeout(120)
+  await page.keyboard.press('ArrowLeft')
+  await page.waitForTimeout(300)
+  const roomAfterLeftBlur = await readCurrentFocusRoom(page)
+  check(`TC8.2c ArrowLeft with focus outside input goes back (${roomAfterRightBlur} → ${roomAfterLeftBlur}, expected ${roomBeforeKeyArrow})`,
+    !!roomAfterLeftBlur && roomAfterLeftBlur === roomBeforeKeyArrow)
+
+  // Now save a value for room0 so it becomes a drafted room
+  const draftedRoom = await saveOneInFocus(page, 7777, 3333)
+  check(`TC8.3 saved a draft for ${draftedRoom} to test jump hydration`, !!draftedRoom)
+
+  // Jump back to the drafted room via the footer "ไปห้อง..." button — the
+  // same affordance the Cmd+P shortcut wires up. Using the click path avoids
+  // Chromium's built-in Cmd+P print-dialog race in headless. The session
+  // queue moved past the saved room (handleSave advanced), so jumping is
+  // the only way back. The new hydration logic in useMeterFocusMode should
+  // populate the inputs from the draft.
+  await page.locator('button:has(kbd):has-text("ไปห้อง")').first().click()
+  await page.locator('input[placeholder="ค้นหาห้อง..."]').waitFor({ state: 'visible', timeout: 3000 })
+  await page.keyboard.type(draftedRoom)
+  await page.waitForTimeout(200)
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(400)
+
+  const jumpedRoom = await readCurrentFocusRoom(page)
+  const elecVal = await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().inputValue()
+  const waterVal = await page.locator('input[aria-label="มิเตอร์น้ำ"]').first().inputValue()
+  check(`TC8.4 jumped to drafted room ${draftedRoom} (got ${jumpedRoom})`,
+    jumpedRoom === draftedRoom)
+  check(`TC8.5 elec input hydrated from draft (got "${elecVal}", expected "7777")`,
+    elecVal === '7777')
+  check(`TC8.6 water input hydrated from draft (got "${waterVal}", expected "3333")`,
+    waterVal === '3333')
+
+  await page.keyboard.press('Escape') // clear any open palette state
+  await page.waitForTimeout(200)
+  await exitFocusMode(page)
+  await clearDraft(page, apartmentId)
+}
+
+async function tc9_inputErgonomics(page, apartmentId) {
+  console.log('\n🧪 TC9 — ArrowUp/Down no-op; Tab elec→water; Tab water→save')
+  await clearDraft(page, apartmentId)
+  await gotoMeterReadings(page)
+  await enterFocusMode(page)
+
+  const elec = page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first()
+  await elec.click()
+  await elec.fill('1234')
+
+  // ArrowUp should not increment; ArrowDown should not decrement
+  await page.keyboard.press('ArrowUp')
+  await page.waitForTimeout(80)
+  const afterUp = await elec.inputValue()
+  check(`TC9.1 ArrowUp does not step value (still "${afterUp}", expected "1234")`,
+    afterUp === '1234')
+
+  await page.keyboard.press('ArrowDown')
+  await page.waitForTimeout(80)
+  const afterDown = await elec.inputValue()
+  check(`TC9.2 ArrowDown does not step value (still "${afterDown}", expected "1234")`,
+    afterDown === '1234')
+
+  // Tab from elec input should focus the water input directly, NOT the
+  // toggle controls in between (เปลี่ยนมิเตอร์ใหม่ / ครบรอบ).
+  await page.keyboard.press('Tab')
+  await page.waitForTimeout(120)
+  const focusedAfterElecTab = await page.evaluate(() => {
+    const el = document.activeElement
+    if (!el) return null
+    return el.getAttribute('aria-label')
+  })
+  check(`TC9.3 Tab from elec focuses water input (active aria-label="${focusedAfterElecTab}")`,
+    focusedAfterElecTab === 'มิเตอร์น้ำ')
+
+  // Type a water value then Tab — Tab on water should mirror Enter and
+  // commit+advance. Reading the focus room after should show a different room.
+  const beforeRoom = await readCurrentFocusRoom(page)
+  const water = page.locator('input[aria-label="มิเตอร์น้ำ"]').first()
+  await water.fill('555')
+  await page.keyboard.press('Tab')
+  await page.waitForTimeout(400)
+  const afterRoom = await readCurrentFocusRoom(page)
+  check(`TC9.4 Tab from water saves+advances (${beforeRoom} → ${afterRoom})`,
+    !!beforeRoom && !!afterRoom && beforeRoom !== afterRoom)
+
+  await exitFocusMode(page)
+  await clearDraft(page, apartmentId)
+}
+
 // ─── Runner ─────────────────────────────────────────────────────────────
 
 ;(async () => {
@@ -472,6 +617,8 @@ async function tc7_shiftEnterSkips(page, apartmentId, month) {
     await tc5_drawerEscalationRoundtrip(page, apt.id)
     await tc6_reloadShowsBanner(page, apt.id)
     await tc7_shiftEnterSkips(page, apt.id, month)
+    await tc8_arrowButtonsAndJumpHydration(page, apt.id, month)
+    await tc9_inputErgonomics(page, apt.id)
   } finally {
     await browser.close()
   }
