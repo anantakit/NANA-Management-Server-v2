@@ -223,8 +223,38 @@ func (r *meterReadingRepository) FindLatestByRoomIDBeforeDate(ctx context.Contex
 	return &m, nil
 }
 
-// FindRecentByRoomIDs fetches the last N MONTHLY readings per room for baseline computation.
-// EXIT readings are excluded — they represent partial-period usage, not regular patterns.
+// FindRecentByRoomIDs fetches the last N MONTHLY readings per room for the
+// analytics baseline pool (median/anomaly threshold). EXIT readings excluded
+// — partial-period usage, not regular patterns.
+//
+// ⚠ Analytics exclusion is NOT a lineage rule. ⚠
+//
+// The two filters below (anchor_reason IS NULL, NOT EXISTS subquery) are
+// SPECIFIC TO THIS QUERY and must NOT be copy-pasted into other meter-reading
+// queries. Lineage queries (FindLatestByRoomID, populatePrevious,
+// FindLatestByRoomIDBeforeDate) MUST see recovery + source rows — the
+// lineage-vs-analytics split is the project's load-bearing guard
+// (feedback_recovery_lineage_vs_analytics_split.md, locked 2026-06-22).
+// A1 (service_recovery_findlatest_pin_integration_test.go) catches accidental
+// application of this filter to FindLatestByRoomID at PR time; B5
+// (service_recovery_lineage_vs_analytics_symmetry_integration_test.go)
+// catches accidental normalization of the two queries together.
+//
+// Reading Recovery exclusion (doctrine: feedback_reading_recovery_doctrine.md,
+// locked 2026-06-22):
+//
+//   - anchor_reason IS NOT NULL → row is an anchor event (READING_RECOVERY
+//     or PHYSICAL_REPLACEMENT), never a consumption month. Excluded.
+//   - row is referenced by another row's recovery_source_reading_id → it's
+//     a suspect source month whose recorded usage misled. Excluded.
+//
+// The NOT EXISTS subquery's `src.deleted_at IS NULL` filter naturally
+// un-excludes a source when its recovery is soft-deleted (retracted) —
+// matches the cancel/close lineage doctrine parallel.
+//
+// Index: idx_meter_readings_recovery_source (partial, WHERE
+// recovery_source_reading_id IS NOT NULL — migration 00038) backs the
+// NOT EXISTS subquery.
 func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error) {
 	if len(roomIDs) == 0 {
 		return map[uuid.UUID][]MeterReading{}, nil
@@ -232,9 +262,15 @@ func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomID
 
 	var readings []MeterReading
 	subQuery := database.DB(ctx, r.db).
-		Table("meter_readings").
-		Select("*, ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY billing_month DESC, created_at DESC) AS rn").
-		Where("room_id IN ? AND reading_type = 'MONTHLY' AND deleted_at IS NULL", roomIDs)
+		Table("meter_readings AS mr").
+		Select("mr.*, ROW_NUMBER() OVER (PARTITION BY mr.room_id ORDER BY mr.billing_month DESC, mr.created_at DESC) AS rn").
+		Where("mr.room_id IN ? AND mr.reading_type = 'MONTHLY' AND mr.deleted_at IS NULL", roomIDs).
+		Where("mr.anchor_reason IS NULL").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM meter_readings src
+			WHERE src.recovery_source_reading_id = mr.id
+			  AND src.deleted_at IS NULL
+		)`)
 
 	err := database.DB(ctx, r.db).
 		Table("(?) AS sub", subQuery).
