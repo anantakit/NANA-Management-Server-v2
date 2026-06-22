@@ -2,6 +2,7 @@ package meterreading
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"nana/internal/room"
@@ -19,6 +20,19 @@ const (
 	ReadingTypeExit    ReadingType = "EXIT"
 )
 
+// --- Anchor reason (Reading Recovery doctrine) ---
+
+// AnchorReason annotates a meter reading that breaks the prev-chain
+// continuity. FIRST_ANCHOR is NOT an enum member — inception is derived
+// state (latest == nil), per the locked doctrine split. Only
+// discontinuity reasons live here.
+type AnchorReason string
+
+const (
+	AnchorReasonPhysicalReplacement AnchorReason = "PHYSICAL_REPLACEMENT"
+	AnchorReasonReadingRecovery     AnchorReason = "READING_RECOVERY"
+)
+
 // --- Domain errors ---
 
 var (
@@ -30,6 +44,12 @@ var (
 	ErrOnlyLatestCanBeUpdated          = errors.New("แก้ไขได้เฉพาะรายการจดมิเตอร์ล่าสุดเท่านั้น")
 	ErrRolloverAndReplacedConflict     = errors.New("ครบรอบมิเตอร์กับเปลี่ยนมิเตอร์ไม่สามารถเลือกพร้อมกันได้")
 	ErrRolloverWithZeroPrevious        = errors.New("ไม่สามารถระบุครบรอบมิเตอร์ได้เมื่อค่าก่อนหน้าเป็น 0")
+
+	// Reading Recovery anchor errors (Phase 1 — ValidateAnchor).
+	ErrAnchorNoteRequired     = errors.New("ต้องระบุเหตุผลเมื่อบันทึก anchor reason")
+	ErrRecoverySourceRequired = errors.New("ต้องระบุมิเตอร์ต้นทางสำหรับ READING_RECOVERY")
+	ErrRecoverySelfReference  = errors.New("READING_RECOVERY ไม่สามารถอ้างถึงตัวเองได้")
+	ErrAnchorReasonInvalid    = errors.New("anchor_reason ไม่ถูกต้อง")
 )
 
 // --- Model ---
@@ -49,9 +69,18 @@ type MeterReading struct {
 	IsRolloverWater       bool           `gorm:"not null;default:false" json:"is_rollover_water"`
 	IsAnomalyElectricity  bool           `gorm:"not null;default:false" json:"is_anomaly_electricity"`
 	IsAnomalyWater        bool           `gorm:"not null;default:false" json:"is_anomaly_water"`
-	CreatedAt             time.Time      `gorm:"not null;default:now()" json:"created_at"`
-	UpdatedAt             time.Time      `gorm:"not null;default:now()" json:"updated_at"`
-	DeletedAt             gorm.DeletedAt `gorm:"index" json:"-"`
+
+	// Reading Recovery anchor fields (Phase 1). All nullable; populated only
+	// when a reading breaks prev-chain continuity (PHYSICAL_REPLACEMENT or
+	// READING_RECOVERY). Phase 5's service surface wires these via the
+	// recovery commit path; Phase 1 ships persistence + ValidateAnchor.
+	AnchorReason            *AnchorReason `gorm:"type:varchar(30)" json:"anchor_reason"`
+	AnchorNote              *string       `gorm:"type:text" json:"anchor_note"`
+	RecoverySourceReadingID *uuid.UUID    `gorm:"type:uuid" json:"recovery_source_reading_id"`
+
+	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
 	Room *room.Room `gorm:"foreignKey:RoomID" json:"-"`
 }
@@ -127,6 +156,55 @@ func (m *MeterReading) validate() error {
 	}
 	if !m.IsRolloverWater && m.WaterCurrent < m.WaterPrevious {
 		return ErrWaterCurrentBelowPrevious
+	}
+	return nil
+}
+
+// ValidateAnchor enforces the Reading Recovery doctrine for anchor fields.
+// Pure: no DB, no side effects.
+//
+// Doctrine: feedback_reading_recovery_doctrine.md (locked 2026-06-22).
+// Guard:    feedback_recovery_lineage_vs_analytics_split.md (locked 2026-06-22).
+// Design:   /Users/anantakit/.claude/plans/mutable-swimming-firefly.md (Item 4).
+//
+// Phase 1 ships the method but does not wire it into NewReading /
+// NewExitReading / ApplyUpdate — those factories don't accept anchor
+// params yet. Phase 5's recovery commit path calls this explicitly
+// before persistence.
+//
+// Rules:
+//  1. AnchorReason == nil → nil (no-op; vast majority of rows, including
+//     Workflow A first readings per the FIRST_ANCHOR=state lock).
+//  2. *AnchorReason not in {PHYSICAL_REPLACEMENT, READING_RECOVERY} →
+//     ErrAnchorReasonInvalid.
+//  3. AnchorNote nil or whitespace-only → ErrAnchorNoteRequired
+//     (TrimSpace covers Unicode whitespace; domain owns this — DB CHECK
+//     enforces only NOT NULL).
+//  4. READING_RECOVERY without RecoverySourceReadingID →
+//     ErrRecoverySourceRequired.
+//  5. READING_RECOVERY referencing itself (only checkable when m.ID is
+//     populated) → ErrRecoverySelfReference. Pre-BeforeCreate state
+//     (m.ID == uuid.Nil) is handed off to the DB CHECK as the safety net.
+func (m *MeterReading) ValidateAnchor() error {
+	if m.AnchorReason == nil {
+		return nil
+	}
+	switch *m.AnchorReason {
+	case AnchorReasonPhysicalReplacement, AnchorReasonReadingRecovery:
+		// valid
+	default:
+		return ErrAnchorReasonInvalid
+	}
+	if m.AnchorNote == nil || strings.TrimSpace(*m.AnchorNote) == "" {
+		return ErrAnchorNoteRequired
+	}
+	if *m.AnchorReason == AnchorReasonReadingRecovery {
+		if m.RecoverySourceReadingID == nil {
+			return ErrRecoverySourceRequired
+		}
+		if m.ID != uuid.Nil && *m.RecoverySourceReadingID == m.ID {
+			return ErrRecoverySelfReference
+		}
 	}
 	return nil
 }

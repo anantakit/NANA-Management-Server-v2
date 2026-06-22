@@ -17,26 +17,30 @@ import (
 	"nana/internal/testutil/testdb"
 )
 
-// TestRecovery_FindLatestByRoomIDReturnsMostRecentByDate is a Phase 0
-// regression pin for the Reading Recovery lineage-vs-analytics-split guard.
+// TestRecovery_FindLatestByRoomIDReturnsMostRecentByDate is a regression
+// pin for the Reading Recovery lineage-vs-analytics-split guard.
 //
 //	DOCTRINE: feedback_reading_recovery_doctrine.md (locked 2026-06-22)
 //	GUARD:    feedback_recovery_lineage_vs_analytics_split.md (locked 2026-06-22)
+//	DESIGN:   /Users/anantakit/.claude/plans/mutable-swimming-firefly.md (Item 3)
 //
-// Phase 0 assertion (green today):
+// Phase 0 assertions (lineage chain pin):
 //
 //	Two consecutive MONTHLY readings on the same room. FindLatestByRoomID
 //	returns the row with the later billing month, and the lineage chain
 //	is consistent — Month N's previous equals Month N-1's current via
 //	populatePrevious.
 //
-// Phase 2 strengthening (added when MeterReading.AnchorReason field lands):
+// Phase 1 strengthening (shipped this PR — MeterReading.AnchorReason field
+// landed in commit alongside this assertion):
 //
-//	A third reading hand-seeded directly with anchor_reason=READING_RECOVERY
-//	(bypassing the service surface, which is Phase 5). Assert
-//	FindLatestByRoomID STILL returns it. Encodes the locked guard
-//	("lineage truth: FindLatestByRoomID MUST see recovery rows") in test
-//	form.
+//	A third reading hand-seeded via meterRepo.Create with
+//	anchor_reason=READING_RECOVERY set directly (bypassing the service
+//	surface, which is Phase 5's deliverable). Assert FindLatestByRoomID
+//	STILL returns it AND prev=curr invariant survives persistence
+//	roundtrip. THIS IS THE LOCKED GUARD IN TEST FORM — if a future Phase
+//	2 PR applies the analytics-pool exclusion to FindLatestByRoomID by
+//	reflex, this fails immediately.
 //
 // What this pin guards against:
 //
@@ -45,11 +49,12 @@ import (
 //     to the analytics baseline pool query (FindRecentByRoomIDs +
 //     computeBaseline). A developer who applies the same filter to
 //     FindLatestByRoomID by reflex breaks next-month inheritance for
-//     every room that ever has a recovery row — the strengthened
-//     assertion fails immediately.
+//     every room that ever has a recovery row — Assert 3 fails immediately.
+//   - Phase 5 (or any subsequent path that writes recovery rows)
+//     violating the prev=curr invariant. Assert 4 catches a
+//     persistence-layer roundtrip that drops the equality.
 //   - Any future change that breaks the prev=curr inheritance through
-//     populatePrevious. Today's lineage chain assertion catches that
-//     before it ships.
+//     populatePrevious. Asserts 1+2 catch that before it ships.
 func TestRecovery_FindLatestByRoomIDReturnsMostRecentByDate(t *testing.T) {
 	db := testdb.Open(t)
 	testdb.TruncateAll(t, db)
@@ -108,16 +113,80 @@ func TestRecovery_FindLatestByRoomIDReturnsMostRecentByDate(t *testing.T) {
 	}
 
 	// ── Assert 2: FindLatestByRoomID returns the most-recent row ──
-	// Today this is a generic latest-by-date assertion. Phase 2's
-	// strengthening hand-seeds a third reading with anchor_reason set
-	// directly via raw INSERT (recovery service surface is Phase 5).
-	// That row MUST be returned by FindLatestByRoomID — the locked guard
-	// forbids the analytics-pool exclusion from leaking into lineage.
+	// Generic latest-by-date assertion (Phase 0). Assert 3 below
+	// strengthens with the anchor row.
 	latest, err := meterRepo.FindLatestByRoomID(ctx, rm.ID)
 	if err != nil {
 		t.Fatalf("FindLatestByRoomID: %v", err)
 	}
 	if latest.ID != n.ID {
 		t.Errorf("FindLatestByRoomID = %v, want Month N %v (most-recent by billing_month)", latest.ID, n.ID)
+	}
+
+	// ── Month N+1 (2026-05): READING_RECOVERY anchor, hand-seeded ──
+	// Phase 5 will land the service-level recovery commit. Phase 1
+	// hand-seeds via the repository so this PR can encode the locked
+	// guard (feedback_recovery_lineage_vs_analytics_split.md): lineage
+	// truth MUST see recovery rows regardless of any analytics-pool
+	// exclusion shipping in Phase 2.
+	//
+	// Recovery semantics per doctrine: previous = current (usage=0),
+	// anchor_reason = READING_RECOVERY, anchor_note required,
+	// recovery_source_reading_id points at the suspect source (Month N).
+	recoveryMonth := "2026-05"
+	recoveryNote := "ค้นพบว่าเดือนเมษายนจดมิเตอร์ผิด — re-anchor"
+	recoveryReason := meterreading.AnchorReasonReadingRecovery
+	recovery := &meterreading.MeterReading{
+		RoomID:                  rm.ID,
+		ReadingType:             meterreading.ReadingTypeMonthly,
+		BillingMonth:            &recoveryMonth,
+		ElectricityPrevious:     200, // = current; recovery has usage=0
+		ElectricityCurrent:      200,
+		WaterPrevious:           55,
+		WaterCurrent:            55,
+		AnchorReason:            &recoveryReason,
+		AnchorNote:              &recoveryNote,
+		RecoverySourceReadingID: &n.ID,
+	}
+	if err := meterRepo.Create(ctx, recovery); err != nil {
+		t.Fatalf("hand-seed recovery row: %v", err)
+	}
+
+	// ── Assert 3: FindLatestByRoomID returns the recovery row ──
+	// THIS IS THE LOCKED GUARD IN TEST FORM. If a future PR applies the
+	// analytics-pool exclusion to FindLatestByRoomID by reflex, this
+	// fails immediately at PR time.
+	latest, err = meterRepo.FindLatestByRoomID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("FindLatestByRoomID after recovery: %v", err)
+	}
+	if latest.ID != recovery.ID {
+		t.Errorf("FindLatestByRoomID = %v, want recovery %v — lineage MUST see recovery rows",
+			latest.ID, recovery.ID)
+	}
+
+	// ── Assert 4: recovery row's prev=curr invariant survived persistence ──
+	// Phase 5's service surface enforces this at commit; Phase 1 only
+	// pins the persistence-layer roundtrip honesty.
+	if latest.ElectricityPrevious != latest.ElectricityCurrent {
+		t.Errorf("recovery elec prev/curr = %d/%d, want equal (usage=0 invariant)",
+			latest.ElectricityPrevious, latest.ElectricityCurrent)
+	}
+	if latest.WaterPrevious != latest.WaterCurrent {
+		t.Errorf("recovery water prev/curr = %d/%d, want equal",
+			latest.WaterPrevious, latest.WaterCurrent)
+	}
+
+	// Roundtrip the anchor fields themselves, so a GORM tag drift on any
+	// of the three new columns surfaces here at PR time.
+	if latest.AnchorReason == nil || *latest.AnchorReason != meterreading.AnchorReasonReadingRecovery {
+		t.Errorf("recovery anchor_reason roundtrip = %v, want READING_RECOVERY", latest.AnchorReason)
+	}
+	if latest.AnchorNote == nil || *latest.AnchorNote != recoveryNote {
+		t.Errorf("recovery anchor_note roundtrip mismatch")
+	}
+	if latest.RecoverySourceReadingID == nil || *latest.RecoverySourceReadingID != n.ID {
+		t.Errorf("recovery_source_reading_id roundtrip = %v, want Month N %v",
+			latest.RecoverySourceReadingID, n.ID)
 	}
 }

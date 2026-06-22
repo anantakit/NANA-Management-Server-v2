@@ -799,3 +799,164 @@ func TestReadingMonth_NilBoth(t *testing.T) {
 		t.Errorf("readingMonth() = %q, want empty", got)
 	}
 }
+
+// --- ValidateAnchor — Reading Recovery doctrine (Phase 1 D1) ---
+//
+// DOCTRINE: feedback_reading_recovery_doctrine.md (locked 2026-06-22).
+// GUARD:    feedback_recovery_lineage_vs_analytics_split.md (locked 2026-06-22).
+// DESIGN:   /Users/anantakit/.claude/plans/mutable-swimming-firefly.md (Item 4).
+//
+// Six tests, locking:
+//   - NoAnchorReason → nil (no-op; covers regular MONTHLY/EXIT AND Workflow A
+//     first readings, since FIRST_ANCHOR is derived state).
+//   - AnchorReasonInvalid → ErrAnchorReasonInvalid (defense-in-depth above DB CHECK).
+//   - AnchorNoteEdgeCases → covers Unicode whitespace bypass attempts.
+//   - RecoveryRequiresSourceReading → ErrRecoverySourceRequired.
+//   - PhysicalReplacementDoesNotRequireSource → asymmetry vs RECOVERY.
+//   - RecoveryCannotReferenceItself → ErrRecoverySelfReference;
+//     pre-BeforeCreate skip case documented inline.
+
+func TestMeterReading_ValidateAnchor_NoAnchorReason_ReturnsNil(t *testing.T) {
+	m := &MeterReading{
+		ID:     uuid.New(),
+		RoomID: roomA,
+		// AnchorReason nil; other anchor fields nil.
+	}
+	if err := m.ValidateAnchor(); err != nil {
+		t.Errorf("ValidateAnchor() = %v, want nil for non-anchor row", err)
+	}
+
+	// Stray note without a reason is also OK — doctrine guards
+	// reason-without-note, not the reverse.
+	stray := "stray text"
+	m.AnchorNote = &stray
+	if err := m.ValidateAnchor(); err != nil {
+		t.Errorf("ValidateAnchor() with stray note but nil reason = %v, want nil", err)
+	}
+}
+
+func TestMeterReading_ValidateAnchor_AnchorReasonInvalid_ReturnsError(t *testing.T) {
+	bogus := AnchorReason("BOGUS_REASON")
+	note := "anything"
+	m := &MeterReading{
+		ID:           uuid.New(),
+		RoomID:       roomA,
+		AnchorReason: &bogus,
+		AnchorNote:   &note,
+	}
+	if err := m.ValidateAnchor(); err != ErrAnchorReasonInvalid {
+		t.Errorf("ValidateAnchor() = %v, want ErrAnchorReasonInvalid", err)
+	}
+}
+
+func TestMeterReading_ValidateAnchor_AnchorNoteEdgeCases(t *testing.T) {
+	reason := AnchorReasonPhysicalReplacement
+	cases := []struct {
+		name    string
+		note    *string
+		wantErr error
+	}{
+		{"nil note", nil, ErrAnchorNoteRequired},
+		{"empty string", strPtr(""), ErrAnchorNoteRequired},
+		{"ascii whitespace only", strPtr("   "), ErrAnchorNoteRequired},
+		{"control whitespace only", strPtr("\n\t  "), ErrAnchorNoteRequired},
+		{"single char", strPtr("x"), nil},
+		{"normal note", strPtr("เปลี่ยนมิเตอร์เพราะพัง"), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MeterReading{
+				ID:           uuid.New(),
+				RoomID:       roomA,
+				AnchorReason: &reason,
+				AnchorNote:   tc.note,
+			}
+			if got := m.ValidateAnchor(); got != tc.wantErr {
+				t.Errorf("ValidateAnchor() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestMeterReading_ValidateAnchor_RecoveryRequiresSourceReading(t *testing.T) {
+	reason := AnchorReasonReadingRecovery
+	note := "ค้นพบว่าเดือนเมษายนจดมิเตอร์ผิด"
+	m := &MeterReading{
+		ID:                      uuid.New(),
+		RoomID:                  roomA,
+		AnchorReason:            &reason,
+		AnchorNote:              &note,
+		RecoverySourceReadingID: nil, // missing
+	}
+	if err := m.ValidateAnchor(); err != ErrRecoverySourceRequired {
+		t.Errorf("ValidateAnchor() = %v, want ErrRecoverySourceRequired", err)
+	}
+}
+
+func TestMeterReading_ValidateAnchor_PhysicalReplacementDoesNotRequireSource(t *testing.T) {
+	reason := AnchorReasonPhysicalReplacement
+	note := "เปลี่ยนมิเตอร์เพราะพัง"
+	m := &MeterReading{
+		ID:                      uuid.New(),
+		RoomID:                  roomA,
+		AnchorReason:            &reason,
+		AnchorNote:              &note,
+		RecoverySourceReadingID: nil, // PHYSICAL_REPLACEMENT doesn't need it
+	}
+	if err := m.ValidateAnchor(); err != nil {
+		t.Errorf("ValidateAnchor() = %v, want nil — replacement doesn't need source FK", err)
+	}
+}
+
+func TestMeterReading_ValidateAnchor_RecoveryCannotReferenceItself(t *testing.T) {
+	reason := AnchorReasonReadingRecovery
+	note := "self-ref guard"
+
+	t.Run("ID set and source==ID", func(t *testing.T) {
+		id := uuid.New()
+		m := &MeterReading{
+			ID:                      id,
+			RoomID:                  roomA,
+			AnchorReason:            &reason,
+			AnchorNote:              &note,
+			RecoverySourceReadingID: &id,
+		}
+		if err := m.ValidateAnchor(); err != ErrRecoverySelfReference {
+			t.Errorf("ValidateAnchor() = %v, want ErrRecoverySelfReference", err)
+		}
+	})
+
+	t.Run("pre-BeforeCreate skip: ID=nil and source=nil-uuid", func(t *testing.T) {
+		// Before GORM's BeforeCreate hook fires, m.ID == uuid.Nil. The
+		// domain guard skips in this state and hands self-reference
+		// detection to the DB CHECK constraint at INSERT time (which
+		// runs AFTER BeforeCreate populates m.ID). This sub-case
+		// documents that the skip is intentional, not a bug.
+		nilID := uuid.Nil
+		m := &MeterReading{
+			ID:                      uuid.Nil,
+			RoomID:                  roomA,
+			AnchorReason:            &reason,
+			AnchorNote:              &note,
+			RecoverySourceReadingID: &nilID,
+		}
+		if err := m.ValidateAnchor(); err != nil {
+			t.Errorf("ValidateAnchor() = %v, want nil (pre-BeforeCreate skip)", err)
+		}
+	})
+
+	t.Run("ID set and source!=ID", func(t *testing.T) {
+		m := &MeterReading{
+			ID:                      uuid.New(),
+			RoomID:                  roomA,
+			AnchorReason:            &reason,
+			AnchorNote:              &note,
+			RecoverySourceReadingID: ptrUUID(uuid.New()),
+		}
+		if err := m.ValidateAnchor(); err != nil {
+			t.Errorf("ValidateAnchor() = %v, want nil (distinct source)", err)
+		}
+	})
+}
+
+func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }
