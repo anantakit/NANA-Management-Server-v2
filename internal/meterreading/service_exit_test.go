@@ -119,6 +119,9 @@ func (m *mockMoveOutChecker) FindRoomIDsWithPendingNotice(_ context.Context, roo
 	}
 	return result, nil
 }
+func (m *mockMoveOutChecker) HasCompletedMoveOut(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
 
 // mockContractQuerier implements ContractQuerier (unused in EXIT tests, but required).
 type mockContractQuerier struct{}
@@ -130,6 +133,21 @@ func (m *mockContractQuerier) FindActiveContractStartDatesByRoomIDs(_ context.Co
 }
 func (m *mockContractQuerier) FindByRoomIDWithTenants(_ context.Context, _ uuid.UUID) ([]contract.ContractTenantSummary, error) {
 	return nil, nil
+}
+func (m *mockContractQuerier) FindContractIDByRoomAndMonth(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+func (m *mockContractQuerier) FindActiveContractIDByRoomID(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+// mockBillingAdj implements BillingAdjustmentCommander (no-op for EXIT tests).
+type mockBillingAdj struct{}
+
+var _ BillingAdjustmentCommander = (*mockBillingAdj)(nil)
+
+func (m *mockBillingAdj) AttachAdjustmentLine(_ context.Context, _ AttachAdjustmentParams) error {
+	return nil
 }
 
 // mockTxManager runs fn directly (no actual transaction).
@@ -159,6 +177,7 @@ func newTestService(repo *mockMeterRepo, moveOuts *mockMoveOutChecker) MeterRead
 		&mockRoomQuerier{room: newTestRoom()},
 		&mockContractQuerier{},
 		moveOuts,
+		&mockBillingAdj{},
 		&mockTxManager{},
 	)
 }

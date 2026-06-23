@@ -81,7 +81,7 @@ func TestRecovery_SourceRowExcludedFromAnalyticsBaseline(t *testing.T) {
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
 
 	// ── Months 1–2: normal MONTHLY readings ──
 	create := func(label, month string, elecCurrent, waterCurrent int) *meterreading.MeterReadingWithRoom {

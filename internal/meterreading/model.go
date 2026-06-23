@@ -50,6 +50,12 @@ var (
 	ErrRecoverySourceRequired = errors.New("ต้องระบุมิเตอร์ต้นทางสำหรับ READING_RECOVERY")
 	ErrRecoverySelfReference  = errors.New("READING_RECOVERY ไม่สามารถอ้างถึงตัวเองได้")
 	ErrAnchorReasonInvalid    = errors.New("anchor_reason ไม่ถูกต้อง")
+
+	// Reading Recovery prev=curr invariant (Phase 5 Lock A — triple-guard
+	// domain-layer arm; DB CHECKs meter_readings_recovery_{elec,water}_prev_eq_curr
+	// are the corruption-guard arm; service constructor is the wiring arm).
+	ErrRecoveryElecPrevMustEqualCurrent  = errors.New("READING_RECOVERY: electricity_previous ต้องเท่ากับ electricity_current")
+	ErrRecoveryWaterPrevMustEqualCurrent = errors.New("READING_RECOVERY: water_previous ต้องเท่ากับ water_current")
 )
 
 // --- Model ---
@@ -185,6 +191,12 @@ func (m *MeterReading) validate() error {
 //  5. READING_RECOVERY referencing itself (only checkable when m.ID is
 //     populated) → ErrRecoverySelfReference. Pre-BeforeCreate state
 //     (m.ID == uuid.Nil) is handed off to the DB CHECK as the safety net.
+//  6. READING_RECOVERY with electricity_previous != electricity_current →
+//     ErrRecoveryElecPrevMustEqualCurrent. Phase 5 Lock A (triple-guard
+//     domain arm; DB CHECK meter_readings_recovery_elec_prev_eq_curr is
+//     the corruption-guard arm).
+//  7. READING_RECOVERY with water_previous != water_current →
+//     ErrRecoveryWaterPrevMustEqualCurrent. Same triple-guard pattern.
 func (m *MeterReading) ValidateAnchor() error {
 	if m.AnchorReason == nil {
 		return nil
@@ -204,6 +216,15 @@ func (m *MeterReading) ValidateAnchor() error {
 		}
 		if m.ID != uuid.Nil && *m.RecoverySourceReadingID == m.ID {
 			return ErrRecoverySelfReference
+		}
+		// Phase 5 Lock A: recovery rows are re-anchor events (usage=0).
+		// previous = current is a doctrine invariant, enforced at three
+		// layers (DB CHECK + this domain rule + service constructor).
+		if m.ElectricityPrevious != m.ElectricityCurrent {
+			return ErrRecoveryElecPrevMustEqualCurrent
+		}
+		if m.WaterPrevious != m.WaterCurrent {
+			return ErrRecoveryWaterPrevMustEqualCurrent
 		}
 	}
 	return nil

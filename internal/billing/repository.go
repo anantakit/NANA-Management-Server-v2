@@ -20,6 +20,7 @@ type BillingRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*Bill, error)
 	FindByIDWithRelations(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error)
+	FindDraftBillForContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error)
 	FindNonVoidedByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string) ([]Bill, error)
 	FindApartmentIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error)
 	FindRoomApartmentInfo(ctx context.Context, roomID uuid.UUID) (apartmentID uuid.UUID, roomNumber string, err error)
@@ -289,6 +290,29 @@ func (r *billingRepository) FindByContractAndMonth(ctx context.Context, contract
 	err := database.DB(ctx, r.db).
 		Where("contract_id = ? AND billing_month = ? AND bill_type = ? AND status IN ?",
 			contractID, billingMonth, billType, []BillStatus{BillStatusFinalized, BillStatusPaid}).
+		First(&b).Error
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// FindDraftBillForContractAndMonth finds the non-VOID DRAFT bill for a
+// contract+billing_month+bill_type. Sibling of FindByContractAndMonth
+// (which targets FINALIZED|PAID). Returns gorm.ErrRecordNotFound (use
+// database.IsNotFound) when no DRAFT exists.
+//
+// Backed by unique index idx_bills_unique_monthly (00014) on
+// (contract_id, billing_month) WHERE bill_type='MONTHLY' AND status!='VOID' —
+// guarantees single-row result for MONTHLY bills (which is all Phase 5
+// recovery consumes; SETTLEMENT-bill ADJUSTMENT is v1.1).
+//
+// Used by Phase 5 Reading Recovery commit (billing.RecoveryAdapter).
+func (r *billingRepository) FindDraftBillForContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType BillType) (*Bill, error) {
+	var b Bill
+	err := database.DB(ctx, r.db).
+		Where("contract_id = ? AND billing_month = ? AND bill_type = ? AND status = ?",
+			contractID, billingMonth, billType, BillStatusDraft).
 		First(&b).Error
 	if err != nil {
 		return nil, err

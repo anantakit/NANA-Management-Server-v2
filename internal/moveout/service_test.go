@@ -57,6 +57,9 @@ func (m *mockMoveOutRepo) FindActiveByContractID(_ context.Context, _ uuid.UUID)
 func (m *mockMoveOutRepo) HasActiveByContractID(_ context.Context, _ uuid.UUID) (bool, error) {
 	return false, nil
 }
+func (m *mockMoveOutRepo) HasCompletedMoveOut(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
 func (m *mockMoveOutRepo) FindRoomIDsWithPendingNotice(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]bool, error) {
 	return nil, nil
 }

@@ -960,3 +960,69 @@ func TestMeterReading_ValidateAnchor_RecoveryCannotReferenceItself(t *testing.T)
 }
 
 func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }
+
+// TestMeterReading_ValidateAnchor_RecoveryRequiresPrevEqualsCurrent locks
+// Phase 5 Lock A's domain-layer arm: READING_RECOVERY rows are re-anchor
+// events (usage=0) and prev=curr is a doctrine invariant.
+//
+// Doctrine: feedback_reading_recovery_doctrine.md line 33.
+// Plan:     /Users/anantakit/.claude/plans/hashed-gliding-crab.md (Lock A).
+//
+// The DB CHECK constraints meter_readings_recovery_{elec,water}_prev_eq_curr
+// (migration 00040) are the corruption-guard arm of the triple guard.
+func TestMeterReading_ValidateAnchor_RecoveryRequiresPrevEqualsCurrent(t *testing.T) {
+	recoveryReason := AnchorReasonReadingRecovery
+	note := "ค้นพบว่าจดมิเตอร์ผิด"
+	sourceID := uuid.New()
+
+	cases := []struct {
+		name                   string
+		elecPrev, elecCurr     int
+		waterPrev, waterCurr   int
+		wantErr                error
+	}{
+		{"both equal (valid)", 200, 200, 55, 55, nil},
+		{"elec prev != curr", 199, 200, 55, 55, ErrRecoveryElecPrevMustEqualCurrent},
+		{"water prev != curr", 200, 200, 54, 55, ErrRecoveryWaterPrevMustEqualCurrent},
+		{"both differ (elec fires first)", 199, 200, 54, 55, ErrRecoveryElecPrevMustEqualCurrent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MeterReading{
+				RoomID:                  roomA,
+				AnchorReason:            &recoveryReason,
+				AnchorNote:              &note,
+				RecoverySourceReadingID: &sourceID,
+				ElectricityPrevious:     tc.elecPrev,
+				ElectricityCurrent:      tc.elecCurr,
+				WaterPrevious:           tc.waterPrev,
+				WaterCurrent:            tc.waterCurr,
+			}
+			if got := m.ValidateAnchor(); got != tc.wantErr {
+				t.Errorf("ValidateAnchor() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestMeterReading_ValidateAnchor_PhysicalReplacementAllowsPrevNeCurrent
+// locks the SCOPE of Lock A's new rules: prev=curr is required ONLY for
+// READING_RECOVERY. PHYSICAL_REPLACEMENT explicitly does not require it
+// (a physical meter swap resets the reading independently of the prior).
+func TestMeterReading_ValidateAnchor_PhysicalReplacementAllowsPrevNeCurrent(t *testing.T) {
+	replacementReason := AnchorReasonPhysicalReplacement
+	note := "เปลี่ยนมิเตอร์ใหม่"
+
+	m := &MeterReading{
+		RoomID:              roomA,
+		AnchorReason:        &replacementReason,
+		AnchorNote:          &note,
+		ElectricityPrevious: 0,
+		ElectricityCurrent:  50,
+		WaterPrevious:       0,
+		WaterCurrent:        10,
+	}
+	if err := m.ValidateAnchor(); err != nil {
+		t.Errorf("ValidateAnchor() = %v, want nil — prev=curr rule is RECOVERY-only", err)
+	}
+}

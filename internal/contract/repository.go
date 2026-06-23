@@ -24,6 +24,9 @@ type ContractRepository interface {
 	FindActiveContractStartDatesByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]time.Time, error)
 	FindByRoomIDWithTenants(ctx context.Context, roomID uuid.UUID) ([]ContractTenantSummary, error)
 	EndContract(ctx context.Context, id uuid.UUID, endDate time.Time) error
+	// Phase 5 (Reading Recovery, Lock D — settlement-boundary).
+	FindContractIDByRoomAndMonth(ctx context.Context, roomID uuid.UUID, billingMonth string) (uuid.UUID, error)
+	FindActiveContractIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error)
 }
 
 type contractRepository struct {
@@ -267,4 +270,59 @@ func (r *contractRepository) EndContract(ctx context.Context, id uuid.UUID, endD
 		"end_date": endDate,
 		"status":   ContractStatusEnded,
 	}).Error
+}
+
+// FindContractIDByRoomAndMonth returns the contract ID that covered the
+// room during a given billing month. Used by meterreading recovery
+// commit (Lock D) to identify the source reading's contract — the input
+// to the settlement-boundary predicate.
+//
+// "Covered" means: contract.start_date <= first-of-month <= contract.end_date
+// (or contract.end_date IS NULL = still open-ended). billingMonth is
+// "YYYY-MM"; converted to first-of-month for the date comparison.
+//
+// Returns gorm.ErrRecordNotFound (use database.IsNotFound) when no
+// contract matches — defensive guard for source rows from vacant periods.
+//
+// WATCH ITEM: the first-of-month coercion is a known approximation. If
+// mid-month contract turnover surfaces as a production issue, revisit
+// with finer date granularity.
+func (r *contractRepository) FindContractIDByRoomAndMonth(ctx context.Context, roomID uuid.UUID, billingMonth string) (uuid.UUID, error) {
+	firstOfMonth, err := time.Parse("2006-01", billingMonth)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid billing_month %q: %w", billingMonth, err)
+	}
+	var row struct {
+		ID uuid.UUID
+	}
+	err = database.DB(ctx, r.db).
+		Model(&Contract{}).
+		Select("id").
+		Where("room_id = ? AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)",
+			roomID, firstOfMonth, firstOfMonth).
+		First(&row).Error
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return row.ID, nil
+}
+
+// FindActiveContractIDByRoomID returns the room's CURRENT active
+// contract ID — the destination for the recovery ADJUSTMENT's DRAFT
+// bill lookup. Returns gorm.ErrRecordNotFound if the room has no active
+// contract (currently vacant) — Lock D maps that to
+// ErrRecoverySettlementBoundaryCrossed.
+func (r *contractRepository) FindActiveContractIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error) {
+	var row struct {
+		ID uuid.UUID
+	}
+	err := database.DB(ctx, r.db).
+		Model(&Contract{}).
+		Select("id").
+		Where("room_id = ? AND status = ?", roomID, ContractStatusActive).
+		First(&row).Error
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return row.ID, nil
 }

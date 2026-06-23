@@ -23,6 +23,7 @@
 package fixtures
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -207,4 +208,17 @@ func mustParseUUID(t *testing.T, s string) uuid.UUID {
 func truncateToDate(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// NoopBillingAdjustmentCommander satisfies meterreading.BillingAdjustmentCommander
+// with a no-op. Used by integration tests that exercise the meter side of
+// the recovery flow indirectly (NOT through CreateRecovery itself) — Phase 5
+// added BillingAdjustmentCommander as a required constructor param to
+// meterreading.NewMeterReadingService; tests that never invoke CreateRecovery
+// still need a non-nil collaborator. Tests that DO exercise CreateRecovery
+// should wire the real billing.NewRecoveryAdapter against the integration DB.
+type NoopBillingAdjustmentCommander struct{}
+
+func (NoopBillingAdjustmentCommander) AttachAdjustmentLine(_ context.Context, _ meterreading.AttachAdjustmentParams) error {
+	return nil
 }

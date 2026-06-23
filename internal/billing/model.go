@@ -1333,6 +1333,15 @@ const (
 
 	// Payment lifecycle — does NOT count toward is_edited.
 	AuditRecordPayment BillAuditAction = "RECORD_PAYMENT"
+
+	// Reading Recovery commit (Phase 5) — operator-deliberated money
+	// correction attached to a current-month DRAFT bill via meterreading's
+	// CreateRecovery workflow. Distinct from AuditAddManualItem because
+	// ADJUSTMENT lines are not operator-typeable from BillEdit; they only
+	// arise through the recovery commit path with FK provenance back to
+	// the meter_readings recovery row. Lifecycle event (NOT is_edited).
+	// See feedback_reading_recovery_doctrine.md.
+	AuditApplyRecoveryAdjustment BillAuditAction = "APPLY_RECOVERY_ADJUSTMENT"
 )
 
 // IsEditEvent reports whether this action contributes to the is_edited flag
@@ -1514,6 +1523,25 @@ type AuditCreateFromCorrectionPayload struct {
 type AuditRecordPaymentPayload struct {
 	Amount int64  `json:"amount"` // satang
 	Method string `json:"method"` // "CASH" or "TRANSFER"
+}
+
+// AuditApplyRecoveryAdjustmentPayload captures the Reading Recovery
+// commit (Phase 5). Amount is the operator's committed value in signed
+// satang (negative = refund; positive = top-up). RecoveryReadingID is
+// the FK to the meter_readings row this adjustment provenances back to.
+// ReasonCode is the raw string ("METER_RECOVERY" in v1) so the audit log
+// is self-describing.
+//
+// Phase 5 Lock B: operator-authoritative. No backend-computed suggested
+// amount or deviation fields. If forensic divergence proves operationally
+// important post-launch, add nullable fields as an additive enhancement.
+//
+// See feedback_reading_recovery_doctrine.md.
+type AuditApplyRecoveryAdjustmentPayload struct {
+	Amount            int64     `json:"amount"`              // signed satang
+	RecoveryReadingID uuid.UUID `json:"recovery_reading_id"` // FK provenance
+	ReasonCode        string    `json:"reason_code"`         // "METER_RECOVERY"
+	Note              string    `json:"note"`                // operator's reasoning
 }
 
 // BillPaymentRecord is a display-read projection from the bill_payments table.

@@ -37,6 +37,11 @@ type MeterReadingService interface {
 	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
 
+	// CreateRecovery commits a READING_RECOVERY anchor row + an ADJUSTMENT
+	// line on the room's current active contract DRAFT bill, atomically.
+	// Phase 5 — see feedback_reading_recovery_doctrine.md.
+	CreateRecovery(ctx context.Context, input CreateRecoveryInput) (*MeterReading, error)
+
 	// --- Move-out workflow ports ---
 
 	// CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.
@@ -54,11 +59,12 @@ type MeterReadingService interface {
 }
 
 type meterReadingService struct {
-	repo      MeterReadingRepository
-	rooms     RoomQuerier
-	contracts ContractQuerier
-	moveOuts  MoveOutChecker
-	tx        database.TxManager
+	repo       MeterReadingRepository
+	rooms      RoomQuerier
+	contracts  ContractQuerier
+	moveOuts   MoveOutChecker
+	billingAdj BillingAdjustmentCommander
+	tx         database.TxManager
 }
 
 func NewMeterReadingService(
@@ -66,16 +72,23 @@ func NewMeterReadingService(
 	rooms RoomQuerier,
 	contracts ContractQuerier,
 	moveOuts MoveOutChecker,
+	billingAdj BillingAdjustmentCommander,
 	tx database.TxManager,
 ) MeterReadingService {
 	return &meterReadingService{
-		repo:      repo,
-		rooms:     rooms,
-		contracts: contracts,
-		moveOuts:  moveOuts,
-		tx:        tx,
+		repo:       repo,
+		rooms:      rooms,
+		contracts:  contracts,
+		moveOuts:   moveOuts,
+		billingAdj: billingAdj,
+		tx:         tx,
 	}
 }
+
+// CreateRecoveryInput + CreateRecovery moved to service_recovery.go to keep
+// service.go under the 500-line size limit. Phase 5 ships the recovery
+// surface as a sibling file so future recovery-shaped methods (e.g.
+// ReverseRecovery, post-Phase-5) can colocate without bloating service.go.
 
 func (s *meterReadingService) List(ctx context.Context, apartmentID uuid.UUID, params ListParams) ([]MeterReadingWithRoom, int64, error) {
 	return s.repo.FindAll(ctx, apartmentID, params)

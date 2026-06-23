@@ -88,7 +88,7 @@ func TestRecovery_AnchorRowExcludedFromAnalyticsBaseline(t *testing.T) {
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
 
 	// ── Months 1–3: normal MONTHLY readings, elec usage 50 each ──
 	// elec currents: 50, 100, 150 → usages 50, 50, 50 → median 50, HasEnoughData=true

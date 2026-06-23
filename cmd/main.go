@@ -118,8 +118,20 @@ func main() {
 	// Wire dependencies — Move-Out Notices (billingService injected below after billing init)
 	moveOutRepo := moveout.NewMoveOutRepository(db)
 
-	// Meter Reading service (needs moveOutRepo for MoveOutChecker port)
-	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txManager)
+	// Wire dependencies — Billing root (repos must precede meterService since
+	// Phase 5 Reading Recovery wires billing.RecoveryAdapter into meterService).
+	billRepo := billing.NewBillingRepository(db)
+	billAuditRepo := billing.NewBillAuditRepository(db)
+
+	// Phase 5 Reading Recovery — meterreading commits ADJUSTMENT lines on
+	// the current-month DRAFT bill via this adapter (consumer-defined port
+	// `meterreading.BillingAdjustmentCommander`, provider-implemented in
+	// billing/recovery_adapter.go).
+	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
+
+	// Meter Reading service (needs moveOutRepo for MoveOutChecker port,
+	// billRecoveryAdapter for BillingAdjustmentCommander port).
+	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txManager)
 	meterHandler := meterreading.NewMeterReadingHandler(meterService)
 
 	// Wire dependencies — Payment Destination Routing
@@ -127,9 +139,7 @@ func main() {
 	routingService := apartment.NewPaymentRoutingService(routingRuleRepo, bankRepo, aptRepo)
 	routingHandler := apartment.NewPaymentRoutingHandler(routingService)
 
-	// Wire dependencies — Billing
-	billRepo := billing.NewBillingRepository(db)
-	billAuditRepo := billing.NewBillAuditRepository(db)
+	// Wire dependencies — Billing service (root repos constructed above)
 	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, routingService, txManager)
 	billHandler := billing.NewBillingHandler(billService)
 

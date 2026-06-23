@@ -87,7 +87,7 @@ func TestMissedReadings_ActiveContract_NextMonthInheritsLastReading(t *testing.T
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
 
 	// ── Month N (2026-03): normal MONTHLY ──
 	// First reading on this room → previous=0; usage = current.

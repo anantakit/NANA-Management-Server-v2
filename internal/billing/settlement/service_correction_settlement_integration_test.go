@@ -236,7 +236,7 @@ func buildRealMoveOutService(t *testing.T, db *gorm.DB, billSvc *Service) moveou
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
 	return moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterSvc, billSvc, billSvc, txMgr)
 }
 

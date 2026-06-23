@@ -84,7 +84,7 @@ func TestRecovery_LineageVsAnalyticsSymmetry(t *testing.T) {
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
 
 	// ── Months 1–3: normal MONTHLY readings, elec usage 50 each ──
 	create := func(label, month string, elecCurrent, waterCurrent int) *meterreading.MeterReadingWithRoom {

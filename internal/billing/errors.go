@@ -16,6 +16,11 @@ var (
 	ErrMeterTypeMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ที่ระบุไม่ใช่ประเภทรายเดือน")
 	ErrMeterRoomMismatch   = respond.ErrBadRequest.WithMessage("มิเตอร์ไม่ตรงกับห้องในสัญญา")
 	ErrMeterMonthMismatch  = respond.ErrBadRequest.WithMessage("เดือนของมิเตอร์ไม่ตรงกับเดือนที่ออกบิล")
+
+	// Reading Recovery (Phase 5) — surfaced by RecoveryAdapter when the
+	// current-month DRAFT bill is missing. Operator's path: run monthly
+	// batch first, then commit recovery.
+	ErrRecoveryNoDraftBill = respond.ErrConflict.WithMessage("ห้องนี้ยังไม่มีบิลร่างของเดือนนี้ — ออกบิลรายเดือนก่อนแล้วจึงปรับยอด")
 )
 
 // Settlement-only sentinels (ErrMoveOutNotFound, ErrActualDateRequired,

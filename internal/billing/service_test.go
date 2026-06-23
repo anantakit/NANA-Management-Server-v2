@@ -102,6 +102,9 @@ func (m *mockBillingRepo) FindByContractAndMonth(ctx context.Context, contractID
 	}
 	return nil, gorm.ErrRecordNotFound
 }
+func (m *mockBillingRepo) FindDraftBillForContractAndMonth(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
+	return nil, gorm.ErrRecordNotFound
+}
 func (m *mockBillingRepo) FindNonVoidedByContractAndMonth(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error) {
 	if m.findNonVoidedByContractMonthFn != nil {
 		return m.findNonVoidedByContractMonthFn(ctx, contractID, month)

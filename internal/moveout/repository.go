@@ -20,6 +20,7 @@ type MoveOutRepository interface {
 	FindByIDForUpdate(ctx context.Context, id uuid.UUID) (*MoveOutNotice, error)
 	FindActiveByContractID(ctx context.Context, contractID uuid.UUID) (*MoveOutNotice, error)
 	HasActiveByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+	HasCompletedMoveOut(ctx context.Context, contractID uuid.UUID) (bool, error)
 	FindRoomIDsWithPendingNotice(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 	FindRoomIDsWithMoveOutInMonth(ctx context.Context, roomIDs []uuid.UUID, billingMonth string) (map[uuid.UUID]bool, error)
 	ListActive(ctx context.Context, params MoveOutQueueParams) ([]MoveOutWithRelations, error)
@@ -175,6 +176,27 @@ func (r *moveOutRepository) FindActiveByContractID(ctx context.Context, contract
 		return nil, err
 	}
 	return &m, nil
+}
+
+// HasCompletedMoveOut returns true iff the given contract has any
+// move_out_notice row with status = COMPLETED. Used by meterreading's
+// Reading Recovery commit (Phase 5 Lock D) as the settlement-boundary
+// predicate: a completed move-out closes the recovery chain on that
+// contract regardless of whether the same tenant later returns under a
+// new contract.
+//
+// See feedback_reading_recovery_doctrine.md +
+// /Users/anantakit/.claude/plans/hashed-gliding-crab.md (Lock D).
+func (r *moveOutRepository) HasCompletedMoveOut(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	var count int64
+	err := database.DB(ctx, r.db).
+		Model(&MoveOutNotice{}).
+		Where("contract_id = ? AND status = ?", contractID, MoveOutStatusCompleted).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (r *moveOutRepository) HasActiveByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {

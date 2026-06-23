@@ -71,6 +71,12 @@ func (m *mockContractRepo) FindByRoomIDWithTenants(_ context.Context, _ uuid.UUI
 func (m *mockContractRepo) EndContract(_ context.Context, _ uuid.UUID, _ time.Time) error {
 	return nil
 }
+func (m *mockContractRepo) FindContractIDByRoomAndMonth(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+func (m *mockContractRepo) FindActiveContractIDByRoomID(_ context.Context, _ uuid.UUID) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
 
 type mockRoomQuerier struct {
 	room *room.Room
