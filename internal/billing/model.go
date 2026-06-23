@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +43,14 @@ const (
 	LineItemPrepaidCredit   LineItemType = "PREPAID_CREDIT"
 	LineItemOutstandingBill LineItemType = "OUTSTANDING_BILL"
 	LineItemOther           LineItemType = "OTHER"
+
+	// LineItemAdjustment carries Reading Recovery money truth (refund or
+	// charge) with FK provenance to the meter_readings row that triggered
+	// the recovery. Source is MANUAL by invariant (DB CHECK + ValidateAdjustment)
+	// and is intentionally NOT in validManualLineTypes — operators cannot pick
+	// this type from the BillEdit drawer. Phase 5's recovery commit path is the
+	// only writer. See feedback_reading_recovery_doctrine.md.
+	LineItemAdjustment LineItemType = "ADJUSTMENT"
 )
 
 // validManualLineTypes are the line types allowed for user-added MANUAL items.
@@ -62,6 +71,24 @@ type LineItemSource string
 const (
 	LineItemSourceAuto   LineItemSource = "AUTO"
 	LineItemSourceManual LineItemSource = "MANUAL"
+)
+
+// --- Adjustment reason code (Reading Recovery doctrine, Phase 4) ---
+
+// AdjustmentReasonCode annotates an ADJUSTMENT line with why the money
+// movement was needed. METER_RECOVERY is the only Phase 4 value — future
+// codes (PRIOR_OVERCHARGE / PRIOR_UNDERCHARGE / OTHER) are deferred per the
+// "no dormant workflow" doctrine. The FK alone is not a discriminator
+// across the eventual reason space (only METER_RECOVERY carries a recovery
+// FK; the future codes are pure financial reconciliations), so reason_code
+// is the orthogonal label used by audit log and FE row templates.
+//
+// Extension requires a new migration + ValidateAdjustment update + the
+// corresponding workflow scaffolding.
+type AdjustmentReasonCode string
+
+const (
+	AdjustmentReasonMeterRecovery AdjustmentReasonCode = "METER_RECOVERY"
 )
 
 // --- Override map (jsonb on bills) ---
@@ -190,6 +217,14 @@ var (
 	// document-replacement invariants. See project_settlement_correction_design_lock.
 	ErrAlreadySuperseded                = errors.New("บิลนี้ถูกแทนที่ด้วยใบใหม่แล้ว")
 	ErrSettlementCorrectionNotSupported = errors.New("ยังไม่รองรับการแก้ไขบิลปิดสัญญาใน v1")
+
+	// Reading Recovery ADJUSTMENT errors (Phase 4 — ValidateAdjustment).
+	ErrAdjustmentSourceMustBeManual      = errors.New("ADJUSTMENT ต้องเป็น MANUAL เท่านั้น")
+	ErrAdjustmentRecoveryReadingRequired = errors.New("ADJUSTMENT ต้องอ้างมิเตอร์ recovery")
+	ErrAdjustmentReasonCodeRequired      = errors.New("ADJUSTMENT ต้องระบุเหตุผล (reason code)")
+	ErrAdjustmentReasonCodeInvalid       = errors.New("ADJUSTMENT reason code ไม่ถูกต้อง")
+	ErrAdjustmentNoteRequired            = errors.New("ADJUSTMENT ต้องระบุหมายเหตุประกอบ")
+	ErrAdjustmentNoteTooShort            = errors.New("ADJUSTMENT หมายเหตุต้องยาวอย่างน้อย 10 ตัวอักษร")
 )
 
 // --- Models ---
@@ -273,8 +308,18 @@ type BillLineItem struct {
 	Quantity    int            `gorm:"not null;default:0" json:"quantity"`
 	UnitPrice   int64          `gorm:"not null;default:0" json:"unit_price"`
 	SortOrder   int            `gorm:"not null;default:0" json:"sort_order"`
-	CreatedAt   time.Time      `gorm:"not null;default:now()" json:"created_at"`
-	UpdatedAt   time.Time      `gorm:"not null;default:now()" json:"updated_at"`
+
+	// Reading Recovery anchor fields (Phase 4). All nullable; populated only
+	// when LineType = ADJUSTMENT. Source MUST = MANUAL when populated (CHECK
+	// constraint bill_line_items_adjustment_source_manual + ValidateAdjustment).
+	// Phase 5's recovery commit path wires these via Service.CreateRecovery;
+	// Phase 4 ships persistence + ValidateAdjustment only.
+	AdjustmentRecoveryReadingID *uuid.UUID            `gorm:"type:uuid" json:"adjustment_recovery_reading_id,omitempty"`
+	AdjustmentReasonCode        *AdjustmentReasonCode `gorm:"type:varchar(30)" json:"adjustment_reason_code,omitempty"`
+	AdjustmentNote              *string               `gorm:"type:text" json:"adjustment_note,omitempty"`
+
+	CreatedAt time.Time `gorm:"not null;default:now()" json:"created_at"`
+	UpdatedAt time.Time `gorm:"not null;default:now()" json:"updated_at"`
 }
 
 func (li *BillLineItem) IsAuto() bool   { return li.Source == LineItemSourceAuto }
@@ -289,6 +334,55 @@ func (li *BillLineItem) IsManual() bool { return li.Source == LineItemSourceManu
 // If future requirements introduce multiple items per LineType (e.g. multiple outstanding bills),
 // OverrideKey MUST be upgraded to a composite key (e.g. type:identifier).
 func (li *BillLineItem) OverrideKey() string { return string(li.LineType) }
+
+// ValidateAdjustment enforces the Reading Recovery ADJUSTMENT-line invariants:
+// MANUAL source, FK to recovery meter row, valid reason code, non-empty +
+// minimum-10-char note. Pure: no DB, no side effects.
+//
+// Phase 4 ships the method but does NOT wire it into snapshot/draft factories
+// — those don't accept adjustment params yet. Phase 5's recovery commit path
+// calls this explicitly before persistence.
+//
+// INTENTIONAL DUPLICATION with DB CHECKs (bill_line_items_adjustment_*).
+// Same pattern as ValidateAnchor on MeterReading (Phase 1 / locked 2026-06-22).
+// Division of responsibility:
+//   - DB CHECK = corruption guard (rejects any bypass — raw SQL, future
+//     migration drift, hand-constructed test rows). Never user-facing.
+//   - This method = UX / service error path. Returns typed Go errors that
+//     respond.Error() humanizes into Thai admin-facing messages without a
+//     500 round-trip through Postgres.
+//
+// Both layers are load-bearing; neither is decorative. Phase 5 wiring
+// (Service.CreateRecovery) is the third arm of the triple guard.
+//
+// Doctrine: feedback_reading_recovery_doctrine.md.
+func (li *BillLineItem) ValidateAdjustment() error {
+	if li.LineType != LineItemAdjustment {
+		return nil
+	}
+	if li.Source != LineItemSourceManual {
+		return ErrAdjustmentSourceMustBeManual
+	}
+	if li.AdjustmentRecoveryReadingID == nil {
+		return ErrAdjustmentRecoveryReadingRequired
+	}
+	if li.AdjustmentReasonCode == nil {
+		return ErrAdjustmentReasonCodeRequired
+	}
+	switch *li.AdjustmentReasonCode {
+	case AdjustmentReasonMeterRecovery:
+		// valid
+	default:
+		return ErrAdjustmentReasonCodeInvalid
+	}
+	if li.AdjustmentNote == nil || strings.TrimSpace(*li.AdjustmentNote) == "" {
+		return ErrAdjustmentNoteRequired
+	}
+	if len(strings.TrimSpace(*li.AdjustmentNote)) < 10 {
+		return ErrAdjustmentNoteTooShort
+	}
+	return nil
+}
 
 func (BillLineItem) TableName() string { return "bill_line_items" }
 

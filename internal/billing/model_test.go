@@ -1204,3 +1204,143 @@ func TestBill_IsDeliverable(t *testing.T) {
 		}
 	})
 }
+
+// --- ValidateAdjustment — Reading Recovery doctrine (Phase 4 D-class) ---
+//
+// DOCTRINE: feedback_reading_recovery_doctrine.md (locked 2026-06-22).
+// DESIGN:   /Users/anantakit/.claude/plans/hidden-waddling-marble.md.
+//
+// Five tests, locking:
+//   - NonAdjustment → nil (no-op; covers every non-ADJUSTMENT row).
+//   - SourceMustBeManual → ErrAdjustmentSourceMustBeManual (Source != MANUAL).
+//   - RecoveryReadingRequired → ErrAdjustmentRecoveryReadingRequired (FK nil).
+//   - ReasonCodeEdgeCases → required / invalid / valid (table-driven).
+//   - NoteEdgeCases → required / whitespace / too-short / exactly-10 / valid
+//     (table-driven, covers both ErrAdjustmentNoteRequired and
+//     ErrAdjustmentNoteTooShort).
+
+func TestBillLineItem_ValidateAdjustment_NonAdjustment_ReturnsNil(t *testing.T) {
+	li := &BillLineItem{
+		LineType: LineItemElectricity,
+		Source:   LineItemSourceAuto,
+		// Adjustment fields all nil — must not trip.
+	}
+	if err := li.ValidateAdjustment(); err != nil {
+		t.Errorf("ValidateAdjustment() on ELECTRICITY = %v, want nil", err)
+	}
+
+	// ROOM_RENT with stray adjustment fields populated is still nil
+	// — non-ADJUSTMENT short-circuit fires before any other check. The
+	// DB CHECK (bill_line_items_adjustment_fk_only_for_type etc.) is the
+	// layer that rejects cross-contaminated rows.
+	badID := uuid.New()
+	reason := AdjustmentReasonMeterRecovery
+	note := "stray adjustment fields"
+	li2 := &BillLineItem{
+		LineType:                    LineItemRoomRent,
+		Source:                      LineItemSourceAuto,
+		AdjustmentRecoveryReadingID: &badID,
+		AdjustmentReasonCode:        &reason,
+		AdjustmentNote:              &note,
+	}
+	if err := li2.ValidateAdjustment(); err != nil {
+		t.Errorf("ValidateAdjustment() on non-ADJUSTMENT with stray fields = %v, want nil (DB layer guards cross-contamination)", err)
+	}
+}
+
+func TestBillLineItem_ValidateAdjustment_SourceMustBeManual(t *testing.T) {
+	recID := uuid.New()
+	reason := AdjustmentReasonMeterRecovery
+	note := "valid 10-char note"
+	li := &BillLineItem{
+		LineType:                    LineItemAdjustment,
+		Source:                      LineItemSourceAuto, // wrong
+		AdjustmentRecoveryReadingID: &recID,
+		AdjustmentReasonCode:        &reason,
+		AdjustmentNote:              &note,
+	}
+	if err := li.ValidateAdjustment(); err != ErrAdjustmentSourceMustBeManual {
+		t.Errorf("ValidateAdjustment() = %v, want ErrAdjustmentSourceMustBeManual", err)
+	}
+}
+
+func TestBillLineItem_ValidateAdjustment_RecoveryReadingRequired(t *testing.T) {
+	reason := AdjustmentReasonMeterRecovery
+	note := "valid 10-char note"
+	li := &BillLineItem{
+		LineType:                    LineItemAdjustment,
+		Source:                      LineItemSourceManual,
+		AdjustmentRecoveryReadingID: nil, // missing
+		AdjustmentReasonCode:        &reason,
+		AdjustmentNote:              &note,
+	}
+	if err := li.ValidateAdjustment(); err != ErrAdjustmentRecoveryReadingRequired {
+		t.Errorf("ValidateAdjustment() = %v, want ErrAdjustmentRecoveryReadingRequired", err)
+	}
+}
+
+func TestBillLineItem_ValidateAdjustment_ReasonCodeEdgeCases(t *testing.T) {
+	recID := uuid.New()
+	note := "valid 10-char note"
+	bogus := AdjustmentReasonCode("BOGUS_CODE")
+	valid := AdjustmentReasonMeterRecovery
+
+	cases := []struct {
+		name    string
+		reason  *AdjustmentReasonCode
+		wantErr error
+	}{
+		{"nil reason", nil, ErrAdjustmentReasonCodeRequired},
+		{"bogus code", &bogus, ErrAdjustmentReasonCodeInvalid},
+		{"valid METER_RECOVERY", &valid, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			li := &BillLineItem{
+				LineType:                    LineItemAdjustment,
+				Source:                      LineItemSourceManual,
+				AdjustmentRecoveryReadingID: &recID,
+				AdjustmentReasonCode:        tc.reason,
+				AdjustmentNote:              &note,
+			}
+			if got := li.ValidateAdjustment(); got != tc.wantErr {
+				t.Errorf("ValidateAdjustment() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
+	recID := uuid.New()
+	reason := AdjustmentReasonMeterRecovery
+	strPtr := func(s string) *string { return &s }
+
+	cases := []struct {
+		name    string
+		note    *string
+		wantErr error
+	}{
+		{"nil note", nil, ErrAdjustmentNoteRequired},
+		{"empty string", strPtr(""), ErrAdjustmentNoteRequired},
+		{"ascii whitespace only", strPtr("   "), ErrAdjustmentNoteRequired},
+		{"control whitespace only", strPtr("\n\t  "), ErrAdjustmentNoteRequired},
+		{"9 chars (too short)", strPtr("123456789"), ErrAdjustmentNoteTooShort},
+		{"9 visible chars with trailing ws", strPtr("123456789   "), ErrAdjustmentNoteTooShort},
+		{"exactly 10 chars", strPtr("1234567890"), nil},
+		{"normal note", strPtr("คืนยอดที่เก็บเกินจากเดือน 2026-04"), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			li := &BillLineItem{
+				LineType:                    LineItemAdjustment,
+				Source:                      LineItemSourceManual,
+				AdjustmentRecoveryReadingID: &recID,
+				AdjustmentReasonCode:        &reason,
+				AdjustmentNote:              tc.note,
+			}
+			if got := li.ValidateAdjustment(); got != tc.wantErr {
+				t.Errorf("ValidateAdjustment() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
