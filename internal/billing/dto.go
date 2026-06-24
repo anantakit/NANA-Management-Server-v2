@@ -125,6 +125,13 @@ type LineItemResponse struct {
 	OriginalAmount float64   `json:"original_amount"`
 	IsOverridden   bool      `json:"is_overridden"`
 	Overrideable   bool      `json:"overrideable"`
+	// Phase 6 — Reading Recovery ADJUSTMENT provenance.
+	// Populated only on ADJUSTMENT line items (omitempty drops them on every
+	// other line type). FK back to the recovery meter row (Phase 5 atomicity).
+	// BillDrawer FE consumes these to render the source-link affordance.
+	AdjustmentRecoveryReadingID *uuid.UUID `json:"adjustment_recovery_reading_id,omitempty"`
+	AdjustmentReasonCode        *string    `json:"adjustment_reason_code,omitempty"`
+	AdjustmentNote              *string    `json:"adjustment_note,omitempty"`
 }
 
 type BillResponse struct {
@@ -314,7 +321,7 @@ func toLineItemResponse(li BillLineItem, overrides OverrideMap) LineItemResponse
 		}
 	}
 
-	return LineItemResponse{
+	resp := LineItemResponse{
 		ID:             li.ID,
 		LineType:       string(li.LineType),
 		Source:         string(li.Source),
@@ -328,6 +335,17 @@ func toLineItemResponse(li BillLineItem, overrides OverrideMap) LineItemResponse
 		IsOverridden:   isOverridden,
 		Overrideable:   overrideable,
 	}
+	// Phase 6 — ADJUSTMENT provenance pass-through. Fields are nil on every
+	// non-ADJUSTMENT line; omitempty drops them from the JSON output.
+	if li.LineType == LineItemAdjustment {
+		resp.AdjustmentRecoveryReadingID = li.AdjustmentRecoveryReadingID
+		if li.AdjustmentReasonCode != nil {
+			rc := string(*li.AdjustmentReasonCode)
+			resp.AdjustmentReasonCode = &rc
+		}
+		resp.AdjustmentNote = li.AdjustmentNote
+	}
+	return resp
 }
 
 func ToBillResponse(b Bill) BillResponse {

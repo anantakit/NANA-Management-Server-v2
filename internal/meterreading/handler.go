@@ -4,6 +4,8 @@ import (
 	"sort"
 
 	"nana/internal/shared/bind"
+	"nana/internal/shared/middleware"
+	"nana/internal/shared/money"
 	"nana/internal/shared/pagination"
 	"nana/internal/shared/respond"
 
@@ -25,6 +27,10 @@ func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	router.Post("/", h.Create)
 	router.Post("/exit", h.CreateExitReading)
 	router.Post("/batch", h.BatchCreate)
+	// Phase 6 Reading Recovery — thin handler over meterSvc.CreateRecovery.
+	// Static segment "/recovery" registered BEFORE "/:readingId" to keep
+	// the file readable; Fiber v3 prefers static-over-param at match time.
+	router.Post("/recovery", h.CreateRecovery)
 	router.Get("/rooms/:roomId/latest", h.GetLatest)
 	router.Get("/rooms/:roomId/history", h.GetRoomHistory)
 	router.Get("/:readingId", h.GetByID)
@@ -200,6 +206,53 @@ func (h *MeterReadingHandler) GetRoomHistory(c fiber.Ctx) error {
 
 	meta := pagination.ComputeMeta(params.Page, params.Limit, total)
 	return respond.SuccessWithMeta(c, "สำเร็จ", ToRoomHistoryItemList(readings), meta)
+}
+
+// CreateRecovery commits a Reading Recovery (Phase 6 — thin handler over the
+// locked Phase 5 service contract).
+//
+// The URL apartmentId is validated for routing scope only — the service
+// derives roomID from source.RoomID (Lock C — same-room is structural).
+// billing_month is NOT accepted in the body (Lock E — server-clock derived).
+// previous_* fields are NOT accepted (Lock A — service sets prev = curr).
+// room_id is NOT accepted (Lock C — derived from source).
+//
+// Errors are mapped via the centralized respond.Error / MapToHTTP path:
+//   - ErrRecoverySettlementBoundaryCrossed → 409 with the typed Thai message
+//   - ErrRecoveryNoDraftBill                → 409 with the typed Thai message
+//   - validation errors                     → 400
+//   - source-not-found                      → 404
+func (h *MeterReadingHandler) CreateRecovery(c fiber.Ctx) error {
+	if _, err := uuid.Parse(c.Params("apartmentId")); err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	var req CreateRecoveryRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	sourceID, err := uuid.Parse(req.SourceReadingID)
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสมิเตอร์ต้นทางไม่ถูกต้อง"})
+	}
+
+	input := CreateRecoveryInput{
+		SourceReadingID:    sourceID,
+		ElectricityCurrent: req.ElectricityCurrent,
+		WaterCurrent:       req.WaterCurrent,
+		Amount:             money.ToSatang(req.Amount),
+		ReasonCode:         req.ReasonCode,
+		AnchorNote:         req.AnchorNote,
+		AdjustmentNote:     req.AdjustmentNote,
+		ActorID:            middleware.ActorFromCtx(c),
+	}
+
+	reading, err := h.svc.CreateRecovery(c.Context(), input)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Created(c, "บันทึกการปรับยอดแล้ว", ToRecoveryResponse(reading))
 }
 
 func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {
