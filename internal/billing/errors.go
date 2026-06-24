@@ -20,7 +20,17 @@ var (
 	// Reading Recovery (Phase 5) — surfaced by RecoveryAdapter when the
 	// current-month DRAFT bill is missing. Operator's path: run monthly
 	// batch first, then commit recovery.
-	ErrRecoveryNoDraftBill = respond.ErrConflict.WithMessage("ห้องนี้ยังไม่มีบิลร่างของเดือนนี้ — ออกบิลรายเดือนก่อนแล้วจึงปรับยอด")
+	//
+	// Code "RECOVERY_NO_DRAFT_BILL" lets the FE distinguish this case from the
+	// generic CONFLICT family without substring-matching the Thai message (which
+	// would silently degrade on copy polish — flagged by ux-reviewer 2026-06-24).
+	// The RecoveryDrawer surfaces the "ออกบิลรายเดือนของห้องนี้ก่อน → " CTA
+	// only when the code matches.
+	ErrRecoveryNoDraftBill = respond.New(
+		"RECOVERY_NO_DRAFT_BILL",
+		409,
+		"ห้องนี้ยังไม่มีบิลร่างของเดือนนี้ — ออกบิลรายเดือนก่อนแล้วจึงปรับยอด",
+	)
 )
 
 // Settlement-only sentinels (ErrMoveOutNotFound, ErrActualDateRequired,
