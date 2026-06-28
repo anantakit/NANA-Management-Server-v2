@@ -30,7 +30,7 @@ import (
 // guarantee explicit + executable so a future regression that hides recovery
 // rows from lineage fails immediately.
 //
-// CreateRecovery uses time.Now() for billing_month (Lock E). A second
+// CreateBaselineCorrection uses time.Now() for billing_month (Lock E). A second
 // MONTHLY reading in the same month would violate the (room_id,
 // billing_month) uniqueness, so we hand-seed the next-month row via
 // raw db.Create() instead of calling meterSvc.Create.
@@ -50,9 +50,8 @@ func TestRecovery_NextMonthInheritsRecoveryCurrent(t *testing.T) {
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	billRepo := billing.NewBillingRepository(db)
-	billAuditRepo := billing.NewBillAuditRepository(db)
-	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txMgr)
+	billAppliedChecker := billing.NewRecoveryAppliedChecker(billRepo)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billAppliedChecker, txMgr)
 
 	// Source: past MONTHLY (3 months ago).
 	srcMonth := time.Now().AddDate(0, -3, 0).Format("2006-01")
@@ -82,17 +81,14 @@ func TestRecovery_NextMonthInheritsRecoveryCurrent(t *testing.T) {
 	}
 
 	// Commit recovery with new currents (real today).
-	recovery, err := meterSvc.CreateRecovery(ctx, meterreading.CreateRecoveryInput{
+	recovery, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    source.ID,
 		ElectricityCurrent: 450,
 		WaterCurrent:       60,
-		Amount:             -12000,
-		ReasonCode:         "METER_RECOVERY",
 		AnchorNote:         "พบจดเกินจริง",
-		AdjustmentNote:     "คืนยอดเก็บเกินตามมิเตอร์จริง",
 	})
 	if err != nil {
-		t.Fatalf("CreateRecovery: %v", err)
+		t.Fatalf("CreateBaselineCorrection: %v", err)
 	}
 
 	// Assert: FindLatestByRoomID sees the recovery row (lineage truth).

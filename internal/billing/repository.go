@@ -70,6 +70,14 @@ type BillingRepository interface {
 	// Returns a map keyed by bill_id so list callers can merge without N+1.
 	// Bills without a payment record are absent from the map (not an error).
 	FindPaymentsByBillIDs(ctx context.Context, billIDs []uuid.UUID) (map[uuid.UUID]*BillPaymentRecord, error)
+
+	// HasNonVoidAdjustmentLineByRecoveryID is the inverse-FK probe used by
+	// the baseline-correction applied-state derivation (Phase 7 doctrine
+	// line 87–94 in feedback_reading_recovery_doctrine.md). Returns true
+	// iff a non-VOID bill currently references the recovery row via an
+	// ADJUSTMENT line item. Backs RecoveryAppliedChecker (meterreading
+	// BillingApplicationChecker port).
+	HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 }
 
 type billingRepository struct {
@@ -681,6 +689,33 @@ func (r *billingRepository) FindPaymentsByBillIDs(ctx context.Context, billIDs [
 		out[rows[i].BillID] = &rows[i]
 	}
 	return out, nil
+}
+
+// HasNonVoidAdjustmentLineByRecoveryID returns true iff a non-VOID bill
+// currently references the given recovery meter row via an ADJUSTMENT
+// line item (single COUNT/EXISTS-equivalent query).
+//
+// Phase 7 (locked 2026-06-25): canonical derivation site for baseline
+// correction applied state. VOIDed bills (including correction-supersede
+// VOIDs) DO NOT count — recovery returns to PENDING on bill correction.
+//
+// bill_line_items has no soft-delete column (lines live or die with
+// their parent bill), so the only deleted_at filter is the parent's.
+// Index path: bill_line_items(adjustment_recovery_reading_id) — partial
+// index in migration 00041.
+func (r *billingRepository) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error) {
+	var count int64
+	err := database.DB(ctx, r.db).
+		Table("bill_line_items AS li").
+		Joins("JOIN bills b ON b.id = li.bill_id").
+		Where("li.adjustment_recovery_reading_id = ?", recoveryReadingID).
+		Where("b.status <> ?", BillStatusVoid).
+		Where("b.deleted_at IS NULL").
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("check applied adjustment line: %w", err)
+	}
+	return count > 0, nil
 }
 
 // GetSummary returns aggregate bill counts and total amount, filtered by apartment + month.

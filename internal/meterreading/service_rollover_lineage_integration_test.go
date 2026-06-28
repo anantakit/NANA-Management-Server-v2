@@ -78,7 +78,7 @@ func TestRollover_NextMonthUsesNewLowValue(t *testing.T) {
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingApplicationChecker{}, txMgr)
 
 	// ── Month N-1 (2026-03): normal MONTHLY near meter max ──
 	// First reading → previous=0; usage = current. Realistic interpretation:

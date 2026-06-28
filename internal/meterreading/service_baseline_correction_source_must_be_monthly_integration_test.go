@@ -46,9 +46,8 @@ func TestRecovery_RejectsExitSource(t *testing.T) {
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	billRepo := billing.NewBillingRepository(db)
-	billAuditRepo := billing.NewBillAuditRepository(db)
-	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txMgr)
+	billAppliedChecker := billing.NewRecoveryAppliedChecker(billRepo)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billAppliedChecker, txMgr)
 
 	// Seed an EXIT reading on the room.
 	exitDate := time.Now().AddDate(0, -1, 0)
@@ -60,17 +59,14 @@ func TestRecovery_RejectsExitSource(t *testing.T) {
 	auditCountBefore := countTable(t, db, "bill_audit_log", "action = 'APPLY_RECOVERY_ADJUSTMENT'")
 
 	// Attempt recovery against the EXIT row.
-	_, err := meterSvc.CreateRecovery(ctx, meterreading.CreateRecoveryInput{
+	_, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    exitMR.ID,
 		ElectricityCurrent: 200,
 		WaterCurrent:       40,
-		Amount:             -1000,
-		ReasonCode:         "METER_RECOVERY",
 		AnchorNote:         "trying exit as source",
-		AdjustmentNote:     "should never persist",
 	})
 	if err == nil {
-		t.Fatalf("CreateRecovery on EXIT source = nil err, want rejection")
+		t.Fatalf("CreateBaselineCorrection on EXIT source = nil err, want rejection")
 	}
 	if !strings.Contains(err.Error(), "MONTHLY") {
 		t.Errorf("error message=%q, want to mention MONTHLY", err.Error())

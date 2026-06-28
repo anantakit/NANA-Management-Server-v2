@@ -210,15 +210,16 @@ func truncateToDate(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// NoopBillingAdjustmentCommander satisfies meterreading.BillingAdjustmentCommander
-// with a no-op. Used by integration tests that exercise the meter side of
-// the recovery flow indirectly (NOT through CreateRecovery itself) — Phase 5
-// added BillingAdjustmentCommander as a required constructor param to
-// meterreading.NewMeterReadingService; tests that never invoke CreateRecovery
-// still need a non-nil collaborator. Tests that DO exercise CreateRecovery
-// should wire the real billing.NewRecoveryAdapter against the integration DB.
-type NoopBillingAdjustmentCommander struct{}
+// NoopBillingApplicationChecker satisfies meterreading.BillingApplicationChecker
+// with an "always pending" no-op. Used by integration tests that exercise
+// the meter side of the baseline-correction flow without touching the bill
+// derivation path — Phase 7's CreateBaselineCorrection never reads applied state, but
+// the service constructor still requires a non-nil collaborator for the
+// Soft Delete + pending list paths. Tests that exercise applied-state
+// derivation (B8/B9 anchors) should wire the real billing.NewRecoveryAppliedChecker
+// against the integration DB instead.
+type NoopBillingApplicationChecker struct{}
 
-func (NoopBillingAdjustmentCommander) AttachAdjustmentLine(_ context.Context, _ meterreading.AttachAdjustmentParams) error {
-	return nil
+func (NoopBillingApplicationChecker) HasNonVoidAdjustmentLine(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
 }

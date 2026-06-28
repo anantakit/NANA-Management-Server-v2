@@ -41,7 +41,28 @@ type MeterReadingRepository interface {
 	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
+	Delete(ctx context.Context, id uuid.UUID) error
 	DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error
+
+	// Phase 7 baseline-correction surfaces.
+	//
+	// FindBaselineCorrectionByID loads a row matching id + anchor_reason =
+	// READING_RECOVERY + scoped to the apartment + room. Returns
+	// gorm.ErrRecordNotFound on mismatch (don't leak existence).
+	FindBaselineCorrectionByID(ctx context.Context, apartmentID, roomID, id uuid.UUID) (*MeterReading, error)
+
+	// FindLatestBaselineCorrectionByRoomID returns the most recent
+	// READING_RECOVERY anchor row for the room (ORDER BY billing_month
+	// DESC, created_at DESC). Used by the "latest baseline" invariant
+	// guard for Soft Delete.
+	FindLatestBaselineCorrectionByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+
+	// FindPendingBaselineCorrectionsByRoomID lists every active
+	// READING_RECOVERY anchor row for the room. The "pending" filter
+	// (excluded if applied) is layered at the service via the
+	// BillingApplicationChecker port — keeps the repo SQL pure.
+	// Sort: created_at DESC, billing_month DESC (most recent first).
+	FindPendingBaselineCorrectionsByRoomID(ctx context.Context, roomID uuid.UUID) ([]MeterReading, error)
 }
 
 type meterReadingRepository struct {
@@ -339,6 +360,71 @@ func (r *meterReadingRepository) Create(ctx context.Context, reading *MeterReadi
 
 func (r *meterReadingRepository) Update(ctx context.Context, reading *MeterReading) error {
 	return database.DB(ctx, r.db).Model(reading).Select("*").Omit("deleted_at").Updates(reading).Error
+}
+
+// Delete soft-deletes the meter reading row by id (gorm.DeletedAt).
+// Used by the Phase 7 baseline-correction Soft Delete path. Callers MUST
+// apply ownership + state invariants at the service layer before invoking.
+func (r *meterReadingRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	return database.DB(ctx, r.db).
+		Where("id = ?", id).
+		Delete(&MeterReading{}).Error
+}
+
+// FindBaselineCorrectionByID loads a READING_RECOVERY row scoped to
+// (apartment, room, id) via JOIN on rooms. Returns gorm.ErrRecordNotFound
+// on any mismatch — the caller MUST NOT leak existence (Phase 7 doctrine
+// guard 1).
+func (r *meterReadingRepository) FindBaselineCorrectionByID(ctx context.Context, apartmentID, roomID, id uuid.UUID) (*MeterReading, error) {
+	var m MeterReading
+	err := database.DB(ctx, r.db).
+		Joins("JOIN rooms ON rooms.id = meter_readings.room_id AND rooms.deleted_at IS NULL").
+		Where("meter_readings.id = ?", id).
+		Where("meter_readings.room_id = ?", roomID).
+		Where("rooms.apartment_id = ?", apartmentID).
+		Where("meter_readings.anchor_reason = ?", AnchorReasonReadingRecovery).
+		Where("meter_readings.deleted_at IS NULL").
+		First(&m).Error
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// FindLatestBaselineCorrectionByRoomID returns the most recent
+// READING_RECOVERY anchor row for the room. Sort: billing_month DESC,
+// created_at DESC — matches the "latest baseline" doctrine guard.
+func (r *meterReadingRepository) FindLatestBaselineCorrectionByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error) {
+	var m MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id = ?", roomID).
+		Where("anchor_reason = ?", AnchorReasonReadingRecovery).
+		Where("deleted_at IS NULL").
+		Order("billing_month DESC, created_at DESC").
+		First(&m).Error
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// FindPendingBaselineCorrectionsByRoomID returns every active
+// READING_RECOVERY anchor row for the room, sorted newest-first.
+// Applied-state filtering is layered at the service level via the
+// BillingApplicationChecker port — keeps repo SQL pure (no JOIN into
+// bill_line_items here; cross-feature read would be a logic leak).
+func (r *meterReadingRepository) FindPendingBaselineCorrectionsByRoomID(ctx context.Context, roomID uuid.UUID) ([]MeterReading, error) {
+	var rows []MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id = ?", roomID).
+		Where("anchor_reason = ?", AnchorReasonReadingRecovery).
+		Where("deleted_at IS NULL").
+		Order("created_at DESC, billing_month DESC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // DeleteExitByRoomID soft-deletes any active EXIT reading for a room.

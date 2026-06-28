@@ -311,7 +311,7 @@ func (r *contractRepository) FindContractIDByRoomAndMonth(ctx context.Context, r
 // contract ID — the destination for the recovery ADJUSTMENT's DRAFT
 // bill lookup. Returns gorm.ErrRecordNotFound if the room has no active
 // contract (currently vacant) — Lock D maps that to
-// ErrRecoverySettlementBoundaryCrossed.
+// ErrBaselineCorrectionSettlementBoundaryCrossed.
 func (r *contractRepository) FindActiveContractIDByRoomID(ctx context.Context, roomID uuid.UUID) (uuid.UUID, error) {
 	var row struct {
 		ID uuid.UUID

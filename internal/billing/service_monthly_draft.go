@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"nana/internal/meterreading"
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
 	"nana/internal/shared/respond"
@@ -130,6 +131,29 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 			}
 		}
 
+		// Phase 7 — apply baseline corrections. Each entry materializes one
+		// ADJUSTMENT BillLineItem (MANUAL source, FK to recovery row, audit
+		// emission), gated by a per-row applied-state race check so a
+		// concurrent finalize-then-edit can't double-apply.
+		appliedLines, err := s.applyBaselineCorrections(txCtx, id, reloaded, req.AppliedCorrections, actor)
+		if err != nil {
+			return err
+		}
+		if len(appliedLines) > 0 {
+			// Reload again so the appended ADJUSTMENT lines roll into CalculateTotal.
+			reloaded, err = s.repo.FindByID(txCtx, id)
+			if err != nil {
+				return fmt.Errorf("reload bill after correction apply: %w", err)
+			}
+			if req.Overrides != nil {
+				overrides := make(OverrideMap, len(req.Overrides))
+				for key, amount := range req.Overrides {
+					overrides[key] = money.ToSatang(amount)
+				}
+				reloaded.Overrides = overrides
+			}
+		}
+
 		reloaded.CalculateTotal()
 		if req.Note != nil {
 			reloaded.Note = *req.Note
@@ -146,4 +170,120 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 	}
 
 	return s.repo.FindByIDWithRelations(ctx, id)
+}
+
+// applyBaselineCorrections materializes one ADJUSTMENT BillLineItem per
+// input + emits APPLY_RECOVERY_ADJUSTMENT audit entries. Race-safe: each
+// row re-checks PENDING state via the inverse-FK probe before insert, so
+// a concurrent application (or finalize-then-edit-then-edit) cannot
+// double-apply the same recovery.
+//
+// Phase 7 (locked 2026-06-25): operator-authoritative Amount + Note
+// arrive on the bill side. The meter recovery row is loaded only to
+// confirm anchor identity + retrieve source_billing_month for the
+// tenant-visible Description.
+//
+// Reuses ValidateAdjustment from the domain layer (Phase 4) — the same
+// invariant guard already used by recovery_adapter.go. Audit shape
+// matches Phase 5 (AuditApplyRecoveryAdjustmentPayload) so historical
+// audit rows from the old recovery-side path remain readable alongside
+// the new bill-side rows.
+func (s *billingService) applyBaselineCorrections(
+	txCtx context.Context,
+	billID uuid.UUID,
+	bill *Bill,
+	inputs []AppliedCorrectionInput,
+	actor *uuid.UUID,
+) ([]BillLineItem, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+
+	// Append AFTER the current max sort_order so the ADJUSTMENT rows live
+	// at the bottom of the bill (operator-friendly grouping).
+	maxSort := 0
+	for _, li := range bill.LineItems {
+		if li.SortOrder > maxSort {
+			maxSort = li.SortOrder
+		}
+	}
+
+	created := make([]BillLineItem, 0, len(inputs))
+	for i, in := range inputs {
+		recoveryID, err := uuid.Parse(in.RecoveryReadingID)
+		if err != nil {
+			return nil, respond.ErrBadRequest.WithMessage(
+				fmt.Sprintf("รหัสการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
+		}
+
+		// Load the recovery meter row to confirm anchor identity +
+		// recover source_billing_month for the tenant-visible Description.
+		recovery, err := s.meters.FindByIDSimple(txCtx, recoveryID)
+		if err != nil {
+			if database.IsNotFound(err) {
+				return nil, respond.ErrNotFound.WithMessage(
+					fmt.Sprintf("ไม่พบรายการปรับฐาน (รายการที่ %d)", i+1))
+			}
+			return nil, fmt.Errorf("load recovery %s: %w", recoveryID, err)
+		}
+		if recovery.AnchorReason == nil || *recovery.AnchorReason != meterreading.AnchorReasonReadingRecovery {
+			return nil, respond.ErrBadRequest.WithMessage(
+				fmt.Sprintf("รายการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
+		}
+		if recovery.RecoverySourceReadingID == nil {
+			return nil, respond.ErrBadRequest.WithMessage(
+				fmt.Sprintf("รายการปรับฐานขาดมิเตอร์ต้นทาง (รายการที่ %d)", i+1))
+		}
+		sourceMonth := ""
+		source, err := s.meters.FindByIDSimple(txCtx, *recovery.RecoverySourceReadingID)
+		if err == nil && source.BillingMonth != nil {
+			sourceMonth = *source.BillingMonth
+		}
+
+		// Race guard: re-check PENDING state inside the TX.
+		applied, err := s.repo.HasNonVoidAdjustmentLineByRecoveryID(txCtx, recoveryID)
+		if err != nil {
+			return nil, fmt.Errorf("recheck applied state %s: %w", recoveryID, err)
+		}
+		if applied {
+			return nil, respond.ErrConflict.WithMessage(
+				fmt.Sprintf("รายการปรับฐานนี้ถูกบันทึกในบิลอื่นไปแล้ว (รายการที่ %d)", i+1))
+		}
+
+		reasonCode := AdjustmentReasonMeterRecovery
+		note := in.AdjustmentNote
+		amount := money.ToSatang(in.Amount)
+		recoveryFK := recoveryID
+
+		line := BillLineItem{
+			BillID:                      billID,
+			LineType:                    LineItemAdjustment,
+			Source:                      LineItemSourceManual,
+			Description:                 buildAdjustmentDescription(amount, sourceMonth),
+			Amount:                      amount,
+			Quantity:                    1,
+			UnitPrice:                   amount,
+			SortOrder:                   maxSort + 1 + i,
+			AdjustmentRecoveryReadingID: &recoveryFK,
+			AdjustmentReasonCode:        &reasonCode,
+			AdjustmentNote:              &note,
+		}
+		if err := line.ValidateAdjustment(); err != nil {
+			return nil, respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.CreateLineItems(txCtx, []BillLineItem{line}); err != nil {
+			return nil, fmt.Errorf("insert adjustment line: %w", err)
+		}
+		if err := recordAudit(txCtx, s.audit, billID, AuditApplyRecoveryAdjustment, actor,
+			AuditApplyRecoveryAdjustmentPayload{
+				Amount:            amount,
+				RecoveryReadingID: recoveryID,
+				ReasonCode:        string(reasonCode),
+				Note:              note,
+			}); err != nil {
+			return nil, fmt.Errorf("emit recovery adjustment audit: %w", err)
+		}
+		created = append(created, line)
+	}
+	return created, nil
 }

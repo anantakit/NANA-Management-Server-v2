@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"nana/internal/shared/pagination"
+
+	"github.com/google/uuid"
 )
 
 // --- Request DTOs ---
@@ -19,26 +21,24 @@ type CreateRequest struct {
 	IsElectricityMeterRollover bool   `json:"is_electricity_meter_rollover"`
 }
 
-// CreateRecoveryRequest is the body of POST
-// /api/v1/apartments/:apartmentId/meter-readings/recovery (Phase 6).
+// CreateBaselineCorrectionRequest is the body of POST
+// /api/v1/apartments/:apartmentId/meter-readings/baseline-corrections
+// (Phase 7).
+//
+// Phase 7 (Split Meter Truth from Financial Truth, locked 2026-06-25):
+// Amount, AdjustmentNote, and ReasonCode REMOVED. Financial intent now
+// lives on the bill side (UpdateMonthlyDraft.applied_corrections) where
+// the operator decides money in financial context. The recovery row
+// itself carries only meter truth.
 //
 // Lock A: no previous_* fields — service derives prev = current.
 // Lock C: no room_id — derived from source.RoomID.
 // Lock E: no billing_month — server clock derives recoveryMonth.
-//
-// Lock B (operator-authoritative Amount): the FE may render a "ประมาณ" hint
-// alongside this input (calculator helper), but MUST NEVER prefill it. The
-// server stores Amount as-is. AdjustmentNote (≥10 chars, ValidateAdjustment)
-// is the primary forensic signal — see feedback_reading_recovery_doctrine.md
-// line 38.
-type CreateRecoveryRequest struct {
-	SourceReadingID    string  `json:"source_reading_id" validate:"required,uuid"`
-	ElectricityCurrent int     `json:"electricity_current" validate:"min=0"`
-	WaterCurrent       int     `json:"water_current" validate:"min=0"`
-	Amount             float64 `json:"amount"`
-	ReasonCode         string  `json:"reason_code" validate:"required,oneof=METER_RECOVERY"`
-	AnchorNote         string  `json:"anchor_note" validate:"required,min=1"`
-	AdjustmentNote     string  `json:"adjustment_note" validate:"required,min=10"`
+type CreateBaselineCorrectionRequest struct {
+	SourceReadingID    string `json:"source_reading_id" validate:"required,uuid"`
+	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
+	WaterCurrent       int    `json:"water_current" validate:"min=0"`
+	AnchorNote         string `json:"anchor_note" validate:"required,min=1"`
 }
 
 type ExitCreateRequest struct {
@@ -373,6 +373,67 @@ type LatestReadingResponse struct {
 	WaterCurrent       int     `json:"water_current"`
 	BillingMonth       *string `json:"billing_month"`
 	ReadingDateActual  *string `json:"reading_date_actual"`
+}
+
+// PendingBaselineCorrection is the internal service-shape for a pending
+// READING_RECOVERY anchor row. Travels across the meterreading → billing
+// boundary (the billing handler resolves bill → room and forwards). Public
+// JSON shape is PendingBaselineCorrectionResponse.
+//
+// Sort contract (locked by ListPendingBaselineCorrectionsByRoom): newest-first
+// (created_at DESC, source_billing_month DESC). Bill edit is action surface,
+// not narration — most recent correction surfaces first so the operator's
+// "I just made this, apply it" flow reads top-down.
+type PendingBaselineCorrection struct {
+	RecoveryID            uuid.UUID
+	SourceReadingID       uuid.UUID
+	SourceBillingMonth    string
+	SourceElectricity     int
+	SourceWater           int
+	RecoveryBillingMonth  string
+	RecoveryElectricity   int
+	RecoveryWater         int
+	RecoveryCreatedAt     time.Time
+	AnchorNote            string
+}
+
+// PendingBaselineCorrectionResponse is the public JSON shape returned by
+// GET /pending-baseline-corrections. Field names mirror the FE type in
+// frontend/src/features/bills/types.ts.
+type PendingBaselineCorrectionResponse struct {
+	RecoveryID           string `json:"recovery_id"`
+	SourceReadingID      string `json:"source_reading_id"`
+	SourceBillingMonth   string `json:"source_billing_month"`
+	SourceElectricity    int    `json:"source_electricity_current"`
+	SourceWater          int    `json:"source_water_current"`
+	RecoveryBillingMonth string `json:"recovery_billing_month"`
+	RecoveryElectricity  int    `json:"recovery_electricity_current"`
+	RecoveryWater        int    `json:"recovery_water_current"`
+	RecoveryCreatedAt    string `json:"recovery_created_at"`
+	AnchorNote           string `json:"anchor_note"`
+}
+
+func ToPendingBaselineCorrectionResponse(p PendingBaselineCorrection) PendingBaselineCorrectionResponse {
+	return PendingBaselineCorrectionResponse{
+		RecoveryID:           p.RecoveryID.String(),
+		SourceReadingID:      p.SourceReadingID.String(),
+		SourceBillingMonth:   p.SourceBillingMonth,
+		SourceElectricity:    p.SourceElectricity,
+		SourceWater:          p.SourceWater,
+		RecoveryBillingMonth: p.RecoveryBillingMonth,
+		RecoveryElectricity:  p.RecoveryElectricity,
+		RecoveryWater:        p.RecoveryWater,
+		RecoveryCreatedAt:    p.RecoveryCreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		AnchorNote:           p.AnchorNote,
+	}
+}
+
+func ToPendingBaselineCorrectionResponseList(rows []PendingBaselineCorrection) []PendingBaselineCorrectionResponse {
+	out := make([]PendingBaselineCorrectionResponse, len(rows))
+	for i, r := range rows {
+		out[i] = ToPendingBaselineCorrectionResponse(r)
+	}
+	return out
 }
 
 type RoomBaselineResponse struct {

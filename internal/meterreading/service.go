@@ -37,10 +37,31 @@ type MeterReadingService interface {
 	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
 
-	// CreateRecovery commits a READING_RECOVERY anchor row + an ADJUSTMENT
-	// line on the room's current active contract DRAFT bill, atomically.
-	// Phase 5 — see feedback_reading_recovery_doctrine.md.
-	CreateRecovery(ctx context.Context, input CreateRecoveryInput) (*MeterReading, error)
+	// CreateBaselineCorrection commits a baseline correction (READING_RECOVERY anchor
+	// row). Phase 7 — meter-only commit; financial reconciliation lives on
+	// the bill side. See feedback_reading_recovery_doctrine.md.
+	CreateBaselineCorrection(ctx context.Context, input CreateBaselineCorrectionInput) (*MeterReading, error)
+
+	// SoftDeletePendingBaselineCorrection soft-deletes a pending baseline
+	// correction row scoped to (apartment, room, id). Phase 7 — enables
+	// Edit-via-Delete-Then-Recreate operator flow.
+	//
+	// Pre-tx invariants (typed errors / not-found leakage guard):
+	//  1. Apartment + room ownership: route params must match the row.
+	//  2. Row's anchor_reason MUST = READING_RECOVERY (no targeting other
+	//     anchors via the baseline-correction route).
+	//  3. Row MUST be the most recent READING_RECOVERY anchor for the room
+	//     (older corrections are immutable). Returns ErrCorrectionNotLatest.
+	//  4. Row MUST be PENDING (no non-VOID bill_line_item references it via
+	//     adjustment_recovery_reading_id). Returns ErrCorrectionAlreadyApplied.
+	SoftDeletePendingBaselineCorrection(ctx context.Context, apartmentID, roomID, correctionID uuid.UUID, actorID *uuid.UUID) error
+
+	// ListPendingBaselineCorrectionsByRoom lists every pending baseline
+	// correction for the room (applied rows excluded via the inverse-FK
+	// probe). Phase 7 doctrine line 121: room-centric signature, not
+	// bill-centric — a pending correction is a property of (room, time)
+	// regardless of which bill draft is in flight.
+	ListPendingBaselineCorrectionsByRoom(ctx context.Context, roomID uuid.UUID) ([]PendingBaselineCorrection, error)
 
 	// --- Move-out workflow ports ---
 
@@ -59,12 +80,12 @@ type MeterReadingService interface {
 }
 
 type meterReadingService struct {
-	repo       MeterReadingRepository
-	rooms      RoomQuerier
-	contracts  ContractQuerier
-	moveOuts   MoveOutChecker
-	billingAdj BillingAdjustmentCommander
-	tx         database.TxManager
+	repo      MeterReadingRepository
+	rooms     RoomQuerier
+	contracts ContractQuerier
+	moveOuts  MoveOutChecker
+	billing   BillingApplicationChecker
+	tx        database.TxManager
 }
 
 func NewMeterReadingService(
@@ -72,20 +93,20 @@ func NewMeterReadingService(
 	rooms RoomQuerier,
 	contracts ContractQuerier,
 	moveOuts MoveOutChecker,
-	billingAdj BillingAdjustmentCommander,
+	billing BillingApplicationChecker,
 	tx database.TxManager,
 ) MeterReadingService {
 	return &meterReadingService{
-		repo:       repo,
-		rooms:      rooms,
-		contracts:  contracts,
-		moveOuts:   moveOuts,
-		billingAdj: billingAdj,
-		tx:         tx,
+		repo:      repo,
+		rooms:     rooms,
+		contracts: contracts,
+		moveOuts:  moveOuts,
+		billing:   billing,
+		tx:        tx,
 	}
 }
 
-// CreateRecoveryInput + CreateRecovery moved to service_recovery.go to keep
+// CreateBaselineCorrectionInput + CreateBaselineCorrection moved to service_recovery.go to keep
 // service.go under the 500-line size limit. Phase 5 ships the recovery
 // surface as a sibling file so future recovery-shaped methods (e.g.
 // ReverseRecovery, post-Phase-5) can colocate without bloating service.go.

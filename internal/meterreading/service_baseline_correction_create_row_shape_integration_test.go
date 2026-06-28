@@ -20,7 +20,7 @@ import (
 	"nana/internal/testutil/testdb"
 )
 
-// TestRecovery_CreateRecoveryRowShape is the B1 lineage anchor for the
+// TestRecovery_CreateBaselineCorrectionRowShape is the B1 lineage anchor for the
 // Phase 5 recovery commit triple-guard (Lock A).
 //
 //	DOCTRINE: feedback_reading_recovery_doctrine.md (line 33, locked 2026-06-22)
@@ -28,7 +28,7 @@ import (
 //
 // Locks three layers of the prev=curr triple-guard:
 //
-//  1. Service-layer arm — the positive assertions verify that CreateRecovery
+//  1. Service-layer arm — the positive assertions verify that CreateBaselineCorrection
 //     produces a recovery row with `previous = current`, anchor metadata
 //     correctly set, and same-room derivation from source (Lock C).
 //  2. DB-layer arm — the two negative sub-tests bypass the service and call
@@ -36,7 +36,7 @@ import (
 //     must reject with the expected constraint name in the error.
 //  3. Domain-layer arm — covered by D1 unit tests in model_test.go
 //     (TestMeterReading_ValidateAnchor_RecoveryRequiresPrevEqualsCurrent).
-func TestRecovery_CreateRecoveryRowShape(t *testing.T) {
+func TestRecovery_CreateBaselineCorrectionRowShape(t *testing.T) {
 	db := testdb.Open(t)
 	testdb.TruncateAll(t, db)
 	ctx := context.Background()
@@ -53,9 +53,8 @@ func TestRecovery_CreateRecoveryRowShape(t *testing.T) {
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	billRepo := billing.NewBillingRepository(db)
-	billAuditRepo := billing.NewBillAuditRepository(db)
-	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txMgr)
+	billAppliedChecker := billing.NewRecoveryAppliedChecker(billRepo)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billAppliedChecker, txMgr)
 
 	// Source: a past MONTHLY reading (3 months ago).
 	srcMonth := time.Now().AddDate(0, -3, 0).Format("2006-01")
@@ -85,17 +84,14 @@ func TestRecovery_CreateRecoveryRowShape(t *testing.T) {
 	}
 
 	// ── Positive: commit a recovery ──
-	out, err := meterSvc.CreateRecovery(ctx, meterreading.CreateRecoveryInput{
+	out, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    source.ID,
 		ElectricityCurrent: 250,
 		WaterCurrent:       70,
-		Amount:             -40000, // refund 400 baht
-		ReasonCode:         "METER_RECOVERY",
 		AnchorNote:         "พบว่าเดือนต้นทางจดเกินจริง",
-		AdjustmentNote:     "คืนยอดเก็บเกินตามมิเตอร์จริงวันนี้",
 	})
 	if err != nil {
-		t.Fatalf("CreateRecovery: %v", err)
+		t.Fatalf("CreateBaselineCorrection: %v", err)
 	}
 
 	// Assert 1+2: prev=curr (service-layer arm of Lock A).

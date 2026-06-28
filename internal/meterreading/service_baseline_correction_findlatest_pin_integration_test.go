@@ -72,7 +72,7 @@ func TestRecovery_FindLatestByRoomIDReturnsMostRecentByDate(t *testing.T) {
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingApplicationChecker{}, txMgr)
 
 	// ── Month N-1 (2026-03): first MONTHLY — previous defaults to 0 ──
 	nMinusOne, err := meterSvc.Create(ctx, apt.ID, meterreading.CreateRequest{

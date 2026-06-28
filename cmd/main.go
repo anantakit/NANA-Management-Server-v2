@@ -123,15 +123,22 @@ func main() {
 	billRepo := billing.NewBillingRepository(db)
 	billAuditRepo := billing.NewBillAuditRepository(db)
 
-	// Phase 5 Reading Recovery — meterreading commits ADJUSTMENT lines on
-	// the current-month DRAFT bill via this adapter (consumer-defined port
-	// `meterreading.BillingAdjustmentCommander`, provider-implemented in
-	// billing/recovery_adapter.go).
-	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
+	// Phase 5 Reading Recovery — RecoveryAdapter still ships for the legacy
+	// AttachAdjustmentLine surface (future bill-creation auto-apply paths).
+	// It is intentionally NOT injected into meterService anymore — Phase 7
+	// (Split Meter Truth from Financial Truth) moved Adjustment Application
+	// to the bill side (UpdateMonthlyDraft.applied_corrections). Keep the
+	// constructor call so the adapter struct stays warm against
+	// re-introduction in monthly-batch-side auto-apply.
+	_ = billing.NewRecoveryAdapter(billRepo, billAuditRepo)
+
+	// Phase 7 BillingApplicationChecker — derives baseline-correction
+	// applied state from inverse-FK presence on bill_line_items.
+	billRecoveryAppliedChecker := billing.NewRecoveryAppliedChecker(billRepo)
 
 	// Meter Reading service (needs moveOutRepo for MoveOutChecker port,
-	// billRecoveryAdapter for BillingAdjustmentCommander port).
-	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txManager)
+	// billRecoveryAppliedChecker for BillingApplicationChecker port).
+	meterService := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAppliedChecker, txManager)
 	meterHandler := meterreading.NewMeterReadingHandler(meterService)
 
 	// Wire dependencies — Payment Destination Routing
@@ -139,9 +146,11 @@ func main() {
 	routingService := apartment.NewPaymentRoutingService(routingRuleRepo, bankRepo, aptRepo)
 	routingHandler := apartment.NewPaymentRoutingHandler(routingService)
 
-	// Wire dependencies — Billing service (root repos constructed above)
+	// Wire dependencies — Billing service (root repos constructed above).
+	// Billing handler also takes the meterService for the Phase 7 convenience
+	// route GET /:id/pending-baseline-corrections (bill→contract→room→meter).
 	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, routingService, txManager)
-	billHandler := billing.NewBillingHandler(billService)
+	billHandler := billing.NewBillingHandler(billService, billRepo, contractRepo, meterService)
 
 	// Wire dependencies — Monthly billing workflow (W2 batch mechanics).
 	// MonthlyAdapter satisfies monthly.BillStore + monthly.AuditStore over

@@ -55,9 +55,8 @@ func TestRecovery_CoexistsWithCurrentMonthlyReading(t *testing.T) {
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	billRepo := billing.NewBillingRepository(db)
-	billAuditRepo := billing.NewBillAuditRepository(db)
-	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txMgr)
+	billAppliedChecker := billing.NewRecoveryAppliedChecker(billRepo)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billAppliedChecker, txMgr)
 
 	// Source month (the suspect past misread).
 	srcMonth := time.Now().AddDate(0, -2, 0).Format("2006-01")
@@ -91,30 +90,20 @@ func TestRecovery_CoexistsWithCurrentMonthlyReading(t *testing.T) {
 		t.Fatalf("seed current-month consumption: %v", err)
 	}
 
-	// DRAFT bill for the current cycle (recovery attaches its ADJUSTMENT line here).
-	draft := &billing.Bill{
-		ContractID:   con.ID,
-		BillingMonth: currentMonth,
-		BillType:     billing.BillTypeMonthly,
-		Status:       billing.BillStatusDraft,
-	}
-	if err := db.Create(draft).Error; err != nil {
-		t.Fatalf("seed draft: %v", err)
-	}
+	// Phase 7: no DRAFT bill required at recovery commit time (the bill side
+	// becomes the Adjustment Application surface, not the recovery side).
 
 	// The load-bearing call: recovery must succeed despite the consumption
 	// row already occupying (room, current_month, MONTHLY).
-	recovery, err := meterSvc.CreateRecovery(ctx, meterreading.CreateRecoveryInput{
+	recovery, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    source.ID,
 		ElectricityCurrent: 620, // operator's confirmed re-anchor value
 		WaterCurrent:       92,
-		Amount:             -2700,
-		ReasonCode:         "METER_RECOVERY",
 		AnchorNote:         "พบจดเกินจริง — re-anchor at consumption value",
-		AdjustmentNote:     "B6 — recovery coexists with current monthly reading",
 	})
+	_ = con
 	if err != nil {
-		t.Fatalf("CreateRecovery (coexistence): %v", err)
+		t.Fatalf("CreateBaselineCorrection (coexistence): %v", err)
 	}
 
 	// Assert both rows survive in the same (room, current_month, MONTHLY) slot.
@@ -153,14 +142,11 @@ func TestRecovery_CoexistsWithCurrentMonthlyReading(t *testing.T) {
 	// (or any second anchor on the same cycle) MUST fail via the new partial
 	// unique index `idx_meter_readings_room_billing_month_anchor`. This is
 	// the BE capability layer that backstops the Phase 6 FE Watch 2 UX guard.
-	_, err = meterSvc.CreateRecovery(ctx, meterreading.CreateRecoveryInput{
+	_, err = meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    source.ID,
 		ElectricityCurrent: 620,
 		WaterCurrent:       92,
-		Amount:             -500,
-		ReasonCode:         "METER_RECOVERY",
 		AnchorNote:         "duplicate recovery attempt",
-		AdjustmentNote:     "B6 second recovery — should be rejected",
 	})
 	if err == nil {
 		t.Fatalf("expected second recovery to fail (anchor-uniqueness), got nil")

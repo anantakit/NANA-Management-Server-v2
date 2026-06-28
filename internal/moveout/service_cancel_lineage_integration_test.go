@@ -126,7 +126,7 @@ func TestMoveOutCancel_RevertsExitSettlement_ThenMonthlyBillUsesCorrectPrevious(
 	billRepo := billing.NewBillingRepository(db)
 	billAuditRepo := billing.NewBillAuditRepository(db)
 
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingApplicationChecker{}, txMgr)
 	settleAdapter := billing.NewSettlementAdapter(billRepo, billAuditRepo)
 	settleSvc := settlement.NewService(settleAdapter, settleAdapter, contractRepo, meterRepo, bcRepo, moveOutRepo, nil, txMgr)
 	svc := moveout.NewMoveOutService(moveOutRepo, contractRepo, contractRepo, roomRepo, meterSvc, settleSvc, settleSvc, txMgr)

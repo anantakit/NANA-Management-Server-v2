@@ -50,16 +50,22 @@ type MoveOutChecker interface {
 // the recovery meter row and audit-log emission. Atomic with the
 // caller's TX.
 //
+// Phase 7 (locked 2026-06-25): no longer wired into meterreading.
+// CreateBaselineCorrection — the recovery commit is now meter-only. Kept here for
+// the billing.RecoveryAdapter contract (preserved for future
+// bill-creation auto-apply paths, e.g. monthly-batch-side). Do NOT
+// re-introduce a meterreading-side caller without re-litigating the
+// Split Meter Truth doctrine first.
+//
 // Consumer-defined per cross-feature-patterns.md §4. Implemented by
-// billing.RecoveryAdapter; injected via main.go.
+// billing.RecoveryAdapter.
 type BillingAdjustmentCommander interface {
 	AttachAdjustmentLine(ctx context.Context, params AttachAdjustmentParams) error
 }
 
 // AttachAdjustmentParams travels across the meterreading → billing
 // boundary. Primitive types only — no billing-domain types imported
-// into meterreading. Phase 5 Lock B: operator-authoritative Amount;
-// no SuggestedAmount/Deviation (deferred to post-Phase-5).
+// into meterreading.
 type AttachAdjustmentParams struct {
 	ContractID         uuid.UUID
 	BillingMonth       string // recovery month (current cycle)
@@ -69,4 +75,18 @@ type AttachAdjustmentParams struct {
 	ReasonCode         string // billing validates against AdjustmentReasonCode enum
 	Note               string
 	ActorID            *uuid.UUID
+}
+
+// BillingApplicationChecker asks billing whether a baseline correction
+// (recovery meter row) has been applied — i.e. a non-VOID bill_line_item
+// exists with adjustment_recovery_reading_id = recoveryReadingID.
+//
+// Phase 7 (locked 2026-06-25): applied state is DERIVED from the inverse
+// FK presence, never stored on the meter row. This port is the canonical
+// probe for the Soft Delete API and the pending-correction list.
+//
+// Consumer-defined per cross-feature-patterns.md §4. Implemented by
+// billing.RecoveryAppliedChecker; injected via main.go.
+type BillingApplicationChecker interface {
+	HasNonVoidAdjustmentLine(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 }

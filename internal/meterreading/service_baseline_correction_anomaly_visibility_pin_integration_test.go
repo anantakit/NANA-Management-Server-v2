@@ -67,7 +67,7 @@ func TestRecovery_AnomalyFlagPersistsAcrossSubsequentReadings(t *testing.T) {
 	contractRepo := contract.NewContractRepository(db)
 	roomRepo := room.NewRoomRepository(db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
-	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingAdjustmentCommander{}, txMgr)
+	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, fixtures.NoopBillingApplicationChecker{}, txMgr)
 
 	create := func(label, month string, elecCurrent, waterCurrent int) *meterreading.MeterReadingWithRoom {
 		t.Helper()

@@ -83,6 +83,20 @@ func (m *mockMeterRepo) FindExitByRoomID(_ context.Context, _ uuid.UUID) (*Meter
 }
 func (m *mockMeterRepo) DeleteExitByRoomID(_ context.Context, _ uuid.UUID) error { return nil }
 
+func (m *mockMeterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
+
+func (m *mockMeterRepo) FindBaselineCorrectionByID(_ context.Context, _, _, _ uuid.UUID) (*MeterReading, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *mockMeterRepo) FindLatestBaselineCorrectionByRoomID(_ context.Context, _ uuid.UUID) (*MeterReading, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *mockMeterRepo) FindPendingBaselineCorrectionsByRoomID(_ context.Context, _ uuid.UUID) ([]MeterReading, error) {
+	return nil, nil
+}
+
 // mockRoomQuerier implements RoomQuerier.
 type mockRoomQuerier struct {
 	room *room.Room
@@ -141,13 +155,13 @@ func (m *mockContractQuerier) FindActiveContractIDByRoomID(_ context.Context, _ 
 	return uuid.Nil, nil
 }
 
-// mockBillingAdj implements BillingAdjustmentCommander (no-op for EXIT tests).
-type mockBillingAdj struct{}
+// mockBillingApplied implements BillingApplicationChecker (no-op for EXIT tests).
+type mockBillingApplied struct{}
 
-var _ BillingAdjustmentCommander = (*mockBillingAdj)(nil)
+var _ BillingApplicationChecker = (*mockBillingApplied)(nil)
 
-func (m *mockBillingAdj) AttachAdjustmentLine(_ context.Context, _ AttachAdjustmentParams) error {
-	return nil
+func (m *mockBillingApplied) HasNonVoidAdjustmentLine(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
 }
 
 // mockTxManager runs fn directly (no actual transaction).
@@ -177,7 +191,7 @@ func newTestService(repo *mockMeterRepo, moveOuts *mockMoveOutChecker) MeterRead
 		&mockRoomQuerier{room: newTestRoom()},
 		&mockContractQuerier{},
 		moveOuts,
-		&mockBillingAdj{},
+		&mockBillingApplied{},
 		&mockTxManager{},
 	)
 }

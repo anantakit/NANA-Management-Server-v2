@@ -312,7 +312,7 @@ type BillLineItem struct {
 	// Reading Recovery anchor fields (Phase 4). All nullable; populated only
 	// when LineType = ADJUSTMENT. Source MUST = MANUAL when populated (CHECK
 	// constraint bill_line_items_adjustment_source_manual + ValidateAdjustment).
-	// Phase 5's recovery commit path wires these via Service.CreateRecovery;
+	// Phase 5's recovery commit path wires these via Service.CreateBaselineCorrection;
 	// Phase 4 ships persistence + ValidateAdjustment only.
 	AdjustmentRecoveryReadingID *uuid.UUID            `gorm:"type:uuid" json:"adjustment_recovery_reading_id,omitempty"`
 	AdjustmentReasonCode        *AdjustmentReasonCode `gorm:"type:varchar(30)" json:"adjustment_reason_code,omitempty"`
@@ -353,7 +353,7 @@ func (li *BillLineItem) OverrideKey() string { return string(li.LineType) }
 //     500 round-trip through Postgres.
 //
 // Both layers are load-bearing; neither is decorative. Phase 5 wiring
-// (Service.CreateRecovery) is the third arm of the triple guard.
+// (Service.CreateBaselineCorrection) is the third arm of the triple guard.
 //
 // Doctrine: feedback_reading_recovery_doctrine.md.
 func (li *BillLineItem) ValidateAdjustment() error {
@@ -1336,7 +1336,7 @@ const (
 
 	// Reading Recovery commit (Phase 5) — operator-deliberated money
 	// correction attached to a current-month DRAFT bill via meterreading's
-	// CreateRecovery workflow. Distinct from AuditAddManualItem because
+	// CreateBaselineCorrection workflow. Distinct from AuditAddManualItem because
 	// ADJUSTMENT lines are not operator-typeable from BillEdit; they only
 	// arise through the recovery commit path with FK provenance back to
 	// the meter_readings recovery row. Lifecycle event (NOT is_edited).

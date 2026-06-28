@@ -66,9 +66,9 @@ func TestRecovery_SettlementBoundary(t *testing.T) {
 		liBefore := countTable(t, db, "bill_line_items", "line_type = 'ADJUSTMENT'")
 		auditBefore := countTable(t, db, "bill_audit_log", "action = 'APPLY_RECOVERY_ADJUSTMENT'")
 
-		_, err := meterSvc.CreateRecovery(ctx, recoveryInput(source.ID))
-		if !errors.Is(err, meterreading.ErrRecoverySettlementBoundaryCrossed) {
-			t.Fatalf("err=%v, want ErrRecoverySettlementBoundaryCrossed", err)
+		_, err := meterSvc.CreateBaselineCorrection(ctx, recoveryInput(source.ID))
+		if !errors.Is(err, meterreading.ErrBaselineCorrectionSettlementBoundaryCrossed) {
+			t.Fatalf("err=%v, want ErrBaselineCorrectionSettlementBoundaryCrossed", err)
 		}
 		assertNoSideEffects(t, db, mrBefore, liBefore, auditBefore)
 	})
@@ -88,29 +88,33 @@ func TestRecovery_SettlementBoundary(t *testing.T) {
 		endContract(t, db, conA.ID, time.Now().AddDate(0, -2, 0))
 		// No SeedCompletedMoveOut — pure lease renewal.
 
-		// Contract B — SAME tenant X, active, with current-month DRAFT.
-		conB := seedActiveContract(t, db, tnX.ID, rm.ID, 1)
-		draftB := seedDraftBill(t, db, conB.ID, time.Now().Format("2006-01"))
+		// Contract B — SAME tenant X, active.
+		// Phase 7 (meter-only commit): no DRAFT bill required for the recovery
+		// to land. Adjustment Application happens later at BillEditDrawer.
+		_ = seedActiveContract(t, db, tnX.ID, rm.ID, 1)
 
 		meterSvc := buildMeterSvc(t, db)
-		recovery, err := meterSvc.CreateRecovery(ctx, recoveryInput(source.ID))
+		recovery, err := meterSvc.CreateBaselineCorrection(ctx, recoveryInput(source.ID))
 		if err != nil {
-			t.Fatalf("CreateRecovery on lease renewal = %v, want nil", err)
+			t.Fatalf("CreateBaselineCorrection on lease renewal = %v, want nil", err)
 		}
 		if recovery == nil {
 			t.Fatalf("recovery row nil")
 		}
 
-		// ADJUSTMENT landed on Contract B's DRAFT bill.
-		liCount := countTable(t, db, "bill_line_items",
-			"line_type = 'ADJUSTMENT' AND bill_id = '"+draftB.ID.String()+"'")
-		if liCount != 1 {
-			t.Errorf("ADJUSTMENT lines on Contract B DRAFT = %d, want 1", liCount)
+		// Recovery row landed in meter_readings with anchor metadata.
+		if recovery.AnchorReason == nil || *recovery.AnchorReason != meterreading.AnchorReasonReadingRecovery {
+			t.Errorf("AnchorReason=%v, want READING_RECOVERY", recovery.AnchorReason)
 		}
-		auditCount := countTable(t, db, "bill_audit_log",
-			"action = 'APPLY_RECOVERY_ADJUSTMENT' AND bill_id = '"+draftB.ID.String()+"'")
-		if auditCount != 1 {
-			t.Errorf("audit rows for Contract B DRAFT = %d, want 1", auditCount)
+
+		// Phase 7: no bill-side effect at recovery commit time.
+		liCount := countTable(t, db, "bill_line_items", "line_type = 'ADJUSTMENT'")
+		if liCount != 0 {
+			t.Errorf("ADJUSTMENT lines = %d, want 0 (Phase 7 — recovery commit has no bill side effect)", liCount)
+		}
+		auditCount := countTable(t, db, "bill_audit_log", "action = 'APPLY_RECOVERY_ADJUSTMENT'")
+		if auditCount != 0 {
+			t.Errorf("audit rows = %d, want 0 (Phase 7 — recovery commit has no bill side effect)", auditCount)
 		}
 	})
 
@@ -134,9 +138,9 @@ func TestRecovery_SettlementBoundary(t *testing.T) {
 		liBefore := countTable(t, db, "bill_line_items", "line_type = 'ADJUSTMENT'")
 		auditBefore := countTable(t, db, "bill_audit_log", "action = 'APPLY_RECOVERY_ADJUSTMENT'")
 
-		_, err := meterSvc.CreateRecovery(ctx, recoveryInput(source.ID))
-		if !errors.Is(err, meterreading.ErrRecoverySettlementBoundaryCrossed) {
-			t.Fatalf("err=%v, want ErrRecoverySettlementBoundaryCrossed", err)
+		_, err := meterSvc.CreateBaselineCorrection(ctx, recoveryInput(source.ID))
+		if !errors.Is(err, meterreading.ErrBaselineCorrectionSettlementBoundaryCrossed) {
+			t.Fatalf("err=%v, want ErrBaselineCorrectionSettlementBoundaryCrossed", err)
 		}
 		assertNoSideEffects(t, db, mrBefore, liBefore, auditBefore)
 	})
@@ -176,9 +180,9 @@ func TestRecovery_SettlementBoundary(t *testing.T) {
 		liBefore := countTable(t, db, "bill_line_items", "line_type = 'ADJUSTMENT'")
 		auditBefore := countTable(t, db, "bill_audit_log", "action = 'APPLY_RECOVERY_ADJUSTMENT'")
 
-		_, err := meterSvc.CreateRecovery(ctx, recoveryInput(source.ID))
-		if !errors.Is(err, meterreading.ErrRecoverySettlementBoundaryCrossed) {
-			t.Fatalf("err=%v, want ErrRecoverySettlementBoundaryCrossed (same tenant return; intervening settlement closed the chain)", err)
+		_, err := meterSvc.CreateBaselineCorrection(ctx, recoveryInput(source.ID))
+		if !errors.Is(err, meterreading.ErrBaselineCorrectionSettlementBoundaryCrossed) {
+			t.Fatalf("err=%v, want ErrBaselineCorrectionSettlementBoundaryCrossed (same tenant return; intervening settlement closed the chain)", err)
 		}
 		assertNoSideEffects(t, db, mrBefore, liBefore, auditBefore)
 	})
@@ -201,8 +205,9 @@ func buildMeterSvc(t *testing.T, db *gorm.DB) meterreading.MeterReadingService {
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 	billRepo := billing.NewBillingRepository(db)
 	billAuditRepo := billing.NewBillAuditRepository(db)
-	billRecoveryAdapter := billing.NewRecoveryAdapter(billRepo, billAuditRepo)
-	return meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billRecoveryAdapter, txMgr)
+	billAppliedChecker := billing.NewRecoveryAppliedChecker(billRepo)
+	_ = billAuditRepo
+	return meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billAppliedChecker, txMgr)
 }
 
 func seedActiveContract(t *testing.T, db *gorm.DB, tenantID, roomID uuid.UUID, monthsAgo int) *contract.Contract {
@@ -283,15 +288,12 @@ func seedCompletedMoveOut(t *testing.T, db *gorm.DB, contractID uuid.UUID, moveO
 	return notice
 }
 
-func recoveryInput(sourceID uuid.UUID) meterreading.CreateRecoveryInput {
-	return meterreading.CreateRecoveryInput{
+func recoveryInput(sourceID uuid.UUID) meterreading.CreateBaselineCorrectionInput {
+	return meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    sourceID,
 		ElectricityCurrent: 250,
 		WaterCurrent:       70,
-		Amount:             -25000,
-		ReasonCode:         "METER_RECOVERY",
-		AnchorNote:         "Phase 5 settlement-boundary test",
-		AdjustmentNote:     "Phase 5 settlement-boundary test note",
+		AnchorNote:         "Phase 7 settlement-boundary test",
 	}
 }
 

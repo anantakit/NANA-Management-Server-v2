@@ -233,6 +233,10 @@ func (m *mockBillingRepo) FindRoomApartmentInfo(_ context.Context, _ uuid.UUID) 
 	return uuid.Nil, "", nil
 }
 
+func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryID(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 type mockContractQuerier struct {
 	contract *contract.Contract
 }

@@ -59,10 +59,21 @@ type ManualLineItemRequest struct {
 //   - Deposit fields are intentionally absent — settlement-only concept.
 //
 // See project_billing_editable_monthly_arch_lock.md for the why.
+// AppliedCorrectionInput is one operator-committed Adjustment Application
+// applied to the current monthly DRAFT bill. Phase 7 — Amount + note now
+// live on the bill side, where the operator decides money in financial
+// context. RecoveryReadingID FK enforces provenance back to the meter row.
+type AppliedCorrectionInput struct {
+	RecoveryReadingID string  `json:"recovery_reading_id" validate:"required,uuid"`
+	Amount            float64 `json:"amount"` // baht; negative = refund
+	AdjustmentNote    string  `json:"adjustment_note" validate:"required,min=10"`
+}
+
 type UpdateMonthlyDraftRequest struct {
-	ManualItems []ManualLineItemRequest `json:"manual_items" validate:"dive"`
-	Note        *string                 `json:"note"`
-	Overrides   map[string]float64      `json:"overrides"` // override_key (LineType) → baht
+	ManualItems        []ManualLineItemRequest  `json:"manual_items" validate:"dive"`
+	Note               *string                  `json:"note"`
+	Overrides          map[string]float64       `json:"overrides"` // override_key (LineType) → baht
+	AppliedCorrections []AppliedCorrectionInput `json:"applied_corrections" validate:"dive"`
 }
 
 type BillListParams struct {
