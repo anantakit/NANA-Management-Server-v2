@@ -74,6 +74,7 @@ func toRoomItem(row RoomClassification) RoomReconcileItem {
 	if row.Attribution != nil {
 		item.Decision = toDecisionEvidence(row.Attribution)
 	}
+	item.PendingBaselineCorrectionsCount = row.PendingBaselineCorrectionsCount
 	return item
 }
 

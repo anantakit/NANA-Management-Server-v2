@@ -237,6 +237,10 @@ func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryID(_ context.Context
 	return false, nil
 }
 
+func (m *mockBillingRepo) CountPendingBaselineCorrectionsByRoomIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]int, error) {
+	return map[uuid.UUID]int{}, nil
+}
+
 type mockContractQuerier struct {
 	contract *contract.Contract
 }

@@ -62,6 +62,13 @@ type RoomReconcileItem struct {
 	// where the operator has recorded INCLUDE / SKIP. Stale decisions on
 	// non-PD rows are silently dropped at the service layer (scope guard).
 	Decision *DecisionEvidence `json:"decision"`
+
+	// PendingBaselineCorrectionsCount = active READING_RECOVERY meter rows
+	// for this room that have NOT yet been applied to a non-VOID bill.
+	// Zero by default — the FE renders a "ใส่ยอดปรับ N รายการ" affordance
+	// on DRAFT rows when > 0 so the operator can land in the bill edit
+	// drawer's PendingCorrectionsSection from the recon workspace.
+	PendingBaselineCorrectionsCount int `json:"pending_baseline_corrections_count"`
 }
 
 type BillEvidence struct {

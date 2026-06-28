@@ -70,6 +70,18 @@ type BillsQuerier interface {
 		contractIDs []uuid.UUID,
 		billingMonth string,
 	) (map[uuid.UUID]*BillSnapshot, error)
+
+	// CountPendingBaselineCorrectionsByRoomIDs returns, per room, the count
+	// of active READING_RECOVERY meter rows not yet applied to a non-VOID
+	// bill. Same "pending" definition as the BillEditDrawer's per-bill
+	// list (billing.HasNonVoidAdjustmentLineByRecoveryID), batched per
+	// room so the reconciliation workspace can surface a per-row signal.
+	//
+	// Rooms with zero pending corrections are absent from the map.
+	CountPendingBaselineCorrectionsByRoomIDs(
+		ctx context.Context,
+		roomIDs []uuid.UUID,
+	) (map[uuid.UUID]int, error)
 }
 
 // CreateMonthlyBillForReconciliationRequest is the per-row commit input

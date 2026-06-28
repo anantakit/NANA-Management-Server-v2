@@ -124,6 +124,13 @@ type RoomClassification struct {
 	Bill        *BillSnapshot
 	Anomaly     *AnomalyFlags
 	Attribution *DecisionAttribution
+	// PendingBaselineCorrectionsCount is the number of active READING_RECOVERY
+	// meter rows for this room that have not yet been applied to a non-VOID
+	// bill. Surfaces as a per-row signal on the workspace so the operator
+	// can jump from "ระบบบอกว่ามีปรับฐานรออยู่" to the bill edit drawer's
+	// PendingCorrectionsSection. Definition mirrors the BillEditDrawer's
+	// per-bill pending list (billing.HasNonVoidAdjustmentLineByRecoveryID).
+	PendingBaselineCorrectionsCount int
 }
 
 // Summary mirrors the math invariant. PD as a category disappears from the

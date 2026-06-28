@@ -71,6 +71,24 @@ func (a *ReconciliationAdapter) FindExistingBillsByContractsAndMonth(
 	return out, nil
 }
 
+// CountPendingBaselineCorrectionsByRoomIDs implements
+// billingreconciliation.BillsQuerier — pure read, no transaction. Delegates
+// to the bill repository which owns the inverse-FK probe (same definition
+// as the per-bill HasNonVoidAdjustmentLineByRecoveryID, batched per room).
+func (a *ReconciliationAdapter) CountPendingBaselineCorrectionsByRoomIDs(
+	ctx context.Context,
+	roomIDs []uuid.UUID,
+) (map[uuid.UUID]int, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]int{}, nil
+	}
+	out, err := a.repo.CountPendingBaselineCorrectionsByRoomIDs(ctx, roomIDs)
+	if err != nil {
+		return nil, fmt.Errorf("count pending baseline corrections for reconciliation: %w", err)
+	}
+	return out, nil
+}
+
 // CreateMonthlyBillForReconciliation implements
 // billingreconciliation.BillsCommander. Per-call TX, single-bill semantics —
 // the reconciliation service fans out N times (one call per room_ids[]

@@ -126,6 +126,15 @@ func (s *service) Reconcile(ctx context.Context, q ReconciliationQuery) (*Report
 		}
 	}
 
+	// Per-room pending baseline correction count. Same applied-state
+	// definition as the BillEditDrawer's per-bill list; batched here so the
+	// workspace can render a per-row signal without N round-trips. Rooms
+	// with no pending corrections are absent from the map (read as zero).
+	pendingCountMap, err := s.bills.CountPendingBaselineCorrectionsByRoomIDs(ctx, roomIDs)
+	if err != nil {
+		return nil, fmt.Errorf("count pending baseline corrections: %w", err)
+	}
+
 	// Phase 1B — pull existing decisions so the classifier can rebucket
 	// PD-origin rows. The map is keyed by room_id (NOT contract_id) because
 	// decisions persist across contract churn (deposit refund / re-tenant
@@ -173,6 +182,8 @@ func (s *service) Reconcile(ctx context.Context, q ReconciliationQuery) (*Report
 				row.Bill = b
 			}
 		}
+
+		row.PendingBaselineCorrectionsCount = pendingCountMap[cand.RoomID]
 
 		// Inline anomaly evidence — only meaningful when a reading exists.
 		if reading != nil {

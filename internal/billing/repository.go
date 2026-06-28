@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"nana/internal/contract"
+	"nana/internal/meterreading"
 	"nana/internal/shared/database"
 	"nana/internal/shared/pagination"
 
@@ -78,6 +79,17 @@ type BillingRepository interface {
 	// ADJUSTMENT line item. Backs RecoveryAppliedChecker (meterreading
 	// BillingApplicationChecker port).
 	HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
+
+	// CountPendingBaselineCorrectionsByRoomIDs returns, per room, the count
+	// of active READING_RECOVERY meter rows that have NOT yet been applied
+	// to any non-VOID bill. Mirrors the per-row applied-state derivation
+	// in HasNonVoidAdjustmentLineByRecoveryID, batched by room for the
+	// reconciliation workspace signal.
+	//
+	// Rooms with zero pending corrections are absent from the map (caller
+	// reads as zero). Backs the ReconciliationAdapter's pending-count port
+	// surfaced on the recon row.
+	CountPendingBaselineCorrectionsByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]int, error)
 }
 
 type billingRepository struct {
@@ -716,6 +728,48 @@ func (r *billingRepository) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Con
 		return false, fmt.Errorf("check applied adjustment line: %w", err)
 	}
 	return count > 0, nil
+}
+
+// CountPendingBaselineCorrectionsByRoomIDs is the batch sibling of
+// HasNonVoidAdjustmentLineByRecoveryID — grouped per room. Returns the
+// count of active READING_RECOVERY meter rows for each room that have
+// NOT yet been applied to a non-VOID bill.
+//
+// Same "applied" definition as the per-row probe above so the recon
+// workspace signal stays consistent with the BillEditDrawer pending
+// list. The LEFT JOIN matches a non-VOID applied line and the
+// `b.id IS NULL` filter keeps only unapplied recoveries.
+//
+// Rooms with zero pending corrections are absent from the map (caller
+// reads absence as zero). Empty roomIDs short-circuits to empty map.
+func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]int{}, nil
+	}
+	type row struct {
+		RoomID uuid.UUID `gorm:"column:room_id"`
+		Cnt    int       `gorm:"column:cnt"`
+	}
+	var rows []row
+	err := database.DB(ctx, r.db).
+		Table("meter_readings AS mr").
+		Joins("LEFT JOIN bill_line_items bli ON bli.adjustment_recovery_reading_id = mr.id").
+		Joins("LEFT JOIN bills b ON b.id = bli.bill_id AND b.status <> ? AND b.deleted_at IS NULL", BillStatusVoid).
+		Where("mr.room_id IN ?", roomIDs).
+		Where("mr.anchor_reason = ?", meterreading.AnchorReasonReadingRecovery).
+		Where("mr.deleted_at IS NULL").
+		Where("b.id IS NULL").
+		Select("mr.room_id AS room_id, COUNT(*)::int AS cnt").
+		Group("mr.room_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("count pending baseline corrections: %w", err)
+	}
+	out := make(map[uuid.UUID]int, len(rows))
+	for _, r := range rows {
+		out[r.RoomID] = r.Cnt
+	}
+	return out, nil
 }
 
 // GetSummary returns aggregate bill counts and total amount, filtered by apartment + month.
