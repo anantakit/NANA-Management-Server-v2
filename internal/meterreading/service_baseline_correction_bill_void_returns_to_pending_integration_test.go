@@ -49,7 +49,7 @@ func TestBaselineCorrection_BillVoidReturnsToPending(t *testing.T) {
 		t.Fatalf("seed source: %v", err)
 	}
 	correction, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 380,
 		WaterCurrent:       65,
 		AnchorNote:         "B8 — correction",

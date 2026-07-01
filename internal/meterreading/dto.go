@@ -32,10 +32,16 @@ type CreateRequest struct {
 // itself carries only meter truth.
 //
 // Lock A: no previous_* fields — service derives prev = current.
-// Lock C: no room_id — derived from source.RoomID.
 // Lock E: no billing_month — server clock derives recoveryMonth.
+//
+// Source-optional relaxation (locked 2026-07-01): source_reading_id is now
+// OPTIONAL (omitempty) — a recovery without a source is valid and complete.
+// Lock C is relaxed: when a source is supplied the room is still derived from
+// source.RoomID (room_id ignored); when source is absent, room_id carries the
+// room anchor the source used to provide. No inference fills a missing source.
 type CreateBaselineCorrectionRequest struct {
-	SourceReadingID    string `json:"source_reading_id" validate:"required,uuid"`
+	SourceReadingID    string `json:"source_reading_id" validate:"omitempty,uuid"`
+	RoomID             string `json:"room_id" validate:"omitempty,uuid"`
 	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
 	WaterCurrent       int    `json:"water_current" validate:"min=0"`
 	AnchorNote         string `json:"anchor_note" validate:"required,min=1"`
@@ -414,9 +420,17 @@ type PendingBaselineCorrectionResponse struct {
 }
 
 func ToPendingBaselineCorrectionResponse(p PendingBaselineCorrection) PendingBaselineCorrectionResponse {
+	// Source-optional (locked 2026-07-01): a nil-source recovery carries a
+	// zero SourceReadingID. Guard the zero UUID — uuid.Nil.String() yields
+	// "00000000-..." (non-empty), so emit "" instead. Consumers key the
+	// source block's presence on source_billing_month (see FE §2.5).
+	sourceReadingID := ""
+	if p.SourceReadingID != uuid.Nil {
+		sourceReadingID = p.SourceReadingID.String()
+	}
 	return PendingBaselineCorrectionResponse{
 		RecoveryID:           p.RecoveryID.String(),
-		SourceReadingID:      p.SourceReadingID.String(),
+		SourceReadingID:      sourceReadingID,
 		SourceBillingMonth:   p.SourceBillingMonth,
 		SourceElectricity:    p.SourceElectricity,
 		SourceWater:          p.SourceWater,

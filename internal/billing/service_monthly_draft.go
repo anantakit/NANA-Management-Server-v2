@@ -230,14 +230,17 @@ func (s *billingService) applyBaselineCorrections(
 			return nil, respond.ErrBadRequest.WithMessage(
 				fmt.Sprintf("รายการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
 		}
-		if recovery.RecoverySourceReadingID == nil {
-			return nil, respond.ErrBadRequest.WithMessage(
-				fmt.Sprintf("รายการปรับฐานขาดมิเตอร์ต้นทาง (รายการที่ %d)", i+1))
-		}
+		// Source-optional (locked 2026-07-01): a nil-source recovery is a
+		// valid, complete correction and remains applicable to a bill. The
+		// source month is used only to enrich the tenant-visible description;
+		// when absent, the description falls back to a source-less variant.
+		// No inference is attempted to recover the missing month.
 		sourceMonth := ""
-		source, err := s.meters.FindByIDSimple(txCtx, *recovery.RecoverySourceReadingID)
-		if err == nil && source.BillingMonth != nil {
-			sourceMonth = *source.BillingMonth
+		if recovery.RecoverySourceReadingID != nil {
+			source, err := s.meters.FindByIDSimple(txCtx, *recovery.RecoverySourceReadingID)
+			if err == nil && source.BillingMonth != nil {
+				sourceMonth = *source.BillingMonth
+			}
 		}
 
 		// Race guard: re-check PENDING state inside the TX.

@@ -46,10 +46,11 @@ var (
 	ErrRolloverWithZeroPrevious        = errors.New("ไม่สามารถระบุครบรอบมิเตอร์ได้เมื่อค่าก่อนหน้าเป็น 0")
 
 	// Reading Recovery anchor errors (Phase 1 — ValidateAnchor).
-	ErrAnchorNoteRequired     = errors.New("ต้องระบุเหตุผลเมื่อบันทึก anchor reason")
-	ErrRecoverySourceRequired = errors.New("ต้องระบุมิเตอร์ต้นทางสำหรับ READING_RECOVERY")
-	ErrRecoverySelfReference  = errors.New("READING_RECOVERY ไม่สามารถอ้างถึงตัวเองได้")
-	ErrAnchorReasonInvalid    = errors.New("anchor_reason ไม่ถูกต้อง")
+	// ErrRecoverySourceRequired removed 2026-07-01 (source-optional relaxation):
+	// source is now optional narrative metadata, no longer a validation gate.
+	ErrAnchorNoteRequired    = errors.New("ต้องระบุเหตุผลเมื่อบันทึก anchor reason")
+	ErrRecoverySelfReference = errors.New("READING_RECOVERY ไม่สามารถอ้างถึงตัวเองได้")
+	ErrAnchorReasonInvalid   = errors.New("anchor_reason ไม่ถูกต้อง")
 
 	// Reading Recovery prev=curr invariant (Phase 5 Lock A — triple-guard
 	// domain-layer arm; DB CHECKs meter_readings_recovery_{elec,water}_prev_eq_curr
@@ -186,11 +187,13 @@ func (m *MeterReading) validate() error {
 //  3. AnchorNote nil or whitespace-only → ErrAnchorNoteRequired
 //     (TrimSpace covers Unicode whitespace; domain owns this — DB CHECK
 //     enforces only NOT NULL).
-//  4. READING_RECOVERY without RecoverySourceReadingID →
-//     ErrRecoverySourceRequired.
-//  5. READING_RECOVERY referencing itself (only checkable when m.ID is
-//     populated) → ErrRecoverySelfReference. Pre-BeforeCreate state
-//     (m.ID == uuid.Nil) is handed off to the DB CHECK as the safety net.
+//  4. READING_RECOVERY source is OPTIONAL (source-optional relaxation,
+//     locked 2026-07-01): a nil RecoverySourceReadingID is valid — absence
+//     is a complete resync, not a gap. No inference fills it.
+//  5. READING_RECOVERY referencing itself (only checkable when a source is
+//     supplied AND m.ID is populated) → ErrRecoverySelfReference. Nil source
+//     skips the check; pre-BeforeCreate state (m.ID == uuid.Nil) is handed
+//     off to the DB CHECK meter_readings_recovery_no_self_reference.
 //  6. READING_RECOVERY with electricity_previous != electricity_current →
 //     ErrRecoveryElecPrevMustEqualCurrent. Phase 5 Lock A (triple-guard
 //     domain arm; DB CHECK meter_readings_recovery_elec_prev_eq_curr is
@@ -211,10 +214,11 @@ func (m *MeterReading) ValidateAnchor() error {
 		return ErrAnchorNoteRequired
 	}
 	if *m.AnchorReason == AnchorReasonReadingRecovery {
-		if m.RecoverySourceReadingID == nil {
-			return ErrRecoverySourceRequired
-		}
-		if m.ID != uuid.Nil && *m.RecoverySourceReadingID == m.ID {
+		// Source is optional (source-optional relaxation, locked 2026-07-01):
+		// a recovery without a source is a valid, complete resync — absence is
+		// not a gap. Self-reference is only checkable when a source is supplied
+		// AND m.ID is populated (post-BeforeCreate); nil source skips it.
+		if m.RecoverySourceReadingID != nil && m.ID != uuid.Nil && *m.RecoverySourceReadingID == m.ID {
 			return ErrRecoverySelfReference
 		}
 		// Phase 5 Lock A: recovery rows are re-anchor events (usage=0).

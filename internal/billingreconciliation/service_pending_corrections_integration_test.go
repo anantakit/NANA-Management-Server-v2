@@ -103,7 +103,7 @@ func TestReconcile_PendingBaselineCorrectionsCount_FlipsOnApply(t *testing.T) {
 
 	// Step 2 — commit baseline correction (Phase 7 meter-only).
 	correction, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 1300,
 		WaterCurrent:       125,
 		AnchorNote:         "Item 10 anchor — recon signal flip",

@@ -58,7 +58,7 @@ func TestBaselineCorrection_SoftDeleteEditViaRecreate(t *testing.T) {
 
 	// First commit with WRONG values (operator's typo).
 	first, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 999, // typo
 		WaterCurrent:       65,
 		AnchorNote:         "B9 — typo round",
@@ -75,7 +75,7 @@ func TestBaselineCorrection_SoftDeleteEditViaRecreate(t *testing.T) {
 	// Re-commit with correct values — second commit against the same source
 	// must succeed because the first row is gone.
 	second, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 380, // correct
 		WaterCurrent:       65,
 		AnchorNote:         "B9 — recreated after delete",

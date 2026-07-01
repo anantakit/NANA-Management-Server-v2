@@ -878,7 +878,12 @@ func TestMeterReading_ValidateAnchor_AnchorNoteEdgeCases(t *testing.T) {
 	}
 }
 
-func TestMeterReading_ValidateAnchor_RecoveryRequiresSourceReading(t *testing.T) {
+// TestMeterReading_ValidateAnchor_RecoverySourceOptional locks the
+// source-optional relaxation (2026-07-01): a READING_RECOVERY with a nil
+// RecoverySourceReadingID is VALID — absence of a source is a complete
+// recovery, not a gap. (Inverted from the old ...RequiresSourceReading test,
+// which asserted the now-removed ErrRecoverySourceRequired.)
+func TestMeterReading_ValidateAnchor_RecoverySourceOptional(t *testing.T) {
 	reason := AnchorReasonReadingRecovery
 	note := "ค้นพบว่าเดือนเมษายนจดมิเตอร์ผิด"
 	m := &MeterReading{
@@ -886,10 +891,11 @@ func TestMeterReading_ValidateAnchor_RecoveryRequiresSourceReading(t *testing.T)
 		RoomID:                  roomA,
 		AnchorReason:            &reason,
 		AnchorNote:              &note,
-		RecoverySourceReadingID: nil, // missing
+		RecoverySourceReadingID: nil, // no source supplied — now valid
+		// prev == curr (0 == 0) satisfies Lock A.
 	}
-	if err := m.ValidateAnchor(); err != ErrRecoverySourceRequired {
-		t.Errorf("ValidateAnchor() = %v, want ErrRecoverySourceRequired", err)
+	if err := m.ValidateAnchor(); err != nil {
+		t.Errorf("ValidateAnchor() = %v, want nil — source is optional", err)
 	}
 }
 
@@ -955,6 +961,22 @@ func TestMeterReading_ValidateAnchor_RecoveryCannotReferenceItself(t *testing.T)
 		}
 		if err := m.ValidateAnchor(); err != nil {
 			t.Errorf("ValidateAnchor() = %v, want nil (distinct source)", err)
+		}
+	})
+
+	t.Run("ID set and source==nil: no false self-ref, no panic", func(t *testing.T) {
+		// Source-optional (2026-07-01): the nil-source guard must short-circuit
+		// before the *RecoverySourceReadingID deref — a nil source can never be
+		// a self-reference and must not panic.
+		m := &MeterReading{
+			ID:                      uuid.New(),
+			RoomID:                  roomA,
+			AnchorReason:            &reason,
+			AnchorNote:              &note,
+			RecoverySourceReadingID: nil,
+		}
+		if err := m.ValidateAnchor(); err != nil {
+			t.Errorf("ValidateAnchor() = %v, want nil (nil source is not a self-ref)", err)
 		}
 	})
 }

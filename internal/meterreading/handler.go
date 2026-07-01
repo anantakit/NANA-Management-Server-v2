@@ -235,13 +235,31 @@ func (h *MeterReadingHandler) CreateBaselineCorrection(c fiber.Ctx) error {
 		return err
 	}
 
-	sourceID, err := uuid.Parse(req.SourceReadingID)
-	if err != nil {
-		return respond.ValidationError(c, []string{"รหัสมิเตอร์ต้นทางไม่ถูกต้อง"})
+	// Source-optional (locked 2026-07-01): empty source_reading_id → nil
+	// pointer (no source supplied). room_id likewise translates to a pointer;
+	// the service requires it only on the nil-source path. Both are validated
+	// as UUIDs by the DTO's omitempty,uuid tags when present.
+	var sourceIDPtr *uuid.UUID
+	if req.SourceReadingID != "" {
+		sourceID, err := uuid.Parse(req.SourceReadingID)
+		if err != nil {
+			return respond.ValidationError(c, []string{"รหัสมิเตอร์ต้นทางไม่ถูกต้อง"})
+		}
+		sourceIDPtr = &sourceID
+	}
+
+	var roomIDPtr *uuid.UUID
+	if req.RoomID != "" {
+		roomID, err := uuid.Parse(req.RoomID)
+		if err != nil {
+			return respond.ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
+		}
+		roomIDPtr = &roomID
 	}
 
 	input := CreateBaselineCorrectionInput{
-		SourceReadingID:    sourceID,
+		SourceReadingID:    sourceIDPtr,
+		RoomID:             roomIDPtr,
 		ElectricityCurrent: req.ElectricityCurrent,
 		WaterCurrent:       req.WaterCurrent,
 		AnchorNote:         req.AnchorNote,

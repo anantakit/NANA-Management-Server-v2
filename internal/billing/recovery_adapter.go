@@ -128,6 +128,15 @@ func (a *RecoveryAdapter) AttachAdjustmentLine(ctx context.Context, params meter
 // Two branches preserve Thai grammar for both directions; signed Amount
 // drives the choice.
 func buildAdjustmentDescription(amount int64, sourceMonth string) string {
+	// Source-optional (locked 2026-07-01): a nil-source recovery carries no
+	// reference month. Emit a source-less description rather than a dangling
+	// "เดือน " — the correction is complete without a source. No inference.
+	if sourceMonth == "" {
+		if amount < 0 {
+			return "คืนยอดที่เก็บเกิน (จดมิเตอร์ผิด)"
+		}
+		return "เก็บยอดเพิ่ม (จดมิเตอร์ผิด)"
+	}
 	if amount < 0 {
 		return fmt.Sprintf("คืนยอดที่เก็บเกินจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
 	}

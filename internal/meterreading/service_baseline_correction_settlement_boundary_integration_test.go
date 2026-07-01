@@ -290,7 +290,7 @@ func seedCompletedMoveOut(t *testing.T, db *gorm.DB, contractID uuid.UUID, moveO
 
 func recoveryInput(sourceID uuid.UUID) meterreading.CreateBaselineCorrectionInput {
 	return meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    sourceID,
+		SourceReadingID:    &sourceID,
 		ElectricityCurrent: 250,
 		WaterCurrent:       70,
 		AnchorNote:         "Phase 7 settlement-boundary test",

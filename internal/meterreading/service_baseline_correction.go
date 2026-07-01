@@ -21,14 +21,23 @@ import (
 //
 // Locks still active on this surface:
 //   - Lock A: prev = current (service sets both from one operator input)
-//   - Lock C: same-room is structural (derived from source.RoomID)
-//   - Lock D: source contract must not have a COMPLETED move-out
+//   - Lock C: same-room is structural — derived from source.RoomID when a
+//     source is supplied; on the source-optional path (source nil) the room
+//     is carried by RoomID instead (the source used to be the room anchor).
+//   - Lock D: source contract must not have a COMPLETED move-out (source path);
+//     nil path enforces an active contract on the room (§1.4 of the scope).
 //   - Lock E: BillingMonth derived from server clock (not in input)
+//
+// Source-optional relaxation (locked 2026-07-01): SourceReadingID is a
+// *uuid.UUID — nil means the operator supplied no source. Absence is a valid,
+// complete recovery, not a gap; no inference fills it. RoomID is consumed only
+// on the nil path (when a source is present it is ignored — source.RoomID wins).
 //
 // Doctrine: feedback_reading_recovery_doctrine.md.
 type CreateBaselineCorrectionInput struct {
-	SourceReadingID    uuid.UUID
-	ElectricityCurrent int // operator's physical reading now
+	SourceReadingID    *uuid.UUID // nil = no source supplied (optional narrative metadata)
+	RoomID             *uuid.UUID // room anchor for the nil-source path; ignored when source present
+	ElectricityCurrent int        // operator's physical reading now
 	WaterCurrent       int
 	AnchorNote         string // required; ≥1 non-whitespace char (ValidateAnchor)
 	ActorID            *uuid.UUID
@@ -111,20 +120,30 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 		if applied {
 			continue
 		}
-		if r.RecoverySourceReadingID == nil {
-			// Defensive — schema invariant: READING_RECOVERY rows MUST
-			// have a source FK (DB CHECK constraint). Skip rather than
-			// crash if the invariant somehow drifted.
-			continue
+
+		// Source-optional (locked 2026-07-01): a nil source FK is a valid,
+		// complete recovery — hydrate the source block only when present.
+		// Nil-source rows MUST appear in the list (they no longer vanish),
+		// emitting an empty source-billing-month and zero source readings.
+		var (
+			sourceID       uuid.UUID
+			sourceMonth    string
+			sourceElec     int
+			sourceWater    int
+		)
+		if r.RecoverySourceReadingID != nil {
+			source, err := s.repo.FindByIDSimple(ctx, *r.RecoverySourceReadingID)
+			if err != nil {
+				return nil, fmt.Errorf("load recovery source %s: %w", *r.RecoverySourceReadingID, err)
+			}
+			sourceID = source.ID
+			if source.BillingMonth != nil {
+				sourceMonth = *source.BillingMonth
+			}
+			sourceElec = source.ElectricityCurrent
+			sourceWater = source.WaterCurrent
 		}
-		source, err := s.repo.FindByIDSimple(ctx, *r.RecoverySourceReadingID)
-		if err != nil {
-			return nil, fmt.Errorf("load recovery source %s: %w", *r.RecoverySourceReadingID, err)
-		}
-		sourceMonth := ""
-		if source.BillingMonth != nil {
-			sourceMonth = *source.BillingMonth
-		}
+
 		recoveryMonth := ""
 		if r.BillingMonth != nil {
 			recoveryMonth = *r.BillingMonth
@@ -135,10 +154,10 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 		}
 		out = append(out, PendingBaselineCorrection{
 			RecoveryID:           r.ID,
-			SourceReadingID:      source.ID,
+			SourceReadingID:      sourceID,
 			SourceBillingMonth:   sourceMonth,
-			SourceElectricity:    source.ElectricityCurrent,
-			SourceWater:          source.WaterCurrent,
+			SourceElectricity:    sourceElec,
+			SourceWater:          sourceWater,
 			RecoveryBillingMonth: recoveryMonth,
 			RecoveryElectricity:  r.ElectricityCurrent,
 			RecoveryWater:        r.WaterCurrent,
@@ -151,16 +170,23 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 
 // CreateBaselineCorrection commits a Reading Recovery (Phase 7 — meter-only).
 //
-// Pre-tx validation:
-//  1. Source is a regular MONTHLY reading (D2-B).
-//  2. Settlement-boundary check (D2-C / Lock D): source's contract must not
-//     have any COMPLETED move-out, and the room must still have an active
-//     contract today.
+// Source-optional (locked 2026-07-01): a source is enrichment, not a gate. The
+// method branches on whether the operator supplied one:
+//
+//   - Source SUPPLIED: the source is validated as a regular MONTHLY reading
+//     (D2-B), the room is derived from source.RoomID (Lock C), and the Lock D
+//     reach-back boundary check runs against the source month's contract —
+//     preventing an edit into a closed settlement epoch.
+//   - Source NIL: no source to load or validate; the room is carried by
+//     input.RoomID. Settlement safety is preserved by requiring the room to
+//     have an ACTIVE contract today (§1.4). An active contract is by
+//     definition not a completed move-out, so the closed-epoch hazard is
+//     structurally absent on this path.
 //
 // In-tx: a single INSERT of the recovery MeterReading row with
 // anchor_reason = READING_RECOVERY, anchor_note set, FK to source via
-// recovery_source_reading_id, and prev = curr per Lock A. No bill-side
-// effect — financial reconciliation happens in BillEditDrawer →
+// recovery_source_reading_id (NULL when nil path), and prev = curr per Lock A.
+// No bill-side effect — financial reconciliation happens in BillEditDrawer →
 // UpdateMonthlyDraft.applied_corrections.
 //
 // Append-only doctrine (locked 2026-06-25): the chain is NEVER rewritten.
@@ -171,60 +197,77 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 // Doctrine: feedback_reading_recovery_doctrine.md.
 // Plan:     /Users/anantakit/.claude/plans/smooth-coalescing-flute.md.
 func (s *meterReadingService) CreateBaselineCorrection(ctx context.Context, input CreateBaselineCorrectionInput) (*MeterReading, error) {
-	if input.SourceReadingID == uuid.Nil {
-		return nil, respond.ErrBadRequest.WithMessage("ต้องระบุมิเตอร์ต้นทาง")
-	}
+	var roomID uuid.UUID
 
-	source, err := s.repo.FindByIDSimple(ctx, input.SourceReadingID)
-	if err != nil {
-		if database.IsNotFound(err) {
-			return nil, respond.ErrNotFound.WithMessage("ไม่พบมิเตอร์ต้นทาง")
+	if input.SourceReadingID != nil {
+		// --- Source-supplied path (unchanged) ---
+		source, err := s.repo.FindByIDSimple(ctx, *input.SourceReadingID)
+		if err != nil {
+			if database.IsNotFound(err) {
+				return nil, respond.ErrNotFound.WithMessage("ไม่พบมิเตอร์ต้นทาง")
+			}
+			return nil, fmt.Errorf("load recovery source: %w", err)
 		}
-		return nil, fmt.Errorf("load recovery source: %w", err)
-	}
 
-	// D2-B: source must be a regular MONTHLY reading.
-	if source.ReadingType != ReadingTypeMonthly {
-		return nil, respond.ErrBadRequest.WithMessage("มิเตอร์ต้นทางต้องเป็นรอบเดือน (MONTHLY)")
-	}
-	if source.BillingMonth == nil {
-		return nil, respond.ErrBadRequest.WithMessage("มิเตอร์ต้นทางขาด billing_month")
-	}
-	sourceMonth := *source.BillingMonth
-	roomID := source.RoomID
+		// D2-B: source must be a regular MONTHLY reading.
+		if source.ReadingType != ReadingTypeMonthly {
+			return nil, respond.ErrBadRequest.WithMessage("มิเตอร์ต้นทางต้องเป็นรอบเดือน (MONTHLY)")
+		}
+		if source.BillingMonth == nil {
+			return nil, respond.ErrBadRequest.WithMessage("มิเตอร์ต้นทางขาด billing_month")
+		}
+		sourceMonth := *source.BillingMonth
+		roomID = source.RoomID // Lock C: room is structural, derived from source
 
-	// D2-C (Lock D): settlement-boundary check. Three rejection cases collapse
-	// into one error for operator-facing simplicity.
-	sourceContractID, err := s.contracts.FindContractIDByRoomAndMonth(ctx, roomID, sourceMonth)
-	if err != nil {
-		if database.IsNotFound(err) {
+		// D2-C (Lock D): settlement-boundary reach-back check on the source
+		// month's contract. Three rejection cases collapse into one error for
+		// operator-facing simplicity.
+		sourceContractID, err := s.contracts.FindContractIDByRoomAndMonth(ctx, roomID, sourceMonth)
+		if err != nil {
+			if database.IsNotFound(err) {
+				return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
+			}
+			return nil, fmt.Errorf("find source contract: %w", err)
+		}
+		if _, err := s.contracts.FindActiveContractIDByRoomID(ctx, roomID); err != nil {
+			if database.IsNotFound(err) {
+				return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
+			}
+			return nil, fmt.Errorf("find active contract: %w", err)
+		}
+		hasMoveOut, err := s.moveOuts.HasCompletedMoveOut(ctx, sourceContractID)
+		if err != nil {
+			return nil, fmt.Errorf("check settlement boundary: %w", err)
+		}
+		if hasMoveOut {
 			return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
 		}
-		return nil, fmt.Errorf("find source contract: %w", err)
-	}
-	if _, err := s.contracts.FindActiveContractIDByRoomID(ctx, roomID); err != nil {
-		if database.IsNotFound(err) {
-			return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
+	} else {
+		// --- Source-optional (nil) path ---
+		// No source to derive the room from; the operator's room anchor
+		// carries it. Settlement safety (§1.4): require a live contract —
+		// an active contract is never a completed move-out, so the
+		// closed-epoch hazard is structurally absent here.
+		if input.RoomID == nil {
+			return nil, respond.ErrBadRequest.WithMessage("ต้องระบุห้อง")
 		}
-		return nil, fmt.Errorf("find active contract: %w", err)
-	}
-	hasMoveOut, err := s.moveOuts.HasCompletedMoveOut(ctx, sourceContractID)
-	if err != nil {
-		return nil, fmt.Errorf("check settlement boundary: %w", err)
-	}
-	if hasMoveOut {
-		return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
+		roomID = *input.RoomID
+		if _, err := s.contracts.FindActiveContractIDByRoomID(ctx, roomID); err != nil {
+			if database.IsNotFound(err) {
+				return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
+			}
+			return nil, fmt.Errorf("find active contract: %w", err)
+		}
 	}
 
 	// Lock E: recoveryMonth derived from server clock.
 	recoveryMonth := time.Now().Format("2006-01")
 
 	var recovery *MeterReading
-	err = s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+	err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		recoveryReason := AnchorReasonReadingRecovery
 		billingMonth := recoveryMonth
 		anchorNote := input.AnchorNote
-		sourceID := input.SourceReadingID
 
 		// Lock A: prev = curr is structural — service sets both from one
 		// operator input. DB CHECK (migration 00040) + ValidateAnchor are
@@ -239,7 +282,7 @@ func (s *meterReadingService) CreateBaselineCorrection(ctx context.Context, inpu
 			WaterCurrent:            input.WaterCurrent,
 			AnchorReason:            &recoveryReason,
 			AnchorNote:              &anchorNote,
-			RecoverySourceReadingID: &sourceID,
+			RecoverySourceReadingID: input.SourceReadingID, // nil-safe: NULL FK on the nil path
 		}
 		if err := recovery.ValidateAnchor(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())

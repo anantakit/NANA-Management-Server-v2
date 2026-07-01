@@ -60,7 +60,7 @@ func TestRecovery_RejectsExitSource(t *testing.T) {
 
 	// Attempt recovery against the EXIT row.
 	_, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    exitMR.ID,
+		SourceReadingID:    &exitMR.ID,
 		ElectricityCurrent: 200,
 		WaterCurrent:       40,
 		AnchorNote:         "trying exit as source",

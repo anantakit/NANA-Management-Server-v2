@@ -82,7 +82,7 @@ func TestRecovery_NextMonthInheritsRecoveryCurrent(t *testing.T) {
 
 	// Commit recovery with new currents (real today).
 	recovery, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 450,
 		WaterCurrent:       60,
 		AnchorNote:         "พบจดเกินจริง",

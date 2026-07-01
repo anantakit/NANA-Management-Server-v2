@@ -96,7 +96,7 @@ func TestRecovery_CoexistsWithCurrentMonthlyReading(t *testing.T) {
 	// The load-bearing call: recovery must succeed despite the consumption
 	// row already occupying (room, current_month, MONTHLY).
 	recovery, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 620, // operator's confirmed re-anchor value
 		WaterCurrent:       92,
 		AnchorNote:         "พบจดเกินจริง — re-anchor at consumption value",
@@ -143,7 +143,7 @@ func TestRecovery_CoexistsWithCurrentMonthlyReading(t *testing.T) {
 	// unique index `idx_meter_readings_room_billing_month_anchor`. This is
 	// the BE capability layer that backstops the Phase 6 FE Watch 2 UX guard.
 	_, err = meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 620,
 		WaterCurrent:       92,
 		AnchorNote:         "duplicate recovery attempt",

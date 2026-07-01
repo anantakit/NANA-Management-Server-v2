@@ -85,7 +85,7 @@ func TestRecovery_CreateBaselineCorrectionRowShape(t *testing.T) {
 
 	// ── Positive: commit a recovery ──
 	out, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    source.ID,
+		SourceReadingID:    &source.ID,
 		ElectricityCurrent: 250,
 		WaterCurrent:       70,
 		AnchorNote:         "พบว่าเดือนต้นทางจดเกินจริง",
