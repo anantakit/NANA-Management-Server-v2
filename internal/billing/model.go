@@ -76,10 +76,11 @@ const (
 // --- Adjustment reason code (Reading Recovery doctrine, Phase 4) ---
 
 // AdjustmentReasonCode annotates an ADJUSTMENT line with why the money
-// movement was needed. METER_RECOVERY is the only Phase 4 value — future
-// codes (PRIOR_OVERCHARGE / PRIOR_UNDERCHARGE / OTHER) are deferred per the
+// movement was needed. METER_RECOVERY (charge/refund) + METER_RECOVERY_WAIVED
+// (resolved, no money) are the recovery-resolution values — future codes
+// (PRIOR_OVERCHARGE / PRIOR_UNDERCHARGE / OTHER) are deferred per the
 // "no dormant workflow" doctrine. The FK alone is not a discriminator
-// across the eventual reason space (only METER_RECOVERY carries a recovery
+// across the eventual reason space (only METER_RECOVERY* carry a recovery
 // FK; the future codes are pure financial reconciliations), so reason_code
 // is the orthogonal label used by audit log and FE row templates.
 //
@@ -88,7 +89,14 @@ const (
 type AdjustmentReasonCode string
 
 const (
+	// AdjustmentReasonMeterRecovery = charge/refund; moves money (non-zero amount).
 	AdjustmentReasonMeterRecovery AdjustmentReasonCode = "METER_RECOVERY"
+	// AdjustmentReasonMeterRecoveryWaived = the operator consciously resolved the
+	// recovery with NO money movement. Carried as a ZERO-amount ADJUSTMENT line so
+	// "resolved" stays derivable from the same inverse-FK probe as charge/refund
+	// (single source of truth); the note records why. Q1 Recovery Decision —
+	// project_reading_recovery_q1_unified_decision_surface_lock.
+	AdjustmentReasonMeterRecoveryWaived AdjustmentReasonCode = "METER_RECOVERY_WAIVED"
 )
 
 // --- Override map (jsonb on bills) ---
@@ -225,6 +233,8 @@ var (
 	ErrAdjustmentReasonCodeInvalid       = errors.New("ADJUSTMENT reason code ไม่ถูกต้อง")
 	ErrAdjustmentNoteRequired            = errors.New("ADJUSTMENT ต้องระบุหมายเหตุประกอบ")
 	ErrAdjustmentNoteTooShort            = errors.New("ADJUSTMENT หมายเหตุต้องยาวอย่างน้อย 10 ตัวอักษร")
+	ErrAdjustmentAmountRequired          = errors.New("ADJUSTMENT คิดเงินเพิ่ม/คืนเงินต้องไม่เป็นศูนย์")
+	ErrAdjustmentWaivedMustBeZero        = errors.New("ADJUSTMENT ที่ยกเว้น (ไม่คิดเงิน) ต้องเป็นศูนย์")
 )
 
 // --- Models ---
@@ -371,7 +381,15 @@ func (li *BillLineItem) ValidateAdjustment() error {
 	}
 	switch *li.AdjustmentReasonCode {
 	case AdjustmentReasonMeterRecovery:
-		// valid
+		// charge/refund — must move money (signed: >0 charge, <0 refund).
+		if li.Amount == 0 {
+			return ErrAdjustmentAmountRequired
+		}
+	case AdjustmentReasonMeterRecoveryWaived:
+		// waive/no-charge — resolution recorded with a note; no money moves.
+		if li.Amount != 0 {
+			return ErrAdjustmentWaivedMustBeZero
+		}
 	default:
 		return ErrAdjustmentReasonCodeInvalid
 	}

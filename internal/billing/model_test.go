@@ -1299,6 +1299,7 @@ func TestBillLineItem_ValidateAdjustment_ReasonCodeEdgeCases(t *testing.T) {
 			li := &BillLineItem{
 				LineType:                    LineItemAdjustment,
 				Source:                      LineItemSourceManual,
+				Amount:                      100, // non-zero so METER_RECOVERY passes the amount invariant
 				AdjustmentRecoveryReadingID: &recID,
 				AdjustmentReasonCode:        tc.reason,
 				AdjustmentNote:              &note,
@@ -1334,9 +1335,50 @@ func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
 			li := &BillLineItem{
 				LineType:                    LineItemAdjustment,
 				Source:                      LineItemSourceManual,
+				Amount:                      100, // non-zero so the amount invariant passes; this table tests notes
 				AdjustmentRecoveryReadingID: &recID,
 				AdjustmentReasonCode:        &reason,
 				AdjustmentNote:              tc.note,
+			}
+			if got := li.ValidateAdjustment(); got != tc.wantErr {
+				t.Errorf("ValidateAdjustment() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Q1 Recovery Decision — amount invariant by reason: charge/refund (METER_RECOVERY)
+// must move money; waive (METER_RECOVERY_WAIVED) must be zero. The amount check
+// lives inside the reason switch, before the note check.
+func TestBillLineItem_ValidateAdjustment_AmountByReason(t *testing.T) {
+	recID := uuid.New()
+	note := "valid 10-char note"
+	recovery := AdjustmentReasonMeterRecovery
+	waived := AdjustmentReasonMeterRecoveryWaived
+
+	cases := []struct {
+		name    string
+		reason  AdjustmentReasonCode
+		amount  int64
+		wantErr error
+	}{
+		{"charge non-zero ok", recovery, 15000, nil},
+		{"refund negative ok", recovery, -15000, nil},
+		{"recovery zero rejected", recovery, 0, ErrAdjustmentAmountRequired},
+		{"waived zero ok", waived, 0, nil},
+		{"waived positive rejected", waived, 100, ErrAdjustmentWaivedMustBeZero},
+		{"waived negative rejected", waived, -1, ErrAdjustmentWaivedMustBeZero},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := tc.reason
+			li := &BillLineItem{
+				LineType:                    LineItemAdjustment,
+				Source:                      LineItemSourceManual,
+				Amount:                      tc.amount,
+				AdjustmentRecoveryReadingID: &recID,
+				AdjustmentReasonCode:        &reason,
+				AdjustmentNote:              &note,
 			}
 			if got := li.ValidateAdjustment(); got != tc.wantErr {
 				t.Errorf("ValidateAdjustment() = %v, want %v", got, tc.wantErr)
