@@ -40,6 +40,7 @@ type mockBillStore struct {
 	updateFn                      func(ctx context.Context, bill *billing.Bill) error
 	lockBillForCorrectionFn       func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
 	hasNonVoidAdjustmentFn        func(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
+	hasPendingRecoveryFn          func(ctx context.Context, contractID uuid.UUID) (bool, error)
 
 	updateErrByBillID map[uuid.UUID]error
 
@@ -178,6 +179,13 @@ func (m *mockBillStore) CreateLineItems(_ context.Context, items []billing.BillL
 func (m *mockBillStore) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error) {
 	if m.hasNonVoidAdjustmentFn != nil {
 		return m.hasNonVoidAdjustmentFn(ctx, recoveryReadingID)
+	}
+	return false, nil
+}
+
+func (m *mockBillStore) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	if m.hasPendingRecoveryFn != nil {
+		return m.hasPendingRecoveryFn(ctx, contractID)
 	}
 	return false, nil
 }

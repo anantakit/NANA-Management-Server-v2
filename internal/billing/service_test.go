@@ -37,6 +37,7 @@ type mockBillingRepo struct {
 	findCorrectedFromBillIDFn           func(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error)
 	createFn                            func(ctx context.Context, bill *Bill) error
 	updateFn                            func(ctx context.Context, bill *Bill) error
+	hasPendingRecoveryFn                func(ctx context.Context, contractID uuid.UUID) (bool, error)
 	apartmentID                         uuid.UUID
 	findApartmentIDNotFound             bool // explicit opt-in for "room not found" path
 
@@ -239,6 +240,13 @@ func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryID(_ context.Context
 
 func (m *mockBillingRepo) CountPendingBaselineCorrectionsByRoomIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]int, error) {
 	return map[uuid.UUID]int{}, nil
+}
+
+func (m *mockBillingRepo) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	if m.hasPendingRecoveryFn != nil {
+		return m.hasPendingRecoveryFn(ctx, contractID)
+	}
+	return false, nil
 }
 
 type mockContractQuerier struct {
@@ -570,6 +578,31 @@ func TestFinalizeBill_HappyPath(t *testing.T) {
 	}
 	if bill.Status != BillStatusFinalized {
 		t.Fatalf("expected FINALIZED, got %s", bill.Status)
+	}
+}
+
+// Q1 finalization gate: a DRAFT monthly bill whose contract has an unresolved
+// recovery must not finalize — surfaces as a 400 AppError carrying the Thai
+// "resolve first" message.
+func TestFinalizeBill_BlockedByPendingRecovery(t *testing.T) {
+	billID := uuid.New()
+	svc := newSvc(
+		&mockBillingRepo{
+			findByIDFn: func(_ context.Context, _ uuid.UUID) (*Bill, error) {
+				return &Bill{ID: billID, ContractID: uuid.New(), Status: BillStatusDraft, LineItems: []BillLineItem{{Amount: 100}}}, nil
+			},
+			hasPendingRecoveryFn: func(_ context.Context, _ uuid.UUID) (bool, error) { return true, nil },
+		},
+		&mockContractQuerier{}, &mockMeterQuerier{},
+		&mockConfigQuerier{})
+
+	_, err := svc.FinalizeBill(context.Background(), billID, nil)
+	if err == nil {
+		t.Fatal("expected finalize to be blocked by pending recovery")
+	}
+	var appErr *respond.AppError
+	if !errors.As(err, &appErr) || appErr.Message != ErrPendingRecoveryBlocksFinalization.Error() {
+		t.Fatalf("expected pending-recovery AppError, got %v", err)
 	}
 }
 

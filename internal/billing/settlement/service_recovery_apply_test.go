@@ -124,3 +124,16 @@ func TestUpdateSettlementDraft_RejectsAlreadyAppliedRecovery(t *testing.T) {
 		t.Error("no adjustment line should be created when the recovery is already applied")
 	}
 }
+
+// Q1 finalization gate: FinalizeSettlement (and thus move-out closure, which
+// drives it via port) must block while the contract has an unresolved recovery.
+func TestFinalizeSettlement_BlockedByPendingRecovery(t *testing.T) {
+	billID := uuid.New()
+	bills, svc := newDraftSettlementWithRecovery(billID, uuid.New())
+	bills.hasPendingRecoveryFn = func(_ context.Context, _ uuid.UUID) (bool, error) { return true, nil }
+
+	err := svc.FinalizeSettlement(context.Background(), billID)
+	if err == nil {
+		t.Fatal("expected FinalizeSettlement to be blocked by pending recovery")
+	}
+}

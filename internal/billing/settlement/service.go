@@ -433,6 +433,17 @@ func (s *Service) FinalizeSettlement(ctx context.Context, billID uuid.UUID) erro
 		return respond.ErrBadRequest.WithMessage("สรุปยอดได้เฉพาะบิลปิดสัญญา")
 	}
 
+	// Q1 finalization gate: block while the contract's room has an unresolved
+	// recovery. Also gates move-out closure, which drives FinalizeSettlement via
+	// the moveout→billing port — the error rolls back that workflow step.
+	pending, err := s.bills.HasPendingRecoveryByContractID(ctx, b.ContractID)
+	if err != nil {
+		return fmt.Errorf("check pending recovery: %w", err)
+	}
+	if pending {
+		return respond.ErrBadRequest.WithMessage(billing.ErrPendingRecoveryBlocksFinalization.Error())
+	}
+
 	// Recompute totals from source of truth
 	b.CalculateTotal()
 

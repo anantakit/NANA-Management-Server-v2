@@ -207,6 +207,11 @@ var (
 	ErrNotDraft       = errors.New("บิลไม่ใช่สถานะร่าง")
 	ErrNotFinalized   = errors.New("บิลไม่ใช่สถานะยืนยันแล้ว")
 	ErrNoLineItems    = errors.New("บิลต้องมีรายการอย่างน้อย 1 รายการ")
+	// ErrPendingRecoveryBlocksFinalization gates finalization (monthly +
+	// settlement + move-out closure): a room with an unresolved recovery must
+	// have it resolved (charge/refund/waive) before any of its bills finalize.
+	// Q1 doctrine: project_reading_recovery_q1_unified_decision_surface_lock.
+	ErrPendingRecoveryBlocksFinalization = errors.New("มีรายการแก้ค่ามิเตอร์ที่ยังไม่ได้ตัดสิน — ต้องเลือกคิดเงินเพิ่ม คืนเงิน หรือไม่คิดเงิน ก่อนออกบิล")
 	ErrAlreadyVoided  = errors.New("บิลถูกยกเลิกแล้ว")
 	ErrAlreadyPaid    = errors.New("บิลถูกชำระแล้ว")
 	ErrVoidReasonEmpty = errors.New("กรุณาระบุเหตุผลในการยกเลิก")

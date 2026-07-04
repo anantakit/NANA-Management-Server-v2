@@ -59,6 +59,10 @@ const (
 	// Surfaces opaquely so admin retries via the same endpoint. Underlying
 	// error is server-logged with bill_id for ops triage.
 	FailureCodeInfraError BatchFinalizeFailureCode = "INFRA_ERROR"
+	// FailureCodePendingRecovery — the bill's room has an unresolved recovery
+	// (Q1 finalization gate). Business-rule skip, not a system error: admin must
+	// resolve it (charge/refund/waive) before this bill can finalize.
+	FailureCodePendingRecovery BatchFinalizeFailureCode = "PENDING_RECOVERY"
 )
 
 // BatchFinalizeFailure is one row in the failure list returned by

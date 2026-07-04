@@ -321,7 +321,8 @@ func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *
 	}); err != nil {
 		// Domain-sentinel errors → 400 AppError so the API responds with the
 		// Thai validation message verbatim.
-		if errors.Is(err, ErrNotDraft) || errors.Is(err, ErrNoLineItems) {
+		if errors.Is(err, ErrNotDraft) || errors.Is(err, ErrNoLineItems) ||
+			errors.Is(err, ErrPendingRecoveryBlocksFinalization) {
 			return nil, respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		if _, ok := respond.Is(err); ok {
@@ -356,6 +357,17 @@ func finalizeBillInTx(txCtx context.Context, repo BillingRepository, audit BillA
 			return ErrBillNotFound
 		}
 		return fmt.Errorf("find bill: %w", err)
+	}
+
+	// Q1 finalization gate: a room with an unresolved recovery must resolve it
+	// (charge/refund/waive) before any of its bills finalize. Raw sentinel —
+	// FinalizeBill maps it to 400, batch classifies it as a business-rule skip.
+	pending, err := repo.HasPendingRecoveryByContractID(txCtx, b.ContractID)
+	if err != nil {
+		return fmt.Errorf("check pending recovery: %w", err)
+	}
+	if pending {
+		return ErrPendingRecoveryBlocksFinalization
 	}
 
 	previousStatus := string(b.Status)

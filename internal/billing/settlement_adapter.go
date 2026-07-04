@@ -130,6 +130,12 @@ func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Con
 	return a.repo.HasNonVoidAdjustmentLineByRecoveryID(ctx, recoveryReadingID)
 }
 
+// HasPendingRecoveryByContractID delegates the Q1 finalization-gate probe to
+// the canonical billing repo query (contract → room → unresolved recovery).
+func (a *SettlementAdapter) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	return a.repo.HasPendingRecoveryByContractID(ctx, contractID)
+}
+
 // --- settlement.AuditStore ---
 
 func (a *SettlementAdapter) RecordAudit(ctx context.Context, billID uuid.UUID, action BillAuditAction, actor *uuid.UUID, payload any) error {
