@@ -3,6 +3,8 @@ package billing
 import (
 	"errors"
 
+	"nana/internal/meterreading"
+
 	"github.com/google/uuid"
 )
 
@@ -15,8 +17,10 @@ import (
 // See project_reading_recovery_overrecord_model_lock + Q1_5_OVERRECORD_REMODEL_PLAN.md.
 
 var (
-	ErrRecoveryDecisionInvalid     = errors.New("การตัดสินใจ recovery ไม่ถูกต้อง")
-	ErrRecoveryOverrideOutOfBounds = errors.New("ยอดคืนที่ปรับต้องอยู่ระหว่างยอดแนะนำถึง 0 (คืนน้อยกว่าได้ แต่ห้ามเกิน และห้ามเรียกเก็บ)")
+	ErrRecoveryDecisionInvalid      = errors.New("การตัดสินใจ recovery ไม่ถูกต้อง")
+	ErrRecoveryOverrideOutOfBounds  = errors.New("ยอดคืนที่ปรับต้องอยู่ระหว่างยอดแนะนำถึง 0 (คืนน้อยกว่าได้ แต่ห้ามเกิน และห้ามเรียกเก็บ)")
+	ErrCorrectionUtilityNotAffected = errors.New("utility นี้ไม่ใช่ over-record (recorded ต้องมากกว่าค่าที่อ่านได้จริง)")
+	ErrCorrectionUtilityInvalid     = errors.New("utility ไม่ถูกต้อง (ต้องเป็น ELECTRICITY หรือ WATER)")
 )
 
 // RecoveryDecision is the operator's per-utility choice for an over-record
@@ -79,6 +83,75 @@ type PerUtilityResolution struct {
 	Decision     RecoveryDecision
 	AmountSatang int64
 	Note         string
+}
+
+// ParseAdjustmentUtility validates a raw utility string from the apply input.
+func ParseAdjustmentUtility(s string) (AdjustmentUtility, error) {
+	u := AdjustmentUtility(s)
+	if !u.IsValid() {
+		return "", ErrCorrectionUtilityInvalid
+	}
+	return u, nil
+}
+
+// ResolveCorrection is the single per-utility resolution site shared by the
+// monthly and settlement apply paths. Given the recovery meter row, the chosen
+// utility + decision, an optional override (signed satang, negative), the note,
+// and the utility's current contract rate (satang/unit), it:
+//   - enforces the over-record precondition (recorded > physical for that
+//     utility; else ErrCorrectionUtilityNotAffected — §0b);
+//   - derives the deterministic recommendation (RecommendRefund) from the rate;
+//   - resolves the final refund satang (ResolveRefundAmount: accept / bounded
+//     override / waive);
+//   - returns the RecoveryResolution ready for BuildRecoveryAdjustmentLine and
+//     the AUTO line type to re-baseline to usage 0.
+//
+// The refund figure NEVER comes from the caller's money input — only the rate +
+// recorded/physical + a bounded override magnitude. Money authority stays here.
+func ResolveCorrection(
+	recovery *meterreading.MeterReading,
+	utility AdjustmentUtility,
+	decision RecoveryDecision,
+	overrideSatang int64,
+	note string,
+	ratePerUnitSatang int64,
+) (RecoveryResolution, LineItemType, error) {
+	var (
+		recorded *int
+		physical int
+		lineType LineItemType
+	)
+	switch utility {
+	case AdjustmentUtilityElectricity:
+		recorded, physical, lineType = recovery.ElectricityRecorded, recovery.ElectricityCurrent, LineItemElectricity
+	case AdjustmentUtilityWater:
+		recorded, physical, lineType = recovery.WaterRecorded, recovery.WaterCurrent, LineItemWater
+	default:
+		return RecoveryResolution{}, "", ErrCorrectionUtilityInvalid
+	}
+
+	// Precondition (§0b): only an over-record utility resolves. recorded NULL or
+	// recorded <= physical never engages.
+	if recorded == nil {
+		return RecoveryResolution{}, "", ErrCorrectionUtilityNotAffected
+	}
+	recommended, ok := RecommendRefund(int64(*recorded), int64(physical), ratePerUnitSatang)
+	if !ok {
+		return RecoveryResolution{}, "", ErrCorrectionUtilityNotAffected
+	}
+
+	amount, err := ResolveRefundAmount(decision, recommended, overrideSatang)
+	if err != nil {
+		return RecoveryResolution{}, "", err
+	}
+
+	return RecoveryResolution{
+		RecoveryReadingID: recovery.ID,
+		Utility:           utility,
+		Amount:            amount,
+		Note:              note,
+		Waive:             decision == RecoveryDecisionWaive,
+	}, lineType, nil
 }
 
 // RecoveryResolution is an operator decision resolving one pending meter

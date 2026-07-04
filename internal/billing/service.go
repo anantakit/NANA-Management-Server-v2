@@ -359,10 +359,11 @@ func finalizeBillInTx(txCtx context.Context, repo BillingRepository, audit BillA
 		return fmt.Errorf("find bill: %w", err)
 	}
 
-	// Q1 finalization gate: a room with an unresolved recovery must resolve it
-	// (charge/refund/waive) before any of its bills finalize. Raw sentinel —
-	// FinalizeBill maps it to 400, batch classifies it as a business-rule skip.
-	pending, err := repo.HasPendingRecoveryByContractID(txCtx, b.ContractID)
+	// Q1.5 finalization gate: a room with any unresolved over-record (affected
+	// recovery×utility lacking a non-VOID ADJUSTMENT line) must resolve it
+	// (refund/waive) before any of its bills finalize. Raw sentinel — FinalizeBill
+	// maps it to 400, batch classifies it as a business-rule skip.
+	pending, err := repo.HasUnresolvedOverRecordByContractID(txCtx, b.ContractID)
 	if err != nil {
 		return fmt.Errorf("check pending recovery: %w", err)
 	}

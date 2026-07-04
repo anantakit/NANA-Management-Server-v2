@@ -151,6 +151,15 @@ type BillStore interface {
 	// (and thus move-out closure, which drives it via port) must block while
 	// true. Waived recoveries are resolved and do not block.
 	HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+
+	// Q1.5 per-utility probes + re-baseline (mirror the billing repo).
+	// HasNonVoidAdjustmentLineByRecoveryIDAndUtility scopes the applied-state
+	// probe to a utility; HasUnresolvedOverRecordByContractID is the per-utility
+	// finalize gate; ZeroAutoLineUsage re-baselines an affected AUTO line to
+	// usage 0 / amount 0 (§3.6).
+	HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility billing.AdjustmentUtility) (bool, error)
+	HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+	ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType billing.LineItemType) error
 }
 
 // --- Audit table port ---

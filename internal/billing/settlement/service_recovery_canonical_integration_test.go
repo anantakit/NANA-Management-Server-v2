@@ -49,10 +49,12 @@ func seedSettlementRecovery(t *testing.T, db *gorm.DB, roomID uuid.UUID, month s
 	t.Helper()
 	reason := meterreading.AnchorReasonReadingRecovery
 	note := "จดมิเตอร์ผิดตอนย้ายออก " + month
+	elecRecorded := 280 // over-record: recorded 280 > physical 180 (diff 100)
 	rec := &meterreading.MeterReading{
 		RoomID: roomID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &month,
 		ElectricityPrevious: 180, ElectricityCurrent: 180, WaterPrevious: 60, WaterCurrent: 60, // prev=curr
-		AnchorReason: &reason, AnchorNote: &note,
+		ElectricityRecorded: &elecRecorded,
+		AnchorReason:        &reason, AnchorNote: &note,
 	}
 	if err := db.Create(rec).Error; err != nil {
 		t.Fatalf("seed settlement recovery: %v", err)
@@ -88,9 +90,10 @@ func TestRR06_SettlementResolveThenFinalize(t *testing.T) {
 	db, svc, billID, roomID := setupRecoverySettlement(t)
 	recID := seedSettlementRecovery(t, db, roomID, "2026-04")
 
+	// ACCEPT the deterministic refund: (280-180) × 800 satang = -80000.
 	if _, err := svc.UpdateSettlementDraft(context.Background(), billID, UpdateSettlementDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{
-			{RecoveryReadingID: recID.String(), Amount: 500, AdjustmentNote: "เก็บยอดเพิ่มจากมิเตอร์ผิดตอนย้ายออก"},
+			{RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดที่เก็บเกินจากมิเตอร์ผิดตอนย้ายออก"},
 		},
 	}, nil); err != nil {
 		t.Fatalf("resolve settlement recovery: %v", err)
@@ -103,8 +106,11 @@ func TestRR06_SettlementResolveThenFinalize(t *testing.T) {
 	if len(adj) != 1 {
 		t.Fatalf("adjustment lines on settlement = %d, want 1", len(adj))
 	}
-	if adj[0].Amount != 50000 {
-		t.Errorf("amount = %d satang, want 50000", adj[0].Amount)
+	if adj[0].Amount != -80000 {
+		t.Errorf("amount = %d satang, want -80000 (refund)", adj[0].Amount)
+	}
+	if adj[0].AdjustmentUtility == nil || *adj[0].AdjustmentUtility != billing.AdjustmentUtilityElectricity {
+		t.Errorf("utility = %v, want ELECTRICITY", adj[0].AdjustmentUtility)
 	}
 	if adj[0].AdjustmentReasonCode == nil || *adj[0].AdjustmentReasonCode != billing.AdjustmentReasonMeterRecovery {
 		t.Errorf("reason = %v, want METER_RECOVERY", adj[0].AdjustmentReasonCode)

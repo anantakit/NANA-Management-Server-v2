@@ -135,12 +135,13 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 		// ADJUSTMENT BillLineItem (MANUAL source, FK to recovery row, audit
 		// emission), gated by a per-row applied-state race check so a
 		// concurrent finalize-then-edit can't double-apply.
-		appliedLines, err := s.applyBaselineCorrections(txCtx, id, reloaded, req.AppliedCorrections, actor)
+		appliedLines, reBaselined, err := s.applyBaselineCorrections(txCtx, id, reloaded, req.AppliedCorrections, actor)
 		if err != nil {
 			return err
 		}
 		if len(appliedLines) > 0 {
-			// Reload again so the appended ADJUSTMENT lines roll into CalculateTotal.
+			// Reload again so the appended ADJUSTMENT lines + the re-baselined
+			// (zeroed) AUTO lines roll into CalculateTotal.
 			reloaded, err = s.repo.FindByID(txCtx, id)
 			if err != nil {
 				return fmt.Errorf("reload bill after correction apply: %w", err)
@@ -149,6 +150,12 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 				overrides := make(OverrideMap, len(req.Overrides))
 				for key, amount := range req.Overrides {
 					overrides[key] = money.ToSatang(amount)
+				}
+				// Re-baseline wins: drop any override for a re-baselined utility so
+				// CalculateTotal uses the zeroed AUTO line (amount 0), not a stale
+				// override. §3.6 — the over-record has no billable consumption.
+				for _, lt := range reBaselined {
+					delete(overrides, string(lt))
 				}
 				reloaded.Overrides = overrides
 			}
@@ -194,9 +201,16 @@ func (s *billingService) applyBaselineCorrections(
 	bill *Bill,
 	inputs []AppliedCorrectionInput,
 	actor *uuid.UUID,
-) ([]BillLineItem, error) {
+) ([]BillLineItem, []LineItemType, error) {
 	if len(inputs) == 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+
+	// The refund uses the bill's OWN contract rate (Q1.5 money authority). Fetch
+	// once — every input on this bill shares the contract.
+	ctr, err := s.contracts.FindByIDSimple(txCtx, bill.ContractID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load contract for recovery rate: %w", err)
 	}
 
 	// Append AFTER the current max sort_order so the ADJUSTMENT rows live
@@ -209,32 +223,36 @@ func (s *billingService) applyBaselineCorrections(
 	}
 
 	created := make([]BillLineItem, 0, len(inputs))
+	var reBaselined []LineItemType
 	for i, in := range inputs {
 		recoveryID, err := uuid.Parse(in.RecoveryReadingID)
 		if err != nil {
-			return nil, respond.ErrBadRequest.WithMessage(
+			return nil, nil, respond.ErrBadRequest.WithMessage(
 				fmt.Sprintf("รหัสการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
 		}
+		utility, err := ParseAdjustmentUtility(in.Utility)
+		if err != nil {
+			return nil, nil, respond.ErrBadRequest.WithMessage(
+				fmt.Sprintf("%s (รายการที่ %d)", err.Error(), i+1))
+		}
+		decision := RecoveryDecision(in.Decision) // DTO oneof-validated
 
 		// Load the recovery meter row to confirm anchor identity +
 		// recover source_billing_month for the tenant-visible Description.
 		recovery, err := s.meters.FindByIDSimple(txCtx, recoveryID)
 		if err != nil {
 			if database.IsNotFound(err) {
-				return nil, respond.ErrNotFound.WithMessage(
+				return nil, nil, respond.ErrNotFound.WithMessage(
 					fmt.Sprintf("ไม่พบรายการปรับฐาน (รายการที่ %d)", i+1))
 			}
-			return nil, fmt.Errorf("load recovery %s: %w", recoveryID, err)
+			return nil, nil, fmt.Errorf("load recovery %s: %w", recoveryID, err)
 		}
 		if recovery.AnchorReason == nil || *recovery.AnchorReason != meterreading.AnchorReasonReadingRecovery {
-			return nil, respond.ErrBadRequest.WithMessage(
+			return nil, nil, respond.ErrBadRequest.WithMessage(
 				fmt.Sprintf("รายการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
 		}
-		// Source-optional (locked 2026-07-01): a nil-source recovery is a
-		// valid, complete correction and remains applicable to a bill. The
-		// source month is used only to enrich the tenant-visible description;
-		// when absent, the description falls back to a source-less variant.
-		// No inference is attempted to recover the missing month.
+		// Source-optional (locked 2026-07-01): the source month only enriches the
+		// tenant-visible description; when absent, a source-less variant is used.
 		sourceMonth := ""
 		if recovery.RecoverySourceReadingID != nil {
 			source, err := s.meters.FindByIDSimple(txCtx, *recovery.RecoverySourceReadingID)
@@ -243,43 +261,66 @@ func (s *billingService) applyBaselineCorrections(
 			}
 		}
 
-		// Race guard: re-check PENDING state inside the TX.
-		applied, err := s.repo.HasNonVoidAdjustmentLineByRecoveryID(txCtx, recoveryID)
+		// Race guard: re-check PENDING state for THIS utility inside the TX.
+		applied, err := s.repo.HasNonVoidAdjustmentLineByRecoveryIDAndUtility(txCtx, recoveryID, utility)
 		if err != nil {
-			return nil, fmt.Errorf("recheck applied state %s: %w", recoveryID, err)
+			return nil, nil, fmt.Errorf("recheck applied state %s/%s: %w", recoveryID, utility, err)
 		}
 		if applied {
-			return nil, respond.ErrConflict.WithMessage(
+			return nil, nil, respond.ErrConflict.WithMessage(
 				fmt.Sprintf("รายการปรับฐานนี้ถูกบันทึกในบิลอื่นไปแล้ว (รายการที่ %d)", i+1))
 		}
 
-		amount := money.ToSatang(in.Amount)
+		// Override magnitude → signed negative satang (partial refund). Required
+		// for OVERRIDE; ResolveCorrection bounds it to (0, recommended].
+		var overrideSatang int64
+		if decision == RecoveryDecisionOverride {
+			if in.OverrideRefundBaht == nil {
+				return nil, nil, respond.ErrBadRequest.WithMessage(
+					fmt.Sprintf("ต้องระบุยอดคืนสำหรับการปรับยอด (รายการที่ %d)", i+1))
+			}
+			overrideSatang = -money.ToSatang(*in.OverrideRefundBaht)
+		}
+		rate := ctr.ElectricityRatePerUnit
+		if utility == AdjustmentUtilityWater {
+			rate = ctr.WaterRatePerUnit
+		}
 
-		// Shared construction+validation (see recovery_adjustment.go). Charge,
-		// refund, and waive all route through the same builder; waive is explicit
-		// via in.Waive (never inferred from a zero amount).
-		line, err := BuildRecoveryAdjustmentLine(billID, RecoveryResolution{
-			RecoveryReadingID: recoveryID,
-			Amount:            amount,
-			Note:              in.AdjustmentNote,
-			Waive:             in.Waive,
-		}, sourceMonth, maxSort+1+i)
+		// Shared per-utility resolution (monthly + settlement). Enforces the
+		// over-record precondition and derives the refund from the rate.
+		resolution, reBaselineType, err := ResolveCorrection(recovery, utility, decision, overrideSatang, in.AdjustmentNote, rate)
 		if err != nil {
-			return nil, respond.ErrBadRequest.WithMessage(err.Error())
+			return nil, nil, respond.ErrBadRequest.WithMessage(
+				fmt.Sprintf("%s (รายการที่ %d)", err.Error(), i+1))
+		}
+
+		line, err := BuildRecoveryAdjustmentLine(billID, resolution, sourceMonth, maxSort+1+i)
+		if err != nil {
+			return nil, nil, respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		if err := s.repo.CreateLineItems(txCtx, []BillLineItem{line}); err != nil {
-			return nil, fmt.Errorf("insert adjustment line: %w", err)
+			return nil, nil, fmt.Errorf("insert adjustment line: %w", err)
 		}
+
+		// Re-baseline (§3.6): the affected AUTO utility line has no billable
+		// consumption this cycle → usage 0, amount 0. The recovery row is
+		// untouched; the refund above is a separate line, not an offset.
+		if err := s.repo.ZeroAutoLineUsage(txCtx, billID, reBaselineType); err != nil {
+			return nil, nil, fmt.Errorf("re-baseline auto line %s: %w", reBaselineType, err)
+		}
+		reBaselined = append(reBaselined, reBaselineType)
+
 		if err := recordAudit(txCtx, s.audit, billID, AuditApplyRecoveryAdjustment, actor,
 			AuditApplyRecoveryAdjustmentPayload{
-				Amount:            amount,
+				Amount:            resolution.Amount,
 				RecoveryReadingID: recoveryID,
+				Utility:           string(utility),
 				ReasonCode:        string(*line.AdjustmentReasonCode),
 				Note:              in.AdjustmentNote,
 			}); err != nil {
-			return nil, fmt.Errorf("emit recovery adjustment audit: %w", err)
+			return nil, nil, fmt.Errorf("emit recovery adjustment audit: %w", err)
 		}
 		created = append(created, line)
 	}
-	return created, nil
+	return created, reBaselined, nil
 }

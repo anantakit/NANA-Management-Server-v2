@@ -66,11 +66,13 @@ func TestBaselineCorrection_CommitBeforeDraft_ApplyAtBillEdit(t *testing.T) {
 		t.Fatalf("seed source meter: %v", err)
 	}
 
+	elecRecorded := 500 // over-record: recorded 500 > physical 380
 	correction, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    &source.ID,
-		ElectricityCurrent: 380,
-		WaterCurrent:       65,
-		AnchorNote:         "B7 — commit before DRAFT exists",
+		SourceReadingID:     &source.ID,
+		ElectricityCurrent:  380,
+		WaterCurrent:        65,
+		ElectricityRecorded: &elecRecorded,
+		AnchorNote:          "B7 — commit before DRAFT exists",
 	})
 	if err != nil {
 		t.Fatalf("CreateBaselineCorrection: %v", err)
@@ -102,7 +104,8 @@ func TestBaselineCorrection_CommitBeforeDraft_ApplyAtBillEdit(t *testing.T) {
 	updated, err := billSvc.UpdateMonthlyDraft(ctx, draft.ID, billing.UpdateMonthlyDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{{
 			RecoveryReadingID: correction.ID.String(),
-			Amount:            -640, // refund 640 baht
+			Utility:           "ELECTRICITY",
+			Decision:          "ACCEPT",
 			AdjustmentNote:    note,
 		}},
 	}, nil)
@@ -131,8 +134,9 @@ func TestBaselineCorrection_CommitBeforeDraft_ApplyAtBillEdit(t *testing.T) {
 		t.Errorf("APPLY_RECOVERY_ADJUSTMENT audit rows = %d, want 1", auditRows)
 	}
 
-	if updated.TotalAmount != -64000 {
-		t.Errorf("bill total after adjustment = %d satang, want -64000", updated.TotalAmount)
+	// Refund derived from rate: (recorded 500 − physical 380) × 800 = -96000.
+	if updated.TotalAmount != -96000 {
+		t.Errorf("bill total after adjustment = %d satang, want -96000", updated.TotalAmount)
 	}
 
 	// Step 5: pending list now empty (applied state derived from FK presence).

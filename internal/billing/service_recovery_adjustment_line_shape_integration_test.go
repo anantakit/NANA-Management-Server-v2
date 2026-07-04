@@ -111,16 +111,18 @@ func TestRecovery_AdjustmentLineContract(t *testing.T) {
 		}
 	}
 
-	// ── A1: positive roundtrip ──
+	// ── A1: refund roundtrip (Q1.5 refund-only + utility) ──
 	reason := AdjustmentReasonMeterRecovery
+	elecUtil := AdjustmentUtilityElectricity
 	adjLine := &BillLineItem{
 		BillID:                      bill.ID,
 		LineType:                    LineItemAdjustment,
 		Source:                      LineItemSourceManual,
 		Description:                 "คืนยอดที่เก็บเกินจากเดือน 2026-04",
-		Amount:                      12345,
+		Amount:                      -12345,
 		SortOrder:                   99,
 		AdjustmentRecoveryReadingID: &recovery.ID,
+		AdjustmentUtility:           &elecUtil,
 		AdjustmentReasonCode:        &reason,
 		AdjustmentNote:              &ctxNote,
 	}
@@ -138,8 +140,11 @@ func TestRecovery_AdjustmentLineContract(t *testing.T) {
 	if got.Source != LineItemSourceManual {
 		t.Errorf("A1: Source = %q, want MANUAL", got.Source)
 	}
-	if got.Amount != 12345 {
-		t.Errorf("A1: Amount = %d, want 12345", got.Amount)
+	if got.Amount != -12345 {
+		t.Errorf("A1: Amount = %d, want -12345", got.Amount)
+	}
+	if got.AdjustmentUtility == nil || *got.AdjustmentUtility != AdjustmentUtilityElectricity {
+		t.Errorf("A1: AdjustmentUtility = %v, want ELECTRICITY", got.AdjustmentUtility)
 	}
 	if got.AdjustmentRecoveryReadingID == nil || *got.AdjustmentRecoveryReadingID != recovery.ID {
 		t.Errorf("A1: AdjustmentRecoveryReadingID = %v, want %v", got.AdjustmentRecoveryReadingID, recovery.ID)
@@ -169,8 +174,9 @@ func TestRecovery_AdjustmentLineContract(t *testing.T) {
 		LineType:                    LineItemAdjustment,
 		Source:                      LineItemSourceAuto, // violation
 		Description:                 "bad: source=AUTO",
-		Amount:                      100,
+		Amount:                      -100,
 		AdjustmentRecoveryReadingID: &recovery.ID,
+		AdjustmentUtility:           &elecUtil,
 		AdjustmentReasonCode:        &reason,
 		AdjustmentNote:              &ctxNote,
 	}
@@ -183,13 +189,29 @@ func TestRecovery_AdjustmentLineContract(t *testing.T) {
 		LineType:                    LineItemAdjustment,
 		Source:                      LineItemSourceManual,
 		Description:                 "bad: fk=null",
-		Amount:                      100,
+		Amount:                      -100,
 		AdjustmentRecoveryReadingID: nil, // violation
+		AdjustmentUtility:           &elecUtil,
 		AdjustmentReasonCode:        &reason,
 		AdjustmentNote:              &ctxNote,
 	}
 	err = db.Create(badFK).Error
 	assertCheckViolation(t, err, "bill_line_items_adjustment_fk_required")
+
+	// ── A6: ADJUSTMENT + utility NULL rejected (Q1.5 utility required) ──
+	badUtil := &BillLineItem{
+		BillID:                      bill.ID,
+		LineType:                    LineItemAdjustment,
+		Source:                      LineItemSourceManual,
+		Description:                 "bad: utility=null",
+		Amount:                      -100,
+		AdjustmentRecoveryReadingID: &recovery.ID,
+		AdjustmentUtility:           nil, // violation
+		AdjustmentReasonCode:        &reason,
+		AdjustmentNote:              &ctxNote,
+	}
+	err = db.Create(badUtil).Error
+	assertCheckViolation(t, err, "bill_line_items_adjustment_utility_required")
 
 	// ── A5: ELECTRICITY + FK populated rejected ──
 	// Non-ADJUSTMENT rows must keep adjustment_recovery_reading_id NULL.

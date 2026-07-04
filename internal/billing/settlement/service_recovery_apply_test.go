@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nana/internal/billing"
+	"nana/internal/contract"
 	"nana/internal/meterreading"
 
 	"github.com/google/uuid"
@@ -24,18 +25,30 @@ func newDraftSettlementWithRecovery(billID, recID uuid.UUID) (*mockBillStore, *S
 		},
 	}
 	bills := &mockBillStore{
-		findByIDFn:              func(_ context.Context, _ uuid.UUID) (*billing.Bill, error) { return bill, nil },
-		findByIDWithRelationsFn: func(_ context.Context, _ uuid.UUID) (*billing.BillWithRelations, error) { return &billing.BillWithRelations{Bill: *bill}, nil },
+		findByIDFn: func(_ context.Context, _ uuid.UUID) (*billing.Bill, error) { return bill, nil },
+		findByIDWithRelationsFn: func(_ context.Context, _ uuid.UUID) (*billing.BillWithRelations, error) {
+			return &billing.BillWithRelations{Bill: *bill}, nil
+		},
 	}
 	ar := meterreading.AnchorReasonReadingRecovery
+	elecRecorded := 1100 // over-record: recorded 1100 > physical 1000
 	meters := &mockMeterReadingSource{
 		findByIDFn: func(_ context.Context, id uuid.UUID) (*meterreading.MeterReading, error) {
-			return &meterreading.MeterReading{ID: id, AnchorReason: &ar}, nil
+			return &meterreading.MeterReading{
+				ID: id, AnchorReason: &ar,
+				ElectricityCurrent: 1000, ElectricityRecorded: &elecRecorded,
+			}, nil
+		},
+	}
+	contracts := &mockContractSource{
+		findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) {
+			// rate 150 satang/unit → refund = (1100-1000) × 150 = -15000 satang.
+			return &contract.Contract{ElectricityRatePerUnit: 150, WaterRatePerUnit: 1800}, nil
 		},
 	}
 	svc := newSvcWithMocks(
 		bills,
-		&mockContractSource{},
+		contracts,
 		meters,
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
@@ -53,13 +66,14 @@ func adjustmentLines(items []billing.BillLineItem) []billing.BillLineItem {
 	return out
 }
 
-func TestUpdateSettlementDraft_AppliesRecoveryCharge(t *testing.T) {
+func TestUpdateSettlementDraft_AppliesRecoveryRefund(t *testing.T) {
 	billID, recID := uuid.New(), uuid.New()
 	bills, svc := newDraftSettlementWithRecovery(billID, recID)
 
+	// ACCEPT the deterministic refund: (1100-1000) × 150 satang = -15000.
 	_, err := svc.UpdateSettlementDraft(context.Background(), billID, UpdateSettlementDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{
-			{RecoveryReadingID: recID.String(), Amount: 150, AdjustmentNote: "เก็บยอดเพิ่มจากการจดมิเตอร์ผิด"},
+			{RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดที่เก็บเกินจากการจดมิเตอร์ผิด"},
 		},
 	}, nil)
 	if err != nil {
@@ -70,8 +84,8 @@ func TestUpdateSettlementDraft_AppliesRecoveryCharge(t *testing.T) {
 	if len(adj) != 1 {
 		t.Fatalf("adjustment lines = %d, want 1", len(adj))
 	}
-	if adj[0].Amount != 15000 {
-		t.Errorf("amount = %d satang, want 15000", adj[0].Amount)
+	if adj[0].Amount != -15000 {
+		t.Errorf("amount = %d satang, want -15000 (refund)", adj[0].Amount)
 	}
 	if adj[0].AdjustmentReasonCode == nil || *adj[0].AdjustmentReasonCode != billing.AdjustmentReasonMeterRecovery {
 		t.Errorf("reason = %v, want METER_RECOVERY", adj[0].AdjustmentReasonCode)
@@ -85,10 +99,10 @@ func TestUpdateSettlementDraft_AppliesRecoveryWaive(t *testing.T) {
 	billID, recID := uuid.New(), uuid.New()
 	bills, svc := newDraftSettlementWithRecovery(billID, recID)
 
-	// Amount is deliberately non-zero to prove Waive forces zero, not inference.
+	// WAIVE on an affected utility → zero-amount METER_RECOVERY_WAIVED line.
 	_, err := svc.UpdateSettlementDraft(context.Background(), billID, UpdateSettlementDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{
-			{RecoveryReadingID: recID.String(), Amount: 999, Waive: true, AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"},
+			{RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "WAIVE", AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"},
 		},
 	}, nil)
 	if err != nil {
@@ -114,7 +128,7 @@ func TestUpdateSettlementDraft_RejectsAlreadyAppliedRecovery(t *testing.T) {
 
 	_, err := svc.UpdateSettlementDraft(context.Background(), billID, UpdateSettlementDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{
-			{RecoveryReadingID: recID.String(), Amount: 150, AdjustmentNote: "เก็บยอดเพิ่มจากการจดมิเตอร์ผิด"},
+			{RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดที่เก็บเกินจากการจดมิเตอร์ผิด"},
 		},
 	}, nil)
 	if err == nil {

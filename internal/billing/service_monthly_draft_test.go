@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"nana/internal/contract"
 	"nana/internal/meterreading"
 	"nana/internal/shared/respond"
 
@@ -175,6 +176,7 @@ func TestUpdateMonthlyDraft_AppliesNilSourceRecovery(t *testing.T) {
 
 	recoveryID := uuid.New()
 	recoveryReason := meterreading.AnchorReasonReadingRecovery
+	elecRecorded := 1100 // over-record: recorded 1100 > physical 1000
 	meterQ := &mockMeterQuerier{
 		findByIDSimpleFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
 			return &meterreading.MeterReading{
@@ -182,15 +184,18 @@ func TestUpdateMonthlyDraft_AppliesNilSourceRecovery(t *testing.T) {
 				AnchorReason:            &recoveryReason,
 				RecoverySourceReadingID: nil, // nil source — the point of this test
 				ElectricityCurrent:      1000,
+				ElectricityRecorded:     &elecRecorded,
 				WaterCurrent:            60,
 			}, nil
 		},
 	}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
+	ctrQ := &mockContractQuerier{contract: &contract.Contract{ElectricityRatePerUnit: 500, WaterRatePerUnit: 1800}}
+	svc := NewBillingService(repo, audit, ctrQ, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
 
+	// ACCEPT the deterministic refund: (1100-1000) × 500 satang = -50000 (-500 baht).
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
 		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recoveryID.String(), Amount: -500, AdjustmentNote: "คืนยอดที่เก็บเกิน — จดมิเตอร์ผิด"},
+			{RecoveryReadingID: recoveryID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดที่เก็บเกิน — จดมิเตอร์ผิด"},
 		},
 	}, nil)
 	if err != nil {
@@ -220,6 +225,16 @@ func TestUpdateMonthlyDraft_AppliesNilSourceRecovery(t *testing.T) {
 	if strings.Contains(adj.Description, "เดือน") {
 		t.Errorf("nil-source description %q must not reference a month", adj.Description)
 	}
+	// Re-baseline (§3.6): the affected ELECTRICITY AUTO line is zeroed.
+	var zeroedElec bool
+	for _, z := range repo.zeroedAutoLines {
+		if z.LineType == LineItemElectricity {
+			zeroedElec = true
+		}
+	}
+	if !zeroedElec {
+		t.Error("affected electricity AUTO line was not re-baselined (ZeroAutoLineUsage not called)")
+	}
 }
 
 // Q1 Recovery Decision — monthly draft resolves a recovery as waive/no-charge
@@ -233,16 +248,22 @@ func TestUpdateMonthlyDraft_AppliesWaive(t *testing.T) {
 
 	recoveryID := uuid.New()
 	recoveryReason := meterreading.AnchorReasonReadingRecovery
+	elecRecorded := 1100 // affected (over-record) so the utility can be resolved
 	meterQ := &mockMeterQuerier{
 		findByIDSimpleFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
-			return &meterreading.MeterReading{ID: recoveryID, AnchorReason: &recoveryReason}, nil
+			return &meterreading.MeterReading{
+				ID: recoveryID, AnchorReason: &recoveryReason,
+				ElectricityCurrent: 1000, ElectricityRecorded: &elecRecorded,
+			}, nil
 		},
 	}
-	svc := NewBillingService(repo, audit, &mockContractQuerier{}, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
+	ctrQ := &mockContractQuerier{contract: &contract.Contract{ElectricityRatePerUnit: 500, WaterRatePerUnit: 1800}}
+	svc := NewBillingService(repo, audit, ctrQ, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
 
+	// WAIVE: affected utility, but operator returns no money → zero-amount line.
 	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
 		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recoveryID.String(), Amount: 999, Waive: true, AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"},
+			{RecoveryReadingID: recoveryID.String(), Utility: "ELECTRICITY", Decision: "WAIVE", AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"},
 		},
 	}, nil)
 	if err != nil {

@@ -31,6 +31,10 @@ type BillingRepository interface {
 	Update(ctx context.Context, bill *Bill) error
 	DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source LineItemSource) error
 	CreateLineItems(ctx context.Context, items []BillLineItem) error
+	// ZeroAutoLineUsage re-baselines an AUTO utility line to no billable
+	// consumption (quantity + amount → 0) for an over-record correction (Q1.5
+	// §3.6). Scoped to AUTO + line_type; the recovery meter row is untouched.
+	ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType LineItemType) error
 	SumPaidByContractSince(ctx context.Context, contractID uuid.UUID, sinceMonth string) (int64, error)
 	HasPaidAdvanceRentForMonth(ctx context.Context, contractID uuid.UUID, moveOutMonth string) (bool, error)
 	FindUnpaidMonthlyByContractID(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
@@ -677,6 +681,17 @@ func (r *billingRepository) DeleteLineItemsBySource(ctx context.Context, billID 
 	return database.DB(ctx, r.db).
 		Where("bill_id = ? AND source = ?", billID, source).
 		Delete(&BillLineItem{}).Error
+}
+
+// ZeroAutoLineUsage re-baselines the AUTO line of the given type on a bill to
+// no billable consumption: quantity = 0 and amount = 0 (Q1.5 over-record §3.6).
+// A monthly/settlement bill has at most one AUTO line per utility type. The
+// recovery meter row is never touched — this mutates only the bill's AUTO line.
+func (r *billingRepository) ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType LineItemType) error {
+	return database.DB(ctx, r.db).
+		Model(&BillLineItem{}).
+		Where("bill_id = ? AND line_type = ? AND source = ?", billID, lineType, LineItemSourceAuto).
+		Updates(map[string]any{"quantity": 0, "amount": 0}).Error
 }
 
 // CreateLineItems batch-inserts line items.

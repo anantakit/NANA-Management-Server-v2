@@ -102,11 +102,13 @@ func TestReconcile_PendingBaselineCorrectionsCount_FlipsOnApply(t *testing.T) {
 	}
 
 	// Step 2 — commit baseline correction (Phase 7 meter-only).
+	elecRecorded := 1400 // over-record: recorded 1400 > physical 1300
 	correction, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    &source.ID,
-		ElectricityCurrent: 1300,
-		WaterCurrent:       125,
-		AnchorNote:         "Item 10 anchor — recon signal flip",
+		SourceReadingID:     &source.ID,
+		ElectricityCurrent:  1300,
+		WaterCurrent:        125,
+		ElectricityRecorded: &elecRecorded,
+		AnchorNote:          "Item 10 anchor — recon signal flip",
 	})
 	if err != nil {
 		t.Fatalf("CreateBaselineCorrection: %v", err)
@@ -140,7 +142,8 @@ func TestReconcile_PendingBaselineCorrectionsCount_FlipsOnApply(t *testing.T) {
 	if _, err := billSvc.UpdateMonthlyDraft(ctx, draft.ID, billing.UpdateMonthlyDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{{
 			RecoveryReadingID: correction.ID.String(),
-			Amount:            -81000, // -810 baht refund
+			Utility:           "ELECTRICITY",
+			Decision:          "ACCEPT",
 			AdjustmentNote:    "Item 10 anchor — apply at bill edit",
 		}},
 	}, nil); err != nil {

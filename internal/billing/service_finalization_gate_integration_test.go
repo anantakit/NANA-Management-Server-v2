@@ -36,13 +36,15 @@ func TestHasPendingRecoveryByContractID_MultiRow(t *testing.T) {
 	seedRecovery := func(month string) *meterreading.MeterReading {
 		reason := meterreading.AnchorReasonReadingRecovery
 		note := "จดมิเตอร์ผิด " + month
+		elecRecorded := 200 // over-record: recorded 200 > physical 100 (elec affected)
 		r := &meterreading.MeterReading{
 			RoomID:              rm.ID,
 			ReadingType:         meterreading.ReadingTypeMonthly,
 			BillingMonth:        &month,
 			ElectricityPrevious: 100, ElectricityCurrent: 100, // prev=curr (recovery invariant, migration 00040)
 			WaterPrevious: 50, WaterCurrent: 50,
-			AnchorReason: &reason, AnchorNote: &note,
+			ElectricityRecorded: &elecRecorded,
+			AnchorReason:        &reason, AnchorNote: &note,
 		}
 		if err := db.Create(r).Error; err != nil {
 			t.Fatalf("seed recovery %s: %v", month, err)
@@ -56,12 +58,14 @@ func TestHasPendingRecoveryByContractID_MultiRow(t *testing.T) {
 		}
 		return b
 	}
+	elecUtil := AdjustmentUtilityElectricity
 	resolve := func(billID, recID uuid.UUID, amount int64, reason AdjustmentReasonCode) {
 		note := "resolved 10-char note"
 		li := &BillLineItem{
 			BillID: billID, LineType: LineItemAdjustment, Source: LineItemSourceManual,
 			Description: "adj", Amount: amount,
-			AdjustmentRecoveryReadingID: &recID, AdjustmentReasonCode: &reason, AdjustmentNote: &note,
+			AdjustmentRecoveryReadingID: &recID, AdjustmentUtility: &elecUtil,
+			AdjustmentReasonCode: &reason, AdjustmentNote: &note,
 		}
 		if err := db.Create(li).Error; err != nil {
 			t.Fatalf("resolve recovery: %v", err)
@@ -75,29 +79,29 @@ func TestHasPendingRecoveryByContractID_MultiRow(t *testing.T) {
 	draftBill := seedBill(BillStatusDraft)
 	voidBill := seedBill(BillStatusVoid)
 
-	// recA resolved (charge on a non-VOID bill); recC "resolved" only on a VOID
+	// recA resolved (refund on a non-VOID bill); recC "resolved" only on a VOID
 	// bill (must NOT count); recB untouched → pending.
-	resolve(draftBill.ID, recA.ID, 15000, AdjustmentReasonMeterRecovery)
-	resolve(voidBill.ID, recC.ID, 15000, AdjustmentReasonMeterRecovery)
+	resolve(draftBill.ID, recA.ID, -15000, AdjustmentReasonMeterRecovery)
+	resolve(voidBill.ID, recC.ID, -15000, AdjustmentReasonMeterRecovery)
 
 	// Multi-row: recB pending + recC void-only → still pending overall → block.
-	pending, err := repo.HasPendingRecoveryByContractID(ctx, c.ID)
+	pending, err := repo.HasUnresolvedOverRecordByContractID(ctx, c.ID)
 	if err != nil {
-		t.Fatalf("HasPendingRecoveryByContractID: %v", err)
+		t.Fatalf("HasUnresolvedOverRecordByContractID: %v", err)
 	}
 	if !pending {
 		t.Fatal("expected pending=true (recB pending, recC only resolved on a VOID bill)")
 	}
 
 	// Resolve recC on a non-VOID bill and recB via WAIVE (zero-amount line).
-	resolve(draftBill.ID, recC.ID, 15000, AdjustmentReasonMeterRecovery)
+	resolve(draftBill.ID, recC.ID, -15000, AdjustmentReasonMeterRecovery)
 	resolve(draftBill.ID, recB.ID, 0, AdjustmentReasonMeterRecoveryWaived)
 
-	pending, err = repo.HasPendingRecoveryByContractID(ctx, c.ID)
+	pending, err = repo.HasUnresolvedOverRecordByContractID(ctx, c.ID)
 	if err != nil {
-		t.Fatalf("HasPendingRecoveryByContractID (after resolve): %v", err)
+		t.Fatalf("HasUnresolvedOverRecordByContractID (after resolve): %v", err)
 	}
 	if pending {
-		t.Fatal("expected pending=false after all recoveries resolved (charge + charge + waive)")
+		t.Fatal("expected pending=false after all over-records resolved (refund + refund + waive)")
 	}
 }

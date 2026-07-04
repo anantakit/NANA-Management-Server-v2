@@ -48,6 +48,10 @@ type mockBillingRepo struct {
 	// Trackers for line-item mutation tests (UpdateMonthlyDraft / UpdateSettlementDraft).
 	deletedSourcesByBillID map[uuid.UUID][]LineItemSource
 	createdLineItems       []BillLineItem
+	zeroedAutoLines        []struct {
+		BillID   uuid.UUID
+		LineType LineItemType
+	}
 }
 
 // defaultMockApartmentID is returned by FindApartmentIDByRoomID when neither
@@ -201,6 +205,13 @@ func (m *mockBillingRepo) CreateLineItems(_ context.Context, items []BillLineIte
 	m.createdLineItems = append(m.createdLineItems, items...)
 	return nil
 }
+func (m *mockBillingRepo) ZeroAutoLineUsage(_ context.Context, billID uuid.UUID, lineType LineItemType) error {
+	m.zeroedAutoLines = append(m.zeroedAutoLines, struct {
+		BillID   uuid.UUID
+		LineType LineItemType
+	}{billID, lineType})
+	return nil
+}
 
 // LockBillForCorrection mirrors FindByID semantics so correction tests can
 // inject the "old bill" via findByIDFn (or createdBill fallback). In real
@@ -243,7 +254,10 @@ func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(_ conte
 	return false, nil
 }
 
-func (m *mockBillingRepo) HasUnresolvedOverRecordByContractID(_ context.Context, _ uuid.UUID) (bool, error) {
+func (m *mockBillingRepo) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	if m.hasPendingRecoveryFn != nil {
+		return m.hasPendingRecoveryFn(ctx, contractID)
+	}
 	return false, nil
 }
 

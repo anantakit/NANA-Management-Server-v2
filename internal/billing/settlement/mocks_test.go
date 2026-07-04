@@ -27,28 +27,32 @@ import (
 // --- BillStore ---
 
 type mockBillStore struct {
-	findByIDFn                    func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
-	findByIDWithRelationsFn       func(ctx context.Context, id uuid.UUID) (*billing.BillWithRelations, error)
-	findByContractAndMonthFn      func(ctx context.Context, contractID uuid.UUID, month string, bt billing.BillType) (*billing.Bill, error)
+	findByIDFn                     func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
+	findByIDWithRelationsFn        func(ctx context.Context, id uuid.UUID) (*billing.BillWithRelations, error)
+	findByContractAndMonthFn       func(ctx context.Context, contractID uuid.UUID, month string, bt billing.BillType) (*billing.Bill, error)
 	findNonVoidedByContractMonthFn func(ctx context.Context, contractID uuid.UUID, month string) ([]billing.Bill, error)
-	findUnpaidMonthlyFn           func(ctx context.Context, contractID uuid.UUID) ([]billing.Bill, error)
-	findAbsorbedFn                func(ctx context.Context, contractID uuid.UUID) ([]billing.Bill, error)
-	hasPaidAdvanceRentFn          func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
-	apartmentID                   uuid.UUID
-	findApartmentIDNotFound       bool
-	createFn                      func(ctx context.Context, bill *billing.Bill) error
-	updateFn                      func(ctx context.Context, bill *billing.Bill) error
-	lockBillForCorrectionFn       func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
-	hasNonVoidAdjustmentFn        func(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
-	hasPendingRecoveryFn          func(ctx context.Context, contractID uuid.UUID) (bool, error)
+	findUnpaidMonthlyFn            func(ctx context.Context, contractID uuid.UUID) ([]billing.Bill, error)
+	findAbsorbedFn                 func(ctx context.Context, contractID uuid.UUID) ([]billing.Bill, error)
+	hasPaidAdvanceRentFn           func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
+	apartmentID                    uuid.UUID
+	findApartmentIDNotFound        bool
+	createFn                       func(ctx context.Context, bill *billing.Bill) error
+	updateFn                       func(ctx context.Context, bill *billing.Bill) error
+	lockBillForCorrectionFn        func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
+	hasNonVoidAdjustmentFn         func(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
+	hasPendingRecoveryFn           func(ctx context.Context, contractID uuid.UUID) (bool, error)
 
 	updateErrByBillID map[uuid.UUID]error
 
-	createdBill      *billing.Bill
-	createdBills     []*billing.Bill
-	updatedBills     []*billing.Bill
+	createdBill            *billing.Bill
+	createdBills           []*billing.Bill
+	updatedBills           []*billing.Bill
 	deletedSourcesByBillID map[uuid.UUID][]billing.LineItemSource
-	createdLineItems []billing.BillLineItem
+	createdLineItems       []billing.BillLineItem
+	zeroedAutoLines        []struct {
+		BillID   uuid.UUID
+		LineType billing.LineItemType
+	}
 }
 
 var defaultMockApartmentID = uuid.MustParse("00000000-0000-0000-0000-000000000aaa")
@@ -190,6 +194,28 @@ func (m *mockBillStore) HasPendingRecoveryByContractID(ctx context.Context, cont
 	return false, nil
 }
 
+func (m *mockBillStore) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, _ billing.AdjustmentUtility) (bool, error) {
+	if m.hasNonVoidAdjustmentFn != nil {
+		return m.hasNonVoidAdjustmentFn(ctx, recoveryReadingID)
+	}
+	return false, nil
+}
+
+func (m *mockBillStore) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	if m.hasPendingRecoveryFn != nil {
+		return m.hasPendingRecoveryFn(ctx, contractID)
+	}
+	return false, nil
+}
+
+func (m *mockBillStore) ZeroAutoLineUsage(_ context.Context, billID uuid.UUID, lineType billing.LineItemType) error {
+	m.zeroedAutoLines = append(m.zeroedAutoLines, struct {
+		BillID   uuid.UUID
+		LineType billing.LineItemType
+	}{billID, lineType})
+	return nil
+}
+
 // --- AuditStore ---
 
 type mockAuditStore struct {
@@ -267,8 +293,8 @@ func (m *mockBillingConfigSource) FindByApartmentID(ctx context.Context, apartme
 }
 
 type mockMoveOutSource struct {
-	notice      *moveout.MoveOutNotice
-	findErr     error
+	notice       *moveout.MoveOutNotice
+	findErr      error
 	findActiveFn func(_ context.Context, _ uuid.UUID) (*moveout.MoveOutNotice, error)
 }
 

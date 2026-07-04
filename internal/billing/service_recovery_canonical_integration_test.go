@@ -1,16 +1,16 @@
 //go:build integration
 
-// service_recovery_canonical_integration_test.go — P5 Layer A (monthly + both).
-// The canonical Reading-Recovery regression: RR01-RR04 (monthly destination),
-// RR07 (multi-recovery partial resolve), RR09 (source-less). Settlement cases
-// RR05/RR06 live in billing/settlement (that package owns the move-out harness).
-// RR08 (void → re-pending) is already locked by
-// meterreading/service_baseline_correction_bill_void_returns_to_pending.
+// service_recovery_canonical_integration_test.go — P5 Layer A (monthly).
+// Canonical Reading-Recovery regression, Q1.5 over-record model. Monthly cases:
+// RR01 (pending blocks), RR02 refund-accept / RR03 refund-override / RR04 waive,
+// RR07 (multi-recovery partial), RR08 (re-baseline usage→0), RR09 (source-less),
+// RR10 (electricity-only, water bills normally), RR11 (deterministic override
+// bound), RR12 (non-over-record does not engage), and the 3 finalize-gate cases.
+// Settlement RR05/RR06 live in billing/settlement.
 //
-// These lock BUSINESS INVARIANTS against real Postgres, not UI behavior:
-// money sign (+/−/0), METER_RECOVERY_WAIVED semantics, the finalize gate
-// (pending blocks / resolved passes), and source-optional resolve — so the
-// doctrine survives any future UI rewrite.
+// These lock BUSINESS INVARIANTS against real Postgres: refund-only sign,
+// per-utility resolution, re-baseline, the per-(recovery,utility) finalize gate,
+// and the over-record precondition — so the doctrine survives any UI rewrite.
 package billing
 
 import (
@@ -19,7 +19,6 @@ import (
 
 	"nana/internal/meterreading"
 	"nana/internal/shared/database"
-	"nana/internal/shared/money"
 	"nana/internal/testutil/fixtures"
 	"nana/internal/testutil/testdb"
 
@@ -28,15 +27,20 @@ import (
 )
 
 type recoveryMonthlyEnv struct {
-	db     *gorm.DB
-	svc    BillingService
-	ctx    context.Context
-	billID uuid.UUID
-	roomID uuid.UUID
+	db        *gorm.DB
+	svc       BillingService
+	ctx       context.Context
+	billID    uuid.UUID
+	roomID    uuid.UUID
+	elecRate  int64
+	waterRate int64
 }
 
+func intPtr(v int) *int { return &v }
+
 // setupRecoveryMonthly wires a real billing service + one DRAFT MONTHLY bill
-// (with an AUTO line so it can finalize) for the given contract's room.
+// with AUTO electricity + water lines (so re-baseline has something to zero and
+// the bill can finalize).
 func setupRecoveryMonthly(t *testing.T) recoveryMonthlyEnv {
 	t.Helper()
 	db := testdb.Open(t)
@@ -61,18 +65,25 @@ func setupRecoveryMonthly(t *testing.T) recoveryMonthlyEnv {
 	if err := db.Create(bill).Error; err != nil {
 		t.Fatalf("seed draft bill: %v", err)
 	}
-	if err := db.Create(&BillLineItem{
-		BillID: bill.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 96000, SortOrder: 1,
-	}).Error; err != nil {
-		t.Fatalf("seed auto line: %v", err)
+	for _, li := range []BillLineItem{
+		{BillID: bill.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Description: "ค่าไฟฟ้า", Quantity: 120, UnitPrice: c.ElectricityRatePerUnit, Amount: 120 * c.ElectricityRatePerUnit, SortOrder: 1},
+		{BillID: bill.ID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ", Quantity: 20, UnitPrice: c.WaterRatePerUnit, Amount: 20 * c.WaterRatePerUnit, SortOrder: 2},
+	} {
+		if err := db.Create(&li).Error; err != nil {
+			t.Fatalf("seed auto line: %v", err)
+		}
 	}
 
-	return recoveryMonthlyEnv{db: db, svc: svc, ctx: context.Background(), billID: bill.ID, roomID: rm.ID}
+	return recoveryMonthlyEnv{
+		db: db, svc: svc, ctx: context.Background(), billID: bill.ID, roomID: rm.ID,
+		elecRate: c.ElectricityRatePerUnit, waterRate: c.WaterRatePerUnit,
+	}
 }
 
-// seedRecovery inserts a READING_RECOVERY meter row for the env's room.
-// withSource=false exercises the source-optional path (RR09).
-func (e recoveryMonthlyEnv) seedRecovery(t *testing.T, month string, withSource bool) uuid.UUID {
+// seedRecovery inserts a READING_RECOVERY meter row. prev=curr=physical (Lock A);
+// recorded (nullable per utility) is the previously-recorded wrong value. Pass
+// nil to leave a utility uncorrected. withSource exercises the source path.
+func (e recoveryMonthlyEnv) seedRecovery(t *testing.T, month string, withSource bool, elecRecorded, waterRecorded *int) uuid.UUID {
 	t.Helper()
 	var sourceID *uuid.UUID
 	if withSource {
@@ -90,7 +101,8 @@ func (e recoveryMonthlyEnv) seedRecovery(t *testing.T, month string, withSource 
 	note := "จดมิเตอร์ผิด " + month
 	rec := &meterreading.MeterReading{
 		RoomID: e.roomID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &month,
-		ElectricityPrevious: 180, ElectricityCurrent: 180, WaterPrevious: 60, WaterCurrent: 60, // prev=curr (migration 00040)
+		ElectricityPrevious: 180, ElectricityCurrent: 180, WaterPrevious: 60, WaterCurrent: 60, // prev=curr (physical)
+		ElectricityRecorded: elecRecorded, WaterRecorded: waterRecorded,
 		AnchorReason: &reason, AnchorNote: &note, RecoverySourceReadingID: sourceID,
 	}
 	if err := e.db.Create(rec).Error; err != nil {
@@ -108,6 +120,15 @@ func (e recoveryMonthlyEnv) adjustmentLines(t *testing.T) []BillLineItem {
 	return lines
 }
 
+func (e recoveryMonthlyEnv) autoLine(t *testing.T, lt LineItemType) BillLineItem {
+	t.Helper()
+	var li BillLineItem
+	if err := e.db.First(&li, "bill_id = ? AND line_type = ? AND source = ?", e.billID, lt, LineItemSourceAuto).Error; err != nil {
+		t.Fatalf("load auto %s line: %v", lt, err)
+	}
+	return li
+}
+
 func (e recoveryMonthlyEnv) billStatus(t *testing.T) BillStatus {
 	t.Helper()
 	var b Bill
@@ -117,133 +138,259 @@ func (e recoveryMonthlyEnv) billStatus(t *testing.T) BillStatus {
 	return b.Status
 }
 
-// RR01 — monthly recovery pending blocks finalize.
+func (e recoveryMonthlyEnv) resolve(t *testing.T, inputs ...AppliedCorrectionInput) error {
+	t.Helper()
+	_, err := e.svc.UpdateMonthlyDraft(e.ctx, e.billID, UpdateMonthlyDraftRequest{AppliedCorrections: inputs}, nil)
+	return err
+}
+
+// RR01 — monthly over-record pending blocks finalize.
 func TestRR01_MonthlyPendingBlocksFinalize(t *testing.T) {
 	e := setupRecoveryMonthly(t)
-	e.seedRecovery(t, "2026-04", true)
+	e.seedRecovery(t, "2026-04", true, intPtr(280), nil) // elec over-record
 
 	if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err == nil {
-		t.Fatal("expected finalize blocked by pending recovery")
+		t.Fatal("expected finalize blocked by pending over-record")
 	}
 	if got := e.billStatus(t); got != BillStatusDraft {
-		t.Fatalf("bill status = %s, want DRAFT (finalize must not have happened)", got)
+		t.Fatalf("bill status = %s, want DRAFT", got)
 	}
 }
 
-// RR02/RR03/RR04 — resolve charge/refund/waive → correct ADJUSTMENT → finalize passes.
+// RR02/RR03/RR04 — resolve refund-accept / refund-override / waive → correct
+// ADJUSTMENT → finalize passes. Charge is gone (refund-only).
 func TestRR02_03_04_MonthlyResolveThenFinalize(t *testing.T) {
-	cases := []struct {
-		name       string
-		input      AppliedCorrectionInput
-		wantAmount int64
-		wantReason AdjustmentReasonCode
-	}{
-		{"RR02 charge", AppliedCorrectionInput{Amount: 500, AdjustmentNote: "เก็บยอดเพิ่มจากมิเตอร์ผิด"}, 50000, AdjustmentReasonMeterRecovery},
-		{"RR03 refund", AppliedCorrectionInput{Amount: -500, AdjustmentNote: "คืนยอดเก็บเกินจากมิเตอร์ผิด"}, -50000, AdjustmentReasonMeterRecovery},
-		{"RR04 waive", AppliedCorrectionInput{Waive: true, AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"}, 0, AdjustmentReasonMeterRecoveryWaived},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := setupRecoveryMonthly(t)
-			recID := e.seedRecovery(t, "2026-04", true)
-			in := tc.input
-			in.RecoveryReadingID = recID.String()
+	t.Run("RR02 refund-accept", func(t *testing.T) {
+		e := setupRecoveryMonthly(t)
+		recID := e.seedRecovery(t, "2026-04", true, intPtr(280), nil) // diff 100
+		wantAmount := -(100 * e.elecRate)
+		if err := e.resolve(t, AppliedCorrectionInput{
+			RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT",
+			AdjustmentNote: "คืนยอดที่เก็บเกินจากมิเตอร์ผิด",
+		}); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		adj := e.adjustmentLines(t)
+		if len(adj) != 1 || adj[0].Amount != wantAmount {
+			t.Fatalf("adjustment = %+v, want one line amount %d", adj, wantAmount)
+		}
+		if *adj[0].AdjustmentReasonCode != AdjustmentReasonMeterRecovery || *adj[0].AdjustmentUtility != AdjustmentUtilityElectricity {
+			t.Errorf("reason/utility = %v/%v", *adj[0].AdjustmentReasonCode, *adj[0].AdjustmentUtility)
+		}
+		mustFinalize(t, e)
+	})
 
-			if _, err := e.svc.UpdateMonthlyDraft(e.ctx, e.billID, UpdateMonthlyDraftRequest{
-				AppliedCorrections: []AppliedCorrectionInput{in},
-			}, nil); err != nil {
-				t.Fatalf("resolve: %v", err)
-			}
+	t.Run("RR03 refund-override (partial)", func(t *testing.T) {
+		e := setupRecoveryMonthly(t)
+		recID := e.seedRecovery(t, "2026-04", true, intPtr(680), nil) // diff 500 → recommended big
+		override := 1.0                                               // 1 baht = 100 satang, well under recommended
+		if err := e.resolve(t, AppliedCorrectionInput{
+			RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "OVERRIDE",
+			OverrideRefundBaht: &override, AdjustmentNote: "คืนบางส่วนตามที่ตกลง",
+		}); err != nil {
+			t.Fatalf("resolve override: %v", err)
+		}
+		adj := e.adjustmentLines(t)
+		if len(adj) != 1 || adj[0].Amount != -100 {
+			t.Fatalf("override adjustment = %+v, want amount -100", adj)
+		}
+		mustFinalize(t, e)
+	})
 
-			adj := e.adjustmentLines(t)
-			if len(adj) != 1 {
-				t.Fatalf("adjustment lines = %d, want 1", len(adj))
-			}
-			if adj[0].Amount != tc.wantAmount {
-				t.Errorf("amount = %d, want %d", adj[0].Amount, tc.wantAmount)
-			}
-			if adj[0].AdjustmentReasonCode == nil || *adj[0].AdjustmentReasonCode != tc.wantReason {
-				t.Errorf("reason = %v, want %v", adj[0].AdjustmentReasonCode, tc.wantReason)
-			}
-
-			// Resolved → finalize passes.
-			if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err != nil {
-				t.Fatalf("finalize after resolve: %v", err)
-			}
-			if got := e.billStatus(t); got != BillStatusFinalized {
-				t.Fatalf("bill status = %s, want FINALIZED", got)
-			}
-		})
-	}
+	t.Run("RR04 waive", func(t *testing.T) {
+		e := setupRecoveryMonthly(t)
+		recID := e.seedRecovery(t, "2026-04", true, intPtr(280), nil)
+		if err := e.resolve(t, AppliedCorrectionInput{
+			RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "WAIVE",
+			AdjustmentNote: "ตรวจแล้วไม่คืนเงิน",
+		}); err != nil {
+			t.Fatalf("resolve waive: %v", err)
+		}
+		adj := e.adjustmentLines(t)
+		if len(adj) != 1 || adj[0].Amount != 0 || *adj[0].AdjustmentReasonCode != AdjustmentReasonMeterRecoveryWaived {
+			t.Fatalf("waive adjustment = %+v, want zero METER_RECOVERY_WAIVED", adj)
+		}
+		mustFinalize(t, e)
+	})
 }
 
 // RR07 — multiple recoveries: resolve one, still blocked; resolve all, passes.
 func TestRR07_MultiRecoveryPartialResolveStillBlocks(t *testing.T) {
 	e := setupRecoveryMonthly(t)
-	// Source-less to keep two recoveries independent (sources would collide on
-	// the room+month unique index); this case tests the multi-recovery gate.
-	recA := e.seedRecovery(t, "2026-03", false)
-	recB := e.seedRecovery(t, "2026-04", false)
+	recA := e.seedRecovery(t, "2026-03", false, intPtr(280), nil)
+	recB := e.seedRecovery(t, "2026-04", false, intPtr(280), nil)
 
-	// Partial resolve (only recA in this save) → recB stays pending → blocked.
-	// UpdateMonthlyDraft is a replace-per-save op, so the UI resolves every
-	// pending recovery in one save; here we prove a save that omits recB blocks.
-	if _, err := e.svc.UpdateMonthlyDraft(e.ctx, e.billID, UpdateMonthlyDraftRequest{
-		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recA.String(), Amount: 300, AdjustmentNote: "เก็บเพิ่ม recA จากมิเตอร์ผิด"},
-		},
-	}, nil); err != nil {
+	if err := e.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: recA.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนเงิน recA",
+	}); err != nil {
 		t.Fatalf("resolve recA: %v", err)
 	}
 	if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err == nil {
 		t.Fatal("expected still blocked with recB unresolved")
 	}
 
-	// One save resolving BOTH → all resolved → finalize passes.
-	if _, err := e.svc.UpdateMonthlyDraft(e.ctx, e.billID, UpdateMonthlyDraftRequest{
-		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recA.String(), Amount: 300, AdjustmentNote: "เก็บเพิ่ม recA จากมิเตอร์ผิด"},
-			{RecoveryReadingID: recB.String(), Waive: true, AdjustmentNote: "recB ไม่คิดเงินเพิ่ม"},
-		},
-	}, nil); err != nil {
+	if err := e.resolve(t,
+		AppliedCorrectionInput{RecoveryReadingID: recA.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนเงิน recA"},
+		AppliedCorrectionInput{RecoveryReadingID: recB.String(), Utility: "ELECTRICITY", Decision: "WAIVE", AdjustmentNote: "recB ไม่คืนเงิน"},
+	); err != nil {
 		t.Fatalf("resolve both: %v", err)
 	}
-	if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err != nil {
-		t.Fatalf("finalize after resolving all: %v", err)
-	}
-	if got := e.billStatus(t); got != BillStatusFinalized {
-		t.Fatalf("bill status = %s, want FINALIZED", got)
-	}
+	mustFinalize(t, e)
 }
 
-// RR09 — source-less recovery resolves without breaking provenance.
+// RR08 — re-baseline: resolving an affected utility zeroes its AUTO line
+// (usage 0, amount 0); the recovery row is untouched; the refund is a separate
+// line. (Next-cycle previous=physical is inherent in the meter chain and locked
+// by meterreading's next_month_inheritance test.)
+func TestRR08_ReBaselineZeroesAffectedAutoLine(t *testing.T) {
+	e := setupRecoveryMonthly(t)
+	recID := e.seedRecovery(t, "2026-04", false, intPtr(280), nil) // elec affected, water not
+
+	if err := e.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดที่เก็บเกิน",
+	}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	elec := e.autoLine(t, LineItemElectricity)
+	if elec.Amount != 0 || elec.Quantity != 0 {
+		t.Errorf("electricity AUTO line = amount %d / qty %d, want 0/0 (re-baselined)", elec.Amount, elec.Quantity)
+	}
+	// Water is untouched — different utility, not affected.
+	if water := e.autoLine(t, LineItemWater); water.Amount != 20*e.waterRate {
+		t.Errorf("water AUTO line = %d, want unchanged %d", water.Amount, 20*e.waterRate)
+	}
+	// Recovery row is untouched (still prev=curr=physical).
+	var rec meterreading.MeterReading
+	if err := e.db.First(&rec, "id = ?", recID).Error; err != nil {
+		t.Fatalf("reload recovery: %v", err)
+	}
+	if rec.ElectricityCurrent != 180 || rec.ElectricityPrevious != 180 {
+		t.Errorf("recovery row mutated: prev/curr = %d/%d, want 180/180", rec.ElectricityPrevious, rec.ElectricityCurrent)
+	}
+	mustFinalize(t, e)
+}
+
+// RR09 — source-less over-record resolves; FK provenance intact.
 func TestRR09_SourceLessRecoveryResolves(t *testing.T) {
 	e := setupRecoveryMonthly(t)
-	recID := e.seedRecovery(t, "2026-04", false) // no source
+	recID := e.seedRecovery(t, "2026-04", false, intPtr(280), nil)
 
-	if _, err := e.svc.UpdateMonthlyDraft(e.ctx, e.billID, UpdateMonthlyDraftRequest{
-		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recID.String(), Amount: -200, AdjustmentNote: "คืนยอดเก็บเกิน (ไม่ทราบต้นทาง)"},
-		},
-	}, nil); err != nil {
+	if err := e.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอด (ไม่ทราบต้นทาง)",
+	}); err != nil {
 		t.Fatalf("resolve source-less: %v", err)
 	}
 	adj := e.adjustmentLines(t)
-	if len(adj) != 1 || adj[0].Amount != -20000 {
-		t.Fatalf("source-less adjustment = %+v, want one line amount -20000", adj)
+	if len(adj) != 1 || adj[0].Amount != -(100*e.elecRate) {
+		t.Fatalf("source-less adjustment = %+v", adj)
 	}
-	// FK provenance still points at the recovery row.
 	if adj[0].AdjustmentRecoveryReadingID == nil || *adj[0].AdjustmentRecoveryReadingID != recID {
 		t.Errorf("recovery FK = %v, want %v", adj[0].AdjustmentRecoveryReadingID, recID)
 	}
-	if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err != nil {
-		t.Fatalf("finalize source-less: %v", err)
+	mustFinalize(t, e)
+}
+
+// RR10 — electricity-only recovery: water is untouched and bills normally; only
+// electricity is resolvable, and only the electricity AUTO line re-baselines.
+func TestRR10_ElectricityOnlyWaterBillsNormally(t *testing.T) {
+	e := setupRecoveryMonthly(t)
+	recID := e.seedRecovery(t, "2026-04", false, intPtr(280), nil) // water recorded nil
+
+	// Resolving WATER (not affected) is rejected.
+	if err := e.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: recID.String(), Utility: "WATER", Decision: "ACCEPT", AdjustmentNote: "ไม่ควรทำได้ (น้ำไม่ over-record)",
+	}); err == nil {
+		t.Fatal("expected resolving unaffected water to be rejected")
+	}
+
+	// Resolving electricity succeeds; water AUTO line stays, one adjustment only.
+	if err := e.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดไฟฟ้า",
+	}); err != nil {
+		t.Fatalf("resolve elec: %v", err)
+	}
+	if adj := e.adjustmentLines(t); len(adj) != 1 || *adj[0].AdjustmentUtility != AdjustmentUtilityElectricity {
+		t.Fatalf("want exactly one ELECTRICITY adjustment, got %+v", adj)
+	}
+	if water := e.autoLine(t, LineItemWater); water.Amount != 20*e.waterRate {
+		t.Errorf("water billed abnormally: %d, want %d", water.Amount, 20*e.waterRate)
+	}
+	mustFinalize(t, e)
+}
+
+// RR11 — deterministic bound: an override larger than the recommended refund
+// (or a charge) is rejected; the recommendation is the ceiling.
+func TestRR11_OverrideCannotExceedRecommended(t *testing.T) {
+	e := setupRecoveryMonthly(t)
+	recID := e.seedRecovery(t, "2026-04", false, intPtr(280), nil) // diff 100 → recommended 100*rate satang
+	tooBig := float64(100*e.elecRate)/100 + 1                      // 1 baht over the recommended magnitude
+
+	if err := e.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "OVERRIDE",
+		OverrideRefundBaht: &tooBig, AdjustmentNote: "พยายามคืนเกินยอดแนะนำ",
+	}); err == nil {
+		t.Fatal("expected over-refund override to be rejected")
+	}
+	if adj := e.adjustmentLines(t); len(adj) != 0 {
+		t.Errorf("no adjustment should be created on rejected override, got %d", len(adj))
 	}
 }
 
-// money.ToSatang guard — keeps the ×100 assumption honest for the amounts above.
-func TestRecoveryAmountSatangAssumption(t *testing.T) {
-	if money.ToSatang(500) != 50000 || money.ToSatang(-500) != -50000 {
-		t.Fatal("baht→satang conversion changed; canonical expected amounts need updating")
+// RR12 — a non-over-record recovery (recorded absent / <= physical) does not
+// engage: it never blocks finalize, and resolving it is rejected.
+func TestRR12_NonOverRecordDoesNotEngage(t *testing.T) {
+	e := setupRecoveryMonthly(t)
+	e.seedRecovery(t, "2026-04", false, nil, nil) // no recorded → not affected
+
+	// Not affected → gate does not block → finalize passes without resolution.
+	mustFinalize(t, e)
+
+	// And attempting to resolve it is rejected (nothing to refund).
+	e2 := setupRecoveryMonthly(t)
+	rec2 := e2.seedRecovery(t, "2026-04", false, nil, nil)
+	if err := e2.resolve(t, AppliedCorrectionInput{
+		RecoveryReadingID: rec2.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "ไม่ควรทำได้",
+	}); err == nil {
+		t.Fatal("expected resolving a non-over-record utility to be rejected")
+	}
+}
+
+// The three mandated finalize-gate cases (owner focus #6).
+func TestRRGate_PerUtilityFinalizeGate(t *testing.T) {
+	t.Run("elec affected unresolved → blocks", func(t *testing.T) {
+		e := setupRecoveryMonthly(t)
+		e.seedRecovery(t, "2026-04", false, intPtr(280), nil)
+		if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err == nil {
+			t.Fatal("want blocked")
+		}
+	})
+	t.Run("elec resolved + water unaffected → allows", func(t *testing.T) {
+		e := setupRecoveryMonthly(t)
+		recID := e.seedRecovery(t, "2026-04", false, intPtr(280), nil) // water nil
+		if err := e.resolve(t, AppliedCorrectionInput{RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดไฟฟ้า"}); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		mustFinalize(t, e)
+	})
+	t.Run("elec resolved + water affected unresolved → blocks", func(t *testing.T) {
+		e := setupRecoveryMonthly(t)
+		recID := e.seedRecovery(t, "2026-04", false, intPtr(280), intPtr(160)) // both affected
+		if err := e.resolve(t, AppliedCorrectionInput{RecoveryReadingID: recID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดไฟฟ้าเท่านั้น"}); err != nil {
+			t.Fatalf("resolve elec: %v", err)
+		}
+		if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err == nil {
+			t.Fatal("want blocked while water still affected+unresolved")
+		}
+	})
+}
+
+func mustFinalize(t *testing.T, e recoveryMonthlyEnv) {
+	t.Helper()
+	if _, err := e.svc.FinalizeBill(e.ctx, e.billID, nil); err != nil {
+		t.Fatalf("finalize after resolve: %v", err)
+	}
+	if got := e.billStatus(t); got != BillStatusFinalized {
+		t.Fatalf("bill status = %s, want FINALIZED", got)
 	}
 }

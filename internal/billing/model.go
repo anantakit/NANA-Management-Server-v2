@@ -262,6 +262,7 @@ var (
 	// rejected. Waive carries a zero amount under METER_RECOVERY_WAIVED instead.
 	ErrAdjustmentRefundMustBeNegative = errors.New("ADJUSTMENT คืนเงิน (over-record) ต้องเป็นค่าติดลบ")
 	ErrAdjustmentWaivedMustBeZero     = errors.New("ADJUSTMENT ที่ยกเว้น (ไม่คิดเงิน) ต้องเป็นศูนย์")
+	ErrAdjustmentUtilityRequired      = errors.New("ADJUSTMENT ต้องระบุ utility (ELECTRICITY หรือ WATER)")
 	ErrAdjustmentUtilityInvalid       = errors.New("ADJUSTMENT utility ไม่ถูกต้อง (ต้องเป็น ELECTRICITY หรือ WATER)")
 )
 
@@ -426,10 +427,13 @@ func (li *BillLineItem) ValidateAdjustment() error {
 	default:
 		return ErrAdjustmentReasonCodeInvalid
 	}
-	// Utility discriminator (Q1.5). Nullable in P1 — when set it must be a
-	// recognised utility. The NOT-NULL-for-ADJUSTMENT rule lands in P3 with
-	// the per-utility apply path.
-	if li.AdjustmentUtility != nil && !li.AdjustmentUtility.IsValid() {
+	// Utility discriminator (Q1.5 P3-B): ADJUSTMENT now requires a valid utility
+	// — electricity/water resolve independently. Triple-guard with the DB CHECK
+	// bill_line_items_adjustment_utility_required.
+	if li.AdjustmentUtility == nil {
+		return ErrAdjustmentUtilityRequired
+	}
+	if !li.AdjustmentUtility.IsValid() {
 		return ErrAdjustmentUtilityInvalid
 	}
 	if li.AdjustmentNote == nil || strings.TrimSpace(*li.AdjustmentNote) == "" {
@@ -1597,6 +1601,7 @@ type AuditRecordPaymentPayload struct {
 type AuditApplyRecoveryAdjustmentPayload struct {
 	Amount            int64     `json:"amount"`              // signed satang
 	RecoveryReadingID uuid.UUID `json:"recovery_reading_id"` // FK provenance
+	Utility           string    `json:"utility,omitempty"`   // Q1.5: ELECTRICITY / WATER
 	ReasonCode        string    `json:"reason_code"`         // "METER_RECOVERY"
 	Note              string    `json:"note"`                // operator's reasoning
 }

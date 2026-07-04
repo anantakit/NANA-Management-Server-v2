@@ -429,9 +429,9 @@ func TestBill_CalculateTotal(t *testing.T) {
 		b := &Bill{
 			BillType: BillTypeMonthly,
 			LineItems: []BillLineItem{
-				{Amount: 500000},  // 5,000 baht room rent
-				{Amount: 120000},  // 1,200 baht electricity
-				{Amount: 30000},   // 300 baht water
+				{Amount: 500000}, // 5,000 baht room rent
+				{Amount: 120000}, // 1,200 baht electricity
+				{Amount: 30000},  // 300 baht water
 			},
 		}
 		b.CalculateTotal()
@@ -997,7 +997,7 @@ func TestChecklist_OverrideSurvivesRegenerate(t *testing.T) {
 		LineItems: []BillLineItem{
 			// After regen: ELECTRICITY still exists (maybe different base amount), WATER still exists
 			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 110000}, // new base
-			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 25000},         // new base
+			{LineType: LineItemWater, Source: LineItemSourceAuto, Amount: 25000},        // new base
 		},
 	}
 	b.PruneStaleOverrides()
@@ -1301,6 +1301,7 @@ func TestBillLineItem_ValidateAdjustment_ReasonCodeEdgeCases(t *testing.T) {
 				Source:                      LineItemSourceManual,
 				Amount:                      -100, // negative so METER_RECOVERY passes the refund-only invariant
 				AdjustmentRecoveryReadingID: &recID,
+				AdjustmentUtility:           utilPtr(AdjustmentUtilityElectricity),
 				AdjustmentReasonCode:        tc.reason,
 				AdjustmentNote:              &note,
 			}
@@ -1337,6 +1338,7 @@ func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
 				Source:                      LineItemSourceManual,
 				Amount:                      -100, // negative so the refund-only invariant passes; this table tests notes
 				AdjustmentRecoveryReadingID: &recID,
+				AdjustmentUtility:           utilPtr(AdjustmentUtilityElectricity),
 				AdjustmentReasonCode:        &reason,
 				AdjustmentNote:              tc.note,
 			}
@@ -1344,6 +1346,32 @@ func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
 				t.Errorf("ValidateAdjustment() = %v, want %v", got, tc.wantErr)
 			}
 		})
+	}
+}
+
+// Q1.5 Over-Record — ADJUSTMENT requires a valid utility (electricity/water
+// resolve independently). Missing → ErrAdjustmentUtilityRequired; bogus →
+// ErrAdjustmentUtilityInvalid. The utility check runs after the amount check.
+func TestBillLineItem_ValidateAdjustment_UtilityRequired(t *testing.T) {
+	recID := uuid.New()
+	reason := AdjustmentReasonMeterRecovery
+	note := "คืนยอดที่เก็บเกิน 10+ chars"
+	bogus := AdjustmentUtility("GAS")
+	base := func(u *AdjustmentUtility) *BillLineItem {
+		return &BillLineItem{
+			LineType: LineItemAdjustment, Source: LineItemSourceManual, Amount: -100,
+			AdjustmentRecoveryReadingID: &recID, AdjustmentUtility: u,
+			AdjustmentReasonCode: &reason, AdjustmentNote: &note,
+		}
+	}
+	if got := base(nil).ValidateAdjustment(); got != ErrAdjustmentUtilityRequired {
+		t.Errorf("nil utility = %v, want ErrAdjustmentUtilityRequired", got)
+	}
+	if got := base(&bogus).ValidateAdjustment(); got != ErrAdjustmentUtilityInvalid {
+		t.Errorf("bogus utility = %v, want ErrAdjustmentUtilityInvalid", got)
+	}
+	if got := base(utilPtr(AdjustmentUtilityWater)).ValidateAdjustment(); got != nil {
+		t.Errorf("valid utility = %v, want nil", got)
 	}
 }
 
@@ -1378,6 +1406,7 @@ func TestBillLineItem_ValidateAdjustment_AmountByReason(t *testing.T) {
 				Source:                      LineItemSourceManual,
 				Amount:                      tc.amount,
 				AdjustmentRecoveryReadingID: &recID,
+				AdjustmentUtility:           utilPtr(AdjustmentUtilityElectricity),
 				AdjustmentReasonCode:        &reason,
 				AdjustmentNote:              &note,
 			}

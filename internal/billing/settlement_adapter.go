@@ -44,6 +44,7 @@ import (
 //  3. SettlementAdapter is an EXTRACTION SEAM, not an architectural seam.
 //     Don't widen ports speculatively on the expectation that a settlement
 //     repo split is coming — see TODO(architecture) above.
+//
 // ===========================================================================
 //
 // All methods that mutate state must be called with a txCtx from the
@@ -134,6 +135,20 @@ func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Con
 // the canonical billing repo query (contract → room → unresolved recovery).
 func (a *SettlementAdapter) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
 	return a.repo.HasPendingRecoveryByContractID(ctx, contractID)
+}
+
+// Q1.5 per-utility probes + re-baseline — thin delegations to the billing repo,
+// so settlement shares the exact same SQL/semantics as the monthly path.
+func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility AdjustmentUtility) (bool, error) {
+	return a.repo.HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx, recoveryReadingID, utility)
+}
+
+func (a *SettlementAdapter) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	return a.repo.HasUnresolvedOverRecordByContractID(ctx, contractID)
+}
+
+func (a *SettlementAdapter) ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType LineItemType) error {
+	return a.repo.ZeroAutoLineUsage(ctx, billID, lineType)
 }
 
 // --- settlement.AuditStore ---

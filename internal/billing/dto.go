@@ -63,15 +63,21 @@ type ManualLineItemRequest struct {
 // applied to the current monthly DRAFT bill. Phase 7 — Amount + note now
 // live on the bill side, where the operator decides money in financial
 // context. RecoveryReadingID FK enforces provenance back to the meter row.
+// AppliedCorrectionInput is one per-utility over-record resolution (Q1.5).
+// Electricity and water resolve independently, so a recovery row with both
+// affected yields two inputs. The refund figure is NOT supplied — the server
+// derives it from the bill's contract rate + recorded/physical; the operator
+// only chooses a decision and, for OVERRIDE, a smaller partial magnitude.
 type AppliedCorrectionInput struct {
-	RecoveryReadingID string  `json:"recovery_reading_id" validate:"required,uuid"`
-	Amount            float64 `json:"amount"` // baht; negative = refund. Ignored when Waive.
-	AdjustmentNote    string  `json:"adjustment_note" validate:"required,min=10"`
-	// Waive resolves the recovery with NO money movement (a zero-amount
-	// ADJUSTMENT line). Business decision — must be explicit, never inferred
-	// from Amount==0. Note is still required (records why). Q1 doctrine:
-	// project_reading_recovery_q1_unified_decision_surface_lock.
-	Waive bool `json:"waive"`
+	RecoveryReadingID string `json:"recovery_reading_id" validate:"required,uuid"`
+	Utility           string `json:"utility" validate:"required,oneof=ELECTRICITY WATER"`
+	// Decision: ACCEPT (full recommended refund), OVERRIDE (smaller partial),
+	// WAIVE (no money — a zero-amount ADJUSTMENT). Never inferred.
+	Decision string `json:"decision" validate:"required,oneof=ACCEPT OVERRIDE WAIVE"`
+	// OverrideRefundBaht is the positive refund magnitude for a partial (OVERRIDE
+	// only); the server bounds it to (0, recommended]. Ignored for ACCEPT/WAIVE.
+	OverrideRefundBaht *float64 `json:"override_refund_baht" validate:"omitempty,gt=0"`
+	AdjustmentNote     string   `json:"adjustment_note" validate:"required,min=10"`
 }
 
 type UpdateMonthlyDraftRequest struct {

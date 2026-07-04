@@ -74,11 +74,13 @@ func TestBaselineCorrection_SoftDeleteEditViaRecreate(t *testing.T) {
 
 	// Re-commit with correct values — second commit against the same source
 	// must succeed because the first row is gone.
+	elecRecorded := 500 // over-record: recorded 500 > physical 380
 	second, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    &source.ID,
-		ElectricityCurrent: 380, // correct
-		WaterCurrent:       65,
-		AnchorNote:         "B9 — recreated after delete",
+		SourceReadingID:     &source.ID,
+		ElectricityCurrent:  380, // correct
+		WaterCurrent:        65,
+		ElectricityRecorded: &elecRecorded,
+		AnchorNote:          "B9 — recreated after delete",
 	})
 	if err != nil {
 		t.Fatalf("second CreateBaselineCorrection: %v", err)
@@ -110,7 +112,8 @@ func TestBaselineCorrection_SoftDeleteEditViaRecreate(t *testing.T) {
 	if _, err := billSvc.UpdateMonthlyDraft(ctx, draft.ID, billing.UpdateMonthlyDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{{
 			RecoveryReadingID: second.ID.String(),
-			Amount:            -400,
+			Utility:           "ELECTRICITY",
+			Decision:          "ACCEPT",
 			AdjustmentNote:    "B9 — apply the recreated correction",
 		}},
 	}, nil); err != nil {

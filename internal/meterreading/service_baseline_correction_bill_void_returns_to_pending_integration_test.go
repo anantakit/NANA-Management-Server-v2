@@ -48,11 +48,13 @@ func TestBaselineCorrection_BillVoidReturnsToPending(t *testing.T) {
 	if err := db.Create(source).Error; err != nil {
 		t.Fatalf("seed source: %v", err)
 	}
+	elecRecorded := 500 // over-record: recorded 500 > physical 380
 	correction, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    &source.ID,
-		ElectricityCurrent: 380,
-		WaterCurrent:       65,
-		AnchorNote:         "B8 — correction",
+		SourceReadingID:     &source.ID,
+		ElectricityCurrent:  380,
+		WaterCurrent:        65,
+		ElectricityRecorded: &elecRecorded,
+		AnchorNote:          "B8 — correction",
 	})
 	if err != nil {
 		t.Fatalf("CreateBaselineCorrection: %v", err)
@@ -83,7 +85,8 @@ func TestBaselineCorrection_BillVoidReturnsToPending(t *testing.T) {
 	if _, err := billSvc.UpdateMonthlyDraft(ctx, firstDraft.ID, billing.UpdateMonthlyDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{{
 			RecoveryReadingID: correction.ID.String(),
-			Amount:            -400,
+			Utility:           "ELECTRICITY",
+			Decision:          "ACCEPT",
 			AdjustmentNote:    "B8 — first application",
 		}},
 	}, nil); err != nil {
@@ -125,8 +128,9 @@ func TestBaselineCorrection_BillVoidReturnsToPending(t *testing.T) {
 	if _, err := billSvc.UpdateMonthlyDraft(ctx, newBill.ID, billing.UpdateMonthlyDraftRequest{
 		AppliedCorrections: []billing.AppliedCorrectionInput{{
 			RecoveryReadingID: correction.ID.String(),
-			Amount:            -650, // operator's revised judgment
-			AdjustmentNote:    "B8 — re-applied with revised amount on the new bill",
+			Utility:           "ELECTRICITY",
+			Decision:          "ACCEPT",
+			AdjustmentNote:    "B8 — re-applied on the new bill",
 		}},
 	}, nil); err != nil {
 		t.Fatalf("UpdateMonthlyDraft (re-apply): %v", err)
