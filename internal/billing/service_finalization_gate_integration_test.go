@@ -89,15 +89,6 @@ func TestHasPendingRecoveryByContractID_MultiRow(t *testing.T) {
 		t.Fatal("expected pending=true (recB pending, recC only resolved on a VOID bill)")
 	}
 
-	// Batched sibling (bill-list badge): same predicate, grouped per contract.
-	counts, err := repo.CountPendingRecoveryByContractIDs(ctx, []uuid.UUID{c.ID})
-	if err != nil {
-		t.Fatalf("CountPendingRecoveryByContractIDs: %v", err)
-	}
-	if counts[c.ID] != 2 {
-		t.Fatalf("batched count = %d, want 2 (recB + recC)", counts[c.ID])
-	}
-
 	// Resolve recC on a non-VOID bill and recB via WAIVE (zero-amount line).
 	resolve(draftBill.ID, recC.ID, 15000, AdjustmentReasonMeterRecovery)
 	resolve(draftBill.ID, recB.ID, 0, AdjustmentReasonMeterRecoveryWaived)
@@ -108,12 +99,5 @@ func TestHasPendingRecoveryByContractID_MultiRow(t *testing.T) {
 	}
 	if pending {
 		t.Fatal("expected pending=false after all recoveries resolved (charge + charge + waive)")
-	}
-	counts, err = repo.CountPendingRecoveryByContractIDs(ctx, []uuid.UUID{c.ID})
-	if err != nil {
-		t.Fatalf("CountPendingRecoveryByContractIDs (after resolve): %v", err)
-	}
-	if _, present := counts[c.ID]; present {
-		t.Fatalf("expected contract absent from map after all resolved, got %d", counts[c.ID])
 	}
 }

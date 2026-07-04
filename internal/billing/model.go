@@ -1260,12 +1260,6 @@ type BillWithRelations struct {
 	// and service.List (batched per page, no N+1).
 	IsEdited bool `gorm:"-" json:"-"`
 
-	// PendingRecoveryCount is the number of unresolved recoveries on this bill's
-	// room (Q1 visibility badge). Populated by service.List batched per page (no
-	// N+1); never persisted. 0 for the common case. The finalize gate — not this
-	// count — remains the source of truth for blocking.
-	PendingRecoveryCount int `gorm:"-" json:"-"`
-
 	// CorrectedFromBillID is the reverse link to the VOID(CORRECTION) bill
 	// that this bill replaced — populated only by service.GetByID when the
 	// reverse-link lookup hits a match. Nil for normal bills (the common

@@ -83,32 +83,7 @@ func (s *billingService) List(ctx context.Context, params BillListParams) ([]Bil
 	if err := s.populateIsEdited(ctx, bills); err != nil {
 		return nil, 0, err
 	}
-	if err := s.populatePendingRecovery(ctx, bills); err != nil {
-		return nil, 0, err
-	}
 	return bills, total, nil
-}
-
-// populatePendingRecovery stamps each bill's PendingRecoveryCount from ONE
-// batched query over the page's contracts (no N+1). Powers the list "รอตัดสินใจ"
-// visibility badge; failure propagates so a silently-absent badge can't hide a
-// pending decision.
-func (s *billingService) populatePendingRecovery(ctx context.Context, bills []BillWithRelations) error {
-	if len(bills) == 0 {
-		return nil
-	}
-	ids := make([]uuid.UUID, len(bills))
-	for i, b := range bills {
-		ids[i] = b.ContractID
-	}
-	counts, err := s.repo.CountPendingRecoveryByContractIDs(ctx, ids)
-	if err != nil {
-		return fmt.Errorf("populate pending recovery: %w", err)
-	}
-	for i := range bills {
-		bills[i].PendingRecoveryCount = counts[bills[i].ContractID]
-	}
-	return nil
 }
 
 // populateIsEdited issues ONE batched audit query for the entire page and

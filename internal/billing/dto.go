@@ -288,11 +288,6 @@ type BillListItemResponse struct {
 	PaymentBankName      *string `json:"payment_bank_name,omitempty"`
 	PaymentAccountNumber *string `json:"payment_account_number,omitempty"`
 	PaymentAccountName   *string `json:"payment_account_name,omitempty"`
-
-	// PendingRecoveryCount > 0 → this bill's room has unresolved recoveries
-	// (Q1 "รอตัดสินใจ" visibility badge). Visibility only — the finalize gate is
-	// the source of truth for blocking.
-	PendingRecoveryCount int `json:"pending_recovery_count"`
 }
 
 // Settlement transport DTOs (PreviewSettlementRequest, SettlementPreviewResponse,
@@ -474,26 +469,25 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 
 func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 	r := BillListItemResponse{
-		ID:                   b.ID,
-		ContractID:           b.ContractID,
-		BillingMonth:         b.BillingMonth,
-		BillType:             string(b.BillType),
-		Status:               string(b.Status),
-		VoidReason:           b.VoidReason,
-		SupersededByBillID:   b.SupersededByBillID,
-		TotalAmount:          money.ToBaht(b.TotalAmount),
-		PaidAmount:           money.ToBaht(b.PaidAmount()),
-		OutstandingAmount:    money.ToBaht(b.OutstandingAmount()),
-		DepositAmount:        money.ToBaht(b.DepositAmount),
-		DepositBalance:       money.ToBaht(b.DepositBalance),
-		TenantName:           b.TenantName,
-		RoomNumber:           b.RoomNumber,
-		ApartmentName:        b.ApartmentName,
-		ApartmentID:          b.ApartmentID,
-		FinalizedAt:          b.FinalizedAt,
-		CreatedAt:            b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		IsEdited:             b.IsEdited,
-		PendingRecoveryCount: b.PendingRecoveryCount,
+		ID:                 b.ID,
+		ContractID:         b.ContractID,
+		BillingMonth:       b.BillingMonth,
+		BillType:           string(b.BillType),
+		Status:             string(b.Status),
+		VoidReason:         b.VoidReason,
+		SupersededByBillID: b.SupersededByBillID,
+		TotalAmount:        money.ToBaht(b.TotalAmount),
+		PaidAmount:         money.ToBaht(b.PaidAmount()),
+		OutstandingAmount:  money.ToBaht(b.OutstandingAmount()),
+		DepositAmount:      money.ToBaht(b.DepositAmount),
+		DepositBalance:     money.ToBaht(b.DepositBalance),
+		TenantName:         b.TenantName,
+		RoomNumber:         b.RoomNumber,
+		ApartmentName:      b.ApartmentName,
+		ApartmentID:        b.ApartmentID,
+		FinalizedAt:        b.FinalizedAt,
+		CreatedAt:          b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		IsEdited:           b.IsEdited,
 	}
 	if b.PaidAt != nil {
 		r.PaidAt = b.PaidAt
