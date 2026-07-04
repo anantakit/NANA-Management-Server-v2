@@ -91,6 +91,12 @@ type BillingRepository interface {
 	// surfaced on the recon row.
 	CountPendingBaselineCorrectionsByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]int, error)
 
+	// CountPendingRecoveryByContractIDs is the batched sibling of
+	// HasPendingRecoveryByContractID — per contract, the count of unresolved
+	// recoveries on that contract's room. Powers the bill-list "รอตัดสินใจ"
+	// visibility badge without N+1. Contracts with zero are absent from the map.
+	CountPendingRecoveryByContractIDs(ctx context.Context, contractIDs []uuid.UUID) (map[uuid.UUID]int, error)
+
 	// HasPendingRecoveryByContractID is the scalar Q1 finalization-gate probe:
 	// true iff the contract's room has any unresolved recovery (an active
 	// READING_RECOVERY meter row with no non-VOID ADJUSTMENT line). Bills link
@@ -179,7 +185,7 @@ func (r *billingRepository) FindAll(ctx context.Context, params BillListParams) 
 	var rows []joinRow
 	err := query.
 		Joins(deliveryJoin).
-		Select(r.selectColumns()+deliveryCols).
+		Select(r.selectColumns() + deliveryCols).
 		Order(orderClause).
 		Offset(params.Offset()).
 		Limit(params.Limit).
@@ -787,6 +793,42 @@ func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context
 // (not a LEFT JOIN + IS NULL) is required: a recovery can hold BOTH a VOID and
 // a non-VOID line at once (correction voids then re-resolves), and only the
 // non-VOID one resolves it.
+func (r *billingRepository) CountPendingRecoveryByContractIDs(ctx context.Context, contractIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	if len(contractIDs) == 0 {
+		return map[uuid.UUID]int{}, nil
+	}
+	type row struct {
+		ContractID uuid.UUID `gorm:"column:contract_id"`
+		Cnt        int       `gorm:"column:cnt"`
+	}
+	var rows []row
+	err := database.DB(ctx, r.db).
+		Raw(`SELECT c.id AS contract_id, COUNT(*)::int AS cnt
+			FROM meter_readings mr
+			JOIN contracts c ON c.room_id = mr.room_id
+			WHERE c.id IN ?
+			  AND mr.anchor_reason = ?
+			  AND mr.deleted_at IS NULL
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM bill_line_items bli
+				JOIN bills b ON b.id = bli.bill_id
+				WHERE bli.adjustment_recovery_reading_id = mr.id
+				  AND b.status <> ?
+				  AND b.deleted_at IS NULL
+			  )
+			GROUP BY c.id`, contractIDs, meterreading.AnchorReasonReadingRecovery, BillStatusVoid).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("count pending recovery by contracts: %w", err)
+	}
+	out := make(map[uuid.UUID]int, len(rows))
+	for _, rw := range rows {
+		out[rw.ContractID] = rw.Cnt
+	}
+	return out, nil
+}
+
 func (r *billingRepository) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
 	var exists bool
 	err := database.DB(ctx, r.db).

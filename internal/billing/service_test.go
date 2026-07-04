@@ -249,6 +249,10 @@ func (m *mockBillingRepo) HasPendingRecoveryByContractID(ctx context.Context, co
 	return false, nil
 }
 
+func (m *mockBillingRepo) CountPendingRecoveryByContractIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]int, error) {
+	return map[uuid.UUID]int{}, nil
+}
+
 type mockContractQuerier struct {
 	contract *contract.Contract
 }

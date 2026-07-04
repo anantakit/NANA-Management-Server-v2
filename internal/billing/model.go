@@ -33,13 +33,13 @@ const (
 type LineItemType string
 
 const (
-	LineItemRoomRent      LineItemType = "ROOM_RENT"
-	LineItemElectricity   LineItemType = "ELECTRICITY"
-	LineItemWater         LineItemType = "WATER"
-	LineItemCleaningFee   LineItemType = "CLEANING_FEE"
-	LineItemKeyService    LineItemType = "KEY_SERVICE"
-	LineItemProrateRent   LineItemType = "PRORATE_RENT"
-	LineItemPenalty       LineItemType = "PENALTY"
+	LineItemRoomRent        LineItemType = "ROOM_RENT"
+	LineItemElectricity     LineItemType = "ELECTRICITY"
+	LineItemWater           LineItemType = "WATER"
+	LineItemCleaningFee     LineItemType = "CLEANING_FEE"
+	LineItemKeyService      LineItemType = "KEY_SERVICE"
+	LineItemProrateRent     LineItemType = "PRORATE_RENT"
+	LineItemPenalty         LineItemType = "PENALTY"
 	LineItemPrepaidCredit   LineItemType = "PREPAID_CREDIT"
 	LineItemOutstandingBill LineItemType = "OUTSTANDING_BILL"
 	LineItemOther           LineItemType = "OTHER"
@@ -204,19 +204,19 @@ func DefaultSettlementOptions() SettlementOptions {
 // --- Domain errors ---
 
 var (
-	ErrNotDraft       = errors.New("บิลไม่ใช่สถานะร่าง")
-	ErrNotFinalized   = errors.New("บิลไม่ใช่สถานะยืนยันแล้ว")
-	ErrNoLineItems    = errors.New("บิลต้องมีรายการอย่างน้อย 1 รายการ")
+	ErrNotDraft     = errors.New("บิลไม่ใช่สถานะร่าง")
+	ErrNotFinalized = errors.New("บิลไม่ใช่สถานะยืนยันแล้ว")
+	ErrNoLineItems  = errors.New("บิลต้องมีรายการอย่างน้อย 1 รายการ")
 	// ErrPendingRecoveryBlocksFinalization gates finalization (monthly +
 	// settlement + move-out closure): a room with an unresolved recovery must
 	// have it resolved (charge/refund/waive) before any of its bills finalize.
 	// Q1 doctrine: project_reading_recovery_q1_unified_decision_surface_lock.
 	ErrPendingRecoveryBlocksFinalization = errors.New("มีรายการแก้ค่ามิเตอร์ที่ยังไม่ได้ตัดสิน — ต้องเลือกคิดเงินเพิ่ม คืนเงิน หรือไม่คิดเงิน ก่อนออกบิล")
-	ErrAlreadyVoided  = errors.New("บิลถูกยกเลิกแล้ว")
-	ErrAlreadyPaid    = errors.New("บิลถูกชำระแล้ว")
-	ErrVoidReasonEmpty = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
-	ErrNotAbsorbed     = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลปิดสัญญา")
-	ErrBatchAlreadyCommitted = errors.New("batch ถูก commit ไปแล้ว")
+	ErrAlreadyVoided                     = errors.New("บิลถูกยกเลิกแล้ว")
+	ErrAlreadyPaid                       = errors.New("บิลถูกชำระแล้ว")
+	ErrVoidReasonEmpty                   = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
+	ErrNotAbsorbed                       = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลปิดสัญญา")
+	ErrBatchAlreadyCommitted             = errors.New("batch ถูก commit ไปแล้ว")
 	// Correction (void+recreate) errors. ErrAlreadySuperseded fires when a bill
 	// is already linked to a replacement — chain corrections must target the
 	// latest bill in the chain.
@@ -245,17 +245,17 @@ var (
 // --- Models ---
 
 type Bill struct {
-	ID             uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	ContractID     uuid.UUID      `gorm:"type:uuid;not null" json:"contract_id"`
-	BillingMonth   string         `gorm:"type:varchar(7);not null" json:"billing_month"`
-	BillType       BillType       `gorm:"type:varchar(20);not null" json:"bill_type"`
-	Status         BillStatus     `gorm:"type:varchar(20);not null;default:'DRAFT'" json:"status"`
-	VoidReason     *string        `gorm:"type:varchar(100)" json:"void_reason"`
-	DepositAmount    int64          `gorm:"not null;default:0" json:"deposit_amount"`
-	DepositBalance   int64          `gorm:"not null;default:0" json:"deposit_balance"`
-	DepositForfeited bool           `gorm:"not null;default:false" json:"deposit_forfeited"`
-	TotalAmount    int64          `gorm:"not null;default:0" json:"total_amount"`
-	BatchID        *uuid.UUID     `gorm:"type:uuid" json:"batch_id,omitempty"`
+	ID               uuid.UUID  `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	ContractID       uuid.UUID  `gorm:"type:uuid;not null" json:"contract_id"`
+	BillingMonth     string     `gorm:"type:varchar(7);not null" json:"billing_month"`
+	BillType         BillType   `gorm:"type:varchar(20);not null" json:"bill_type"`
+	Status           BillStatus `gorm:"type:varchar(20);not null;default:'DRAFT'" json:"status"`
+	VoidReason       *string    `gorm:"type:varchar(100)" json:"void_reason"`
+	DepositAmount    int64      `gorm:"not null;default:0" json:"deposit_amount"`
+	DepositBalance   int64      `gorm:"not null;default:0" json:"deposit_balance"`
+	DepositForfeited bool       `gorm:"not null;default:false" json:"deposit_forfeited"`
+	TotalAmount      int64      `gorm:"not null;default:0" json:"total_amount"`
+	BatchID          *uuid.UUID `gorm:"type:uuid" json:"batch_id,omitempty"`
 	// RentPaid is a SETTLEMENT-only flag meaning "advance rent for the
 	// move-out month was already collected in the prior MONTHLY bill"
 	// (the system bills rent one month in advance). When true, the
@@ -1095,17 +1095,17 @@ func (s *ComputedSnapshot) ToLineItems(billID uuid.UUID) []BillLineItem {
 }
 
 type BillGenerationBatch struct {
-	ID                 uuid.UUID   `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	ApartmentID        uuid.UUID   `gorm:"type:uuid;not null" json:"apartment_id"`
-	BillingMonth       string      `gorm:"type:varchar(7);not null" json:"billing_month"`
-	Status             BatchStatus `gorm:"type:varchar(20);not null" json:"status"`
-	TotalContracts     int         `gorm:"not null;default:0" json:"total_contracts"`
-	CreatedCount       int         `gorm:"not null;default:0;column:created_count" json:"created_count"`
-	AlreadyExistsCount int         `gorm:"not null;default:0;column:already_exists_count" json:"already_exists_count"`
-	SkippedCount       int         `gorm:"not null;default:0;column:skipped_count" json:"skipped_count"`
-	FailedCount        int         `gorm:"not null;default:0;column:failed_count" json:"failed_count"`
-	CreatedBy          *uuid.UUID  `gorm:"type:uuid" json:"created_by,omitempty"`
-	CreatedAt          time.Time   `gorm:"not null;default:now()" json:"created_at"`
+	ID                 uuid.UUID     `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	ApartmentID        uuid.UUID     `gorm:"type:uuid;not null" json:"apartment_id"`
+	BillingMonth       string        `gorm:"type:varchar(7);not null" json:"billing_month"`
+	Status             BatchStatus   `gorm:"type:varchar(20);not null" json:"status"`
+	TotalContracts     int           `gorm:"not null;default:0" json:"total_contracts"`
+	CreatedCount       int           `gorm:"not null;default:0;column:created_count" json:"created_count"`
+	AlreadyExistsCount int           `gorm:"not null;default:0;column:already_exists_count" json:"already_exists_count"`
+	SkippedCount       int           `gorm:"not null;default:0;column:skipped_count" json:"skipped_count"`
+	FailedCount        int           `gorm:"not null;default:0;column:failed_count" json:"failed_count"`
+	CreatedBy          *uuid.UUID    `gorm:"type:uuid" json:"created_by,omitempty"`
+	CreatedAt          time.Time     `gorm:"not null;default:now()" json:"created_at"`
 	CommitStatus       *CommitStatus `gorm:"type:varchar(32)" json:"commit_status,omitempty"`
 	CommittedAt        *time.Time    `gorm:"type:timestamptz" json:"committed_at,omitempty"`
 }
@@ -1181,15 +1181,15 @@ func (b *BillGenerationBatch) ComputeStatus() {
 }
 
 type BillGenerationBatchItem struct {
-	ID         uuid.UUID  `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	BatchID    uuid.UUID  `gorm:"type:uuid;not null" json:"batch_id"`
-	ContractID uuid.UUID  `gorm:"type:uuid;not null" json:"contract_id"`
-	RoomID     uuid.UUID  `gorm:"type:uuid;not null" json:"room_id"`
-	RoomNumber string     `gorm:"type:varchar(20);not null" json:"room_number"`
-	RoomFloor  int        `gorm:"not null;default:0" json:"room_floor"`
-	ResultType ResultType `gorm:"type:varchar(20);not null" json:"result_type"`
-	ReasonCode string     `gorm:"type:varchar(40);not null;default:''" json:"reason_code"`
-	ReasonText string     `gorm:"type:text;not null;default:''" json:"reason_text"`
+	ID               uuid.UUID        `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	BatchID          uuid.UUID        `gorm:"type:uuid;not null" json:"batch_id"`
+	ContractID       uuid.UUID        `gorm:"type:uuid;not null" json:"contract_id"`
+	RoomID           uuid.UUID        `gorm:"type:uuid;not null" json:"room_id"`
+	RoomNumber       string           `gorm:"type:varchar(20);not null" json:"room_number"`
+	RoomFloor        int              `gorm:"not null;default:0" json:"room_floor"`
+	ResultType       ResultType       `gorm:"type:varchar(20);not null" json:"result_type"`
+	ReasonCode       string           `gorm:"type:varchar(40);not null;default:''" json:"reason_code"`
+	ReasonText       string           `gorm:"type:text;not null;default:''" json:"reason_text"`
 	BillID           *uuid.UUID       `gorm:"type:uuid" json:"bill_id,omitempty"`
 	ComputedSnapshot ComputedSnapshot `gorm:"type:jsonb;not null;default:'{}'::jsonb" json:"computed_snapshot"`
 	CreatedAt        time.Time        `gorm:"not null;default:now()" json:"created_at"`
@@ -1259,6 +1259,12 @@ type BillWithRelations struct {
 	// only this derived boolean. Populated by service.GetByID (single-bill)
 	// and service.List (batched per page, no N+1).
 	IsEdited bool `gorm:"-" json:"-"`
+
+	// PendingRecoveryCount is the number of unresolved recoveries on this bill's
+	// room (Q1 visibility badge). Populated by service.List batched per page (no
+	// N+1); never persisted. 0 for the common case. The finalize gate — not this
+	// count — remains the source of truth for blocking.
+	PendingRecoveryCount int `gorm:"-" json:"-"`
 
 	// CorrectedFromBillID is the reverse link to the VOID(CORRECTION) bill
 	// that this bill replaced — populated only by service.GetByID when the
@@ -1461,10 +1467,10 @@ func MarshalAuditPayload(v any) (AuditPayload, error) {
 // time. Direct CreateMonthlyBill / CreateSettlementBill emit these as omit.
 type AuditCreateDraftPayload struct {
 	LineItemCount int        `json:"line_item_count"`
-	TotalAmount   int64      `json:"total_amount"`             // satang
-	BatchID       *uuid.UUID `json:"batch_id,omitempty"`       // populated for batch-created bills only
-	RoomID        *uuid.UUID `json:"room_id,omitempty"`        // populated for batch-created bills only
-	BillingMonth  string     `json:"billing_month,omitempty"`  // populated for batch-created bills only
+	TotalAmount   int64      `json:"total_amount"`            // satang
+	BatchID       *uuid.UUID `json:"batch_id,omitempty"`      // populated for batch-created bills only
+	RoomID        *uuid.UUID `json:"room_id,omitempty"`       // populated for batch-created bills only
+	BillingMonth  string     `json:"billing_month,omitempty"` // populated for batch-created bills only
 }
 
 // AuditOverridePayload records one override key transition. When admin edits

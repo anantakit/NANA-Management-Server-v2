@@ -12,8 +12,8 @@ import (
 // --- Request DTOs ---
 
 type CreateMonthlyBillRequest struct {
-	ContractID   string `json:"contract_id" validate:"required,uuid"`
-	BillingMonth string `json:"billing_month" validate:"required,len=7"` // YYYY-MM
+	ContractID     string `json:"contract_id" validate:"required,uuid"`
+	BillingMonth   string `json:"billing_month" validate:"required,len=7"` // YYYY-MM
 	MeterReadingID string `json:"meter_reading_id" validate:"required,uuid"`
 }
 
@@ -39,10 +39,10 @@ type CorrectBillRequest struct {
 // UpdateSettlementDraftRequest (in internal/billing/settlement/dto.go).
 // Stays at billing root because both workflows reference it.
 type ManualLineItemRequest struct {
-	LineType    string  `json:"line_type" validate:"required"`
-	Description string  `json:"description" validate:"required,min=1,max=200"`
-	Amount      float64 `json:"amount"` // baht — required when quantity mode is not used
-	Quantity    *int    `json:"quantity,omitempty"`
+	LineType    string   `json:"line_type" validate:"required"`
+	Description string   `json:"description" validate:"required,min=1,max=200"`
+	Amount      float64  `json:"amount"` // baht — required when quantity mode is not used
+	Quantity    *int     `json:"quantity,omitempty"`
 	UnitPrice   *float64 `json:"unit_price,omitempty"` // baht per unit
 }
 
@@ -151,19 +151,19 @@ type LineItemResponse struct {
 }
 
 type BillResponse struct {
-	ID             uuid.UUID          `json:"id"`
-	ContractID     uuid.UUID          `json:"contract_id"`
-	BillingMonth   string             `json:"billing_month"`
-	BillType       string             `json:"bill_type"`
-	Status         string             `json:"status"`
-	VoidReason     *string            `json:"void_reason"`
+	ID           uuid.UUID `json:"id"`
+	ContractID   uuid.UUID `json:"contract_id"`
+	BillingMonth string    `json:"billing_month"`
+	BillType     string    `json:"bill_type"`
+	Status       string    `json:"status"`
+	VoidReason   *string   `json:"void_reason"`
 	// SupersededByBillID forward-links this VOID bill to its replacement
 	// when admin uses the void+recreate correction flow. Populated only
 	// when status='VOID' AND void_reason='CORRECTION'. Null on every
 	// other bill (including VOID(ABSORBED_BY_SETTLEMENT) and unsuperseded
 	// VOID). FE renders the "ใบนี้ถูกแทนที่ด้วยใบใหม่" cross-link off
 	// this field; absence collapses the cross-link UI.
-	SupersededByBillID *uuid.UUID         `json:"superseded_by_bill_id,omitempty"`
+	SupersededByBillID *uuid.UUID `json:"superseded_by_bill_id,omitempty"`
 	// CorrectedFromBillID is the REVERSE link — populated only when this
 	// bill is the DRAFT/FINALIZED/PAID replacement created by a correction.
 	// Resolved by GetByID via a single indexed lookup on
@@ -172,7 +172,7 @@ type BillResponse struct {
 	// the "บิลนี้สร้างจากการแก้ไขบิลเดิม" hint in the drawer off this
 	// field's presence. Null on every bill that is not a correction
 	// replacement (the common case).
-	CorrectedFromBillID *uuid.UUID        `json:"corrected_from_bill_id,omitempty"`
+	CorrectedFromBillID *uuid.UUID `json:"corrected_from_bill_id,omitempty"`
 	// CorrectionReason is the admin-typed reason captured at correction
 	// time (min 5 chars). Populated only when this bill is VOID with
 	// void_reason='CORRECTION' — pulled from the latest SUPERSEDE audit
@@ -180,14 +180,14 @@ type BillResponse struct {
 	// verbatim beneath the humanized void_reason ("ยกเลิกเพื่อแก้ไข") so
 	// admins can see *why* without DB access. Detail-only — list path
 	// stays cheap.
-	CorrectionReason *string            `json:"correction_reason,omitempty"`
-	DepositAmount    float64            `json:"deposit_amount"`
-	DepositBalance   float64            `json:"deposit_balance"`
-	DepositForfeited bool               `json:"deposit_forfeited"`
-	TotalAmount      float64            `json:"total_amount"`
-	RentPaid           bool               `json:"rent_paid"`
-	SettlementRentMode string             `json:"settlement_rent_mode,omitempty"`
-	Note               string             `json:"note"`
+	CorrectionReason   *string `json:"correction_reason,omitempty"`
+	DepositAmount      float64 `json:"deposit_amount"`
+	DepositBalance     float64 `json:"deposit_balance"`
+	DepositForfeited   bool    `json:"deposit_forfeited"`
+	TotalAmount        float64 `json:"total_amount"`
+	RentPaid           bool    `json:"rent_paid"`
+	SettlementRentMode string  `json:"settlement_rent_mode,omitempty"`
+	Note               string  `json:"note"`
 	// Override + deposit application fields
 	Overrides            map[string]float64 `json:"overrides,omitempty"`
 	DepositApplication   string             `json:"deposit_application"`
@@ -250,27 +250,27 @@ type BillResponse struct {
 // Bill.OutstandingAmount for the contract and the migration path when
 // partial payments arrive.
 type BillListItemResponse struct {
-	ID                uuid.UUID  `json:"id"`
-	ContractID        uuid.UUID  `json:"contract_id"`
-	BillingMonth      string     `json:"billing_month"`
-	BillType          string     `json:"bill_type"`
-	Status            string     `json:"status"`
-	VoidReason        *string    `json:"void_reason"`
+	ID           uuid.UUID `json:"id"`
+	ContractID   uuid.UUID `json:"contract_id"`
+	BillingMonth string    `json:"billing_month"`
+	BillType     string    `json:"bill_type"`
+	Status       string    `json:"status"`
+	VoidReason   *string   `json:"void_reason"`
 	// SupersededByBillID mirrors BillResponse.SupersededByBillID — see
 	// that field's doc. Surfaced on the list row so VOID(CORRECTION)
 	// rows can render a cross-link badge without an extra fetch.
 	SupersededByBillID *uuid.UUID `json:"superseded_by_bill_id,omitempty"`
-	TotalAmount       float64    `json:"total_amount"`
-	PaidAmount        float64    `json:"paid_amount"`
-	OutstandingAmount float64    `json:"outstanding_amount"`
-	DepositAmount     float64    `json:"deposit_amount"`
-	DepositBalance    float64    `json:"deposit_balance"`
-	TenantName        string     `json:"tenant_name"`
-	RoomNumber        string     `json:"room_number"`
-	ApartmentName     string     `json:"apartment_name"`
-	ApartmentID       uuid.UUID  `json:"apartment_id"`
-	FinalizedAt       *time.Time `json:"finalized_at,omitempty"`
-	CreatedAt         string     `json:"created_at"`
+	TotalAmount        float64    `json:"total_amount"`
+	PaidAmount         float64    `json:"paid_amount"`
+	OutstandingAmount  float64    `json:"outstanding_amount"`
+	DepositAmount      float64    `json:"deposit_amount"`
+	DepositBalance     float64    `json:"deposit_balance"`
+	TenantName         string     `json:"tenant_name"`
+	RoomNumber         string     `json:"room_number"`
+	ApartmentName      string     `json:"apartment_name"`
+	ApartmentID        uuid.UUID  `json:"apartment_id"`
+	FinalizedAt        *time.Time `json:"finalized_at,omitempty"`
+	CreatedAt          string     `json:"created_at"`
 	// IsEdited mirrors BillResponse.IsEdited — see that field's doc.
 	// Populated by the list endpoint via a single batched audit query.
 	IsEdited bool `json:"is_edited"`
@@ -288,6 +288,11 @@ type BillListItemResponse struct {
 	PaymentBankName      *string `json:"payment_bank_name,omitempty"`
 	PaymentAccountNumber *string `json:"payment_account_number,omitempty"`
 	PaymentAccountName   *string `json:"payment_account_name,omitempty"`
+
+	// PendingRecoveryCount > 0 → this bill's room has unresolved recoveries
+	// (Q1 "รอตัดสินใจ" visibility badge). Visibility only — the finalize gate is
+	// the source of truth for blocking.
+	PendingRecoveryCount int `json:"pending_recovery_count"`
 }
 
 // Settlement transport DTOs (PreviewSettlementRequest, SettlementPreviewResponse,
@@ -371,23 +376,23 @@ func ToBillResponse(b Bill) BillResponse {
 	}
 
 	resp := BillResponse{
-		ID:               b.ID,
-		ContractID:       b.ContractID,
-		BillingMonth:     b.BillingMonth,
-		BillType:         string(b.BillType),
-		Status:           string(b.Status),
-		VoidReason:       b.VoidReason,
+		ID:                 b.ID,
+		ContractID:         b.ContractID,
+		BillingMonth:       b.BillingMonth,
+		BillType:           string(b.BillType),
+		Status:             string(b.Status),
+		VoidReason:         b.VoidReason,
 		SupersededByBillID: b.SupersededByBillID,
-		DepositAmount:    money.ToBaht(b.DepositAmount),
-		DepositBalance:   money.ToBaht(b.DepositBalance),
-		DepositForfeited: b.DepositForfeited,
-		TotalAmount:      money.ToBaht(b.TotalAmount),
-		RentPaid:         b.RentPaid,
-		Note:             b.Note,
-		LineItems:        items,
-		FinalizedAt:      b.FinalizedAt,
-		CreatedAt:        b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:        b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		DepositAmount:      money.ToBaht(b.DepositAmount),
+		DepositBalance:     money.ToBaht(b.DepositBalance),
+		DepositForfeited:   b.DepositForfeited,
+		TotalAmount:        money.ToBaht(b.TotalAmount),
+		RentPaid:           b.RentPaid,
+		Note:               b.Note,
+		LineItems:          items,
+		FinalizedAt:        b.FinalizedAt,
+		CreatedAt:          b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:          b.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 
 	// Overrides are exposed for both monthly + settlement bills now —
@@ -469,25 +474,26 @@ func ToBillResponseWithRelations(b BillWithRelations) BillResponse {
 
 func ToBillListItemResponse(b BillWithRelations) BillListItemResponse {
 	r := BillListItemResponse{
-		ID:                 b.ID,
-		ContractID:         b.ContractID,
-		BillingMonth:       b.BillingMonth,
-		BillType:           string(b.BillType),
-		Status:             string(b.Status),
-		VoidReason:         b.VoidReason,
-		SupersededByBillID: b.SupersededByBillID,
-		TotalAmount:        money.ToBaht(b.TotalAmount),
-		PaidAmount:         money.ToBaht(b.PaidAmount()),
-		OutstandingAmount:  money.ToBaht(b.OutstandingAmount()),
-		DepositAmount:      money.ToBaht(b.DepositAmount),
-		DepositBalance:     money.ToBaht(b.DepositBalance),
-		TenantName:         b.TenantName,
-		RoomNumber:         b.RoomNumber,
-		ApartmentName:      b.ApartmentName,
-		ApartmentID:        b.ApartmentID,
-		FinalizedAt:        b.FinalizedAt,
-		CreatedAt:          b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		IsEdited:           b.IsEdited,
+		ID:                   b.ID,
+		ContractID:           b.ContractID,
+		BillingMonth:         b.BillingMonth,
+		BillType:             string(b.BillType),
+		Status:               string(b.Status),
+		VoidReason:           b.VoidReason,
+		SupersededByBillID:   b.SupersededByBillID,
+		TotalAmount:          money.ToBaht(b.TotalAmount),
+		PaidAmount:           money.ToBaht(b.PaidAmount()),
+		OutstandingAmount:    money.ToBaht(b.OutstandingAmount()),
+		DepositAmount:        money.ToBaht(b.DepositAmount),
+		DepositBalance:       money.ToBaht(b.DepositBalance),
+		TenantName:           b.TenantName,
+		RoomNumber:           b.RoomNumber,
+		ApartmentName:        b.ApartmentName,
+		ApartmentID:          b.ApartmentID,
+		FinalizedAt:          b.FinalizedAt,
+		CreatedAt:            b.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		IsEdited:             b.IsEdited,
+		PendingRecoveryCount: b.PendingRecoveryCount,
 	}
 	if b.PaidAt != nil {
 		r.PaidAt = b.PaidAt
