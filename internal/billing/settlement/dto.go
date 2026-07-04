@@ -28,6 +28,10 @@ type UpdateSettlementDraftRequest struct {
 	Overrides            map[string]float64              `json:"overrides"`                                                       // override_key → baht
 	DepositApplication   *string                         `json:"deposit_application" validate:"omitempty,oneof=FULL NONE CUSTOM"` // FULL|NONE|CUSTOM
 	CustomDepositApplied *float64                        `json:"custom_deposit_applied" validate:"omitempty,min=0"`              // baht, when CUSTOM
+	// AppliedCorrections resolves pending recoveries into this settlement DRAFT
+	// (charge/refund/waive). Mirrors UpdateMonthlyDraft — same doctrine, the
+	// settlement bill is the destination. Q1 Recovery Decision.
+	AppliedCorrections []billing.AppliedCorrectionInput `json:"applied_corrections" validate:"dive"`
 }
 
 // PreviewSettlementRequest is the handler-level request body for

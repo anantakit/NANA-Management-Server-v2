@@ -122,6 +122,14 @@ func (a *SettlementAdapter) CreateLineItems(ctx context.Context, items []BillLin
 	return a.repo.CreateLineItems(ctx, items)
 }
 
+// HasNonVoidAdjustmentLineByRecoveryID is the inverse-FK applied-state probe
+// used by the settlement recovery-resolution race guard. Same derivation the
+// monthly path uses — a recovery is "applied" iff a non-VOID ADJUSTMENT line
+// references it, so it can never be double-applied across bills.
+func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error) {
+	return a.repo.HasNonVoidAdjustmentLineByRecoveryID(ctx, recoveryReadingID)
+}
+
 // --- settlement.AuditStore ---
 
 func (a *SettlementAdapter) RecordAudit(ctx context.Context, billID uuid.UUID, action BillAuditAction, actor *uuid.UUID, payload any) error {

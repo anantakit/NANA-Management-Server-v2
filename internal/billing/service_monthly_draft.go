@@ -255,13 +255,14 @@ func (s *billingService) applyBaselineCorrections(
 
 		amount := money.ToSatang(in.Amount)
 
-		// Shared construction+validation (see recovery_adjustment.go). Monthly
-		// applies charge/refund only today — waive routes through the same
-		// builder once the DTO carries the operator's waive choice.
+		// Shared construction+validation (see recovery_adjustment.go). Charge,
+		// refund, and waive all route through the same builder; waive is explicit
+		// via in.Waive (never inferred from a zero amount).
 		line, err := BuildRecoveryAdjustmentLine(billID, RecoveryResolution{
 			RecoveryReadingID: recoveryID,
 			Amount:            amount,
 			Note:              in.AdjustmentNote,
+			Waive:             in.Waive,
 		}, sourceMonth, maxSort+1+i)
 		if err != nil {
 			return nil, respond.ErrBadRequest.WithMessage(err.Error())

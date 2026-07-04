@@ -139,6 +139,12 @@ type BillStore interface {
 	// bill. Used by the draft-edit replace path + the settlement
 	// regeneration carry-over path.
 	CreateLineItems(ctx context.Context, items []billing.BillLineItem) error
+
+	// HasNonVoidAdjustmentLineByRecoveryID is the inverse-FK applied-state
+	// probe for the recovery-resolution race guard (Q1). "Applied" iff a
+	// non-VOID ADJUSTMENT line references the recovery — same derivation the
+	// monthly path uses, so a recovery can't be double-applied across bills.
+	HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 }
 
 // --- Audit table port ---
@@ -166,10 +172,13 @@ type ContractSource interface {
 }
 
 // MeterReadingSource is settlement's consumer-defined port onto
-// meterreading. Settlement only needs the latest EXIT reading for a room
-// — monthly readings are not consumed by the settlement workflow.
+// meterreading. FindLatestByRoomID powers settlement planning; FindByIDSimple
+// loads a specific recovery meter row when resolving a pending recovery into
+// the settlement draft (Q1) — to confirm anchor identity + read the source
+// billing month for the tenant-visible description.
 type MeterReadingSource interface {
 	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error)
+	FindByIDSimple(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
 }
 
 // BillingConfigSource is settlement's consumer-defined port onto

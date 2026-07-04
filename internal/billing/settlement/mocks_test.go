@@ -39,6 +39,7 @@ type mockBillStore struct {
 	createFn                      func(ctx context.Context, bill *billing.Bill) error
 	updateFn                      func(ctx context.Context, bill *billing.Bill) error
 	lockBillForCorrectionFn       func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
+	hasNonVoidAdjustmentFn        func(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 
 	updateErrByBillID map[uuid.UUID]error
 
@@ -174,6 +175,13 @@ func (m *mockBillStore) CreateLineItems(_ context.Context, items []billing.BillL
 	return nil
 }
 
+func (m *mockBillStore) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error) {
+	if m.hasNonVoidAdjustmentFn != nil {
+		return m.hasNonVoidAdjustmentFn(ctx, recoveryReadingID)
+	}
+	return false, nil
+}
+
 // --- AuditStore ---
 
 type mockAuditStore struct {
@@ -212,11 +220,19 @@ func (m *mockContractSource) FindByIDSimple(ctx context.Context, id uuid.UUID) (
 
 type mockMeterReadingSource struct {
 	findLatestFn func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
+	findByIDFn   func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
 }
 
 func (m *mockMeterReadingSource) FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error) {
 	if m.findLatestFn != nil {
 		return m.findLatestFn(ctx, roomID)
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *mockMeterReadingSource) FindByIDSimple(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error) {
+	if m.findByIDFn != nil {
+		return m.findByIDFn(ctx, id)
 	}
 	return nil, gorm.ErrRecordNotFound
 }

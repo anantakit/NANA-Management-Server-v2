@@ -65,8 +65,13 @@ type ManualLineItemRequest struct {
 // context. RecoveryReadingID FK enforces provenance back to the meter row.
 type AppliedCorrectionInput struct {
 	RecoveryReadingID string  `json:"recovery_reading_id" validate:"required,uuid"`
-	Amount            float64 `json:"amount"` // baht; negative = refund
+	Amount            float64 `json:"amount"` // baht; negative = refund. Ignored when Waive.
 	AdjustmentNote    string  `json:"adjustment_note" validate:"required,min=10"`
+	// Waive resolves the recovery with NO money movement (a zero-amount
+	// ADJUSTMENT line). Business decision — must be explicit, never inferred
+	// from Amount==0. Note is still required (records why). Q1 doctrine:
+	// project_reading_recovery_q1_unified_decision_surface_lock.
+	Waive bool `json:"waive"`
 }
 
 type UpdateMonthlyDraftRequest struct {

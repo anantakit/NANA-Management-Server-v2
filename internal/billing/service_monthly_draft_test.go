@@ -222,6 +222,51 @@ func TestUpdateMonthlyDraft_AppliesNilSourceRecovery(t *testing.T) {
 	}
 }
 
+// Q1 Recovery Decision — monthly draft resolves a recovery as waive/no-charge
+// (explicit Waive=true), producing a zero-amount METER_RECOVERY_WAIVED line.
+// Amount is deliberately non-zero to prove waive is explicit, not inferred.
+func TestUpdateMonthlyDraft_AppliesWaive(t *testing.T) {
+	bill := monthlyDraftFixture()
+	repo := &mockBillingRepo{}
+	repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) { return bill, nil }
+	audit := &mockBillAuditRepo{}
+
+	recoveryID := uuid.New()
+	recoveryReason := meterreading.AnchorReasonReadingRecovery
+	meterQ := &mockMeterQuerier{
+		findByIDSimpleFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
+			return &meterreading.MeterReading{ID: recoveryID, AnchorReason: &recoveryReason}, nil
+		},
+	}
+	svc := NewBillingService(repo, audit, &mockContractQuerier{}, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
+
+	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
+		AppliedCorrections: []AppliedCorrectionInput{
+			{RecoveryReadingID: recoveryID.String(), Amount: 999, Waive: true, AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("waive must apply: %v", err)
+	}
+
+	var adj *BillLineItem
+	for i := range repo.createdLineItems {
+		if repo.createdLineItems[i].LineType == LineItemAdjustment {
+			adj = &repo.createdLineItems[i]
+			break
+		}
+	}
+	if adj == nil {
+		t.Fatal("no ADJUSTMENT line created for waive")
+	}
+	if adj.Amount != 0 {
+		t.Errorf("waive amount = %d, want 0", adj.Amount)
+	}
+	if adj.AdjustmentReasonCode == nil || *adj.AdjustmentReasonCode != AdjustmentReasonMeterRecoveryWaived {
+		t.Errorf("reason = %v, want METER_RECOVERY_WAIVED", adj.AdjustmentReasonCode)
+	}
+}
+
 // auditActionCounts groups recorded audit events by action for assertion.
 // Helper local to draft tests so the surface stays small; promote later if
 // other test files reach for the same shape.
