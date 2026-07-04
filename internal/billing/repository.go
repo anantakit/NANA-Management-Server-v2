@@ -80,6 +80,20 @@ type BillingRepository interface {
 	// BillingApplicationChecker port).
 	HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 
+	// HasNonVoidAdjustmentLineByRecoveryIDAndUtility is the Q1.5 per-utility
+	// inverse-FK probe: true iff a non-VOID bill references the recovery row via
+	// an ADJUSTMENT line for THAT utility. Electricity and water resolve
+	// independently, so applied-state is derived per (recovery, utility).
+	HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility AdjustmentUtility) (bool, error)
+
+	// HasUnresolvedOverRecordByContractID is the Q1.5 per-utility finalization
+	// gate: true iff the contract's room has any AFFECTED (recorded > current)
+	// recovery utility that lacks a non-VOID ADJUSTMENT line for that utility.
+	// Only over-record utilities engage (recorded IS NULL or recorded <= current
+	// never blocks — §0b). Supersedes HasPendingRecoveryByContractID once the
+	// per-utility apply path lands (P3-B).
+	HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+
 	// CountPendingBaselineCorrectionsByRoomIDs returns, per room, the count
 	// of active READING_RECOVERY meter rows that have NOT yet been applied
 	// to any non-VOID bill. Mirrors the per-row applied-state derivation
@@ -736,6 +750,76 @@ func (r *billingRepository) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Con
 		return false, fmt.Errorf("check applied adjustment line: %w", err)
 	}
 	return count > 0, nil
+}
+
+// HasNonVoidAdjustmentLineByRecoveryIDAndUtility is the Q1.5 per-utility variant
+// of the probe above — same "applied" definition, additionally scoped to the
+// utility so electricity and water resolve independently.
+func (r *billingRepository) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility AdjustmentUtility) (bool, error) {
+	var count int64
+	err := database.DB(ctx, r.db).
+		Table("bill_line_items AS li").
+		Joins("JOIN bills b ON b.id = li.bill_id").
+		Where("li.adjustment_recovery_reading_id = ?", recoveryReadingID).
+		Where("li.adjustment_utility = ?", utility).
+		Where("b.status <> ?", BillStatusVoid).
+		Where("b.deleted_at IS NULL").
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("check applied adjustment line by utility: %w", err)
+	}
+	return count > 0, nil
+}
+
+// HasUnresolvedOverRecordByContractID is the Q1.5 per-utility finalization gate.
+// It enumerates the AFFECTED (recorded > current) utilities of the contract's
+// recovery rows via a UNION ALL, then returns true iff any such (recovery,
+// utility) pair lacks a non-VOID ADJUSTMENT line for that utility. A NOT EXISTS
+// (not a LEFT JOIN) is required because a pair can hold both a VOID and a
+// non-VOID line at once; only the non-VOID one resolves it. Waived pairs carry a
+// zero-amount non-VOID line → resolved. Utilities with recorded IS NULL or
+// recorded <= current never enter the set (not an over-record — §0b).
+func (r *billingRepository) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	var exists bool
+	err := database.DB(ctx, r.db).
+		Raw(`SELECT EXISTS (
+			SELECT 1 FROM (
+				SELECT mr.id AS recovery_id, ? AS utility
+				FROM meter_readings mr
+				JOIN contracts c ON c.room_id = mr.room_id
+				WHERE c.id = ?
+				  AND mr.anchor_reason = ?
+				  AND mr.deleted_at IS NULL
+				  AND mr.electricity_recorded IS NOT NULL
+				  AND mr.electricity_recorded > mr.electricity_current
+				UNION ALL
+				SELECT mr.id AS recovery_id, ? AS utility
+				FROM meter_readings mr
+				JOIN contracts c ON c.room_id = mr.room_id
+				WHERE c.id = ?
+				  AND mr.anchor_reason = ?
+				  AND mr.deleted_at IS NULL
+				  AND mr.water_recorded IS NOT NULL
+				  AND mr.water_recorded > mr.water_current
+			) affected
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM bill_line_items bli
+				JOIN bills b ON b.id = bli.bill_id
+				WHERE bli.adjustment_recovery_reading_id = affected.recovery_id
+				  AND bli.adjustment_utility = affected.utility
+				  AND b.status <> ?
+				  AND b.deleted_at IS NULL
+			)
+		)`,
+			AdjustmentUtilityElectricity, contractID, meterreading.AnchorReasonReadingRecovery,
+			AdjustmentUtilityWater, contractID, meterreading.AnchorReasonReadingRecovery,
+			BillStatusVoid).
+		Scan(&exists).Error
+	if err != nil {
+		return false, fmt.Errorf("check unresolved over-record by contract: %w", err)
+	}
+	return exists, nil
 }
 
 // CountPendingBaselineCorrectionsByRoomIDs is the batch sibling of

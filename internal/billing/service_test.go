@@ -20,26 +20,26 @@ import (
 // --- Hand-written mocks ---
 
 type mockBillingRepo struct {
-	findAllFn                           func(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
-	listBillsByBatchIDFn                func(batchID uuid.UUID) ([]Bill, error)
-	listMonthlyBillsByApartmentMonthFn  func(apartmentID uuid.UUID, billingMonth string) ([]Bill, error)
-	updateErrByBillID                   map[uuid.UUID]error // per-bill Update failure injection
-	findByIDFn                          func(ctx context.Context, id uuid.UUID) (*Bill, error)
-	findByIDWithRelationsFn             func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
-	findByContractAndMonthFn            func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
-	findNonVoidedByContractMonthFn      func(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error)
-	findActiveContractsByApartmentIDFn  func(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
-	findExistingByContractsAndMonthFn   func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
-	sumPaidFn                           func(ctx context.Context, contractID uuid.UUID, since string) (int64, error)
-	hasPaidAdvanceRentFn                func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
-	findUnpaidMonthlyFn                 func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
-	findAbsorbedFn                      func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
-	findCorrectedFromBillIDFn           func(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error)
-	createFn                            func(ctx context.Context, bill *Bill) error
-	updateFn                            func(ctx context.Context, bill *Bill) error
-	hasPendingRecoveryFn                func(ctx context.Context, contractID uuid.UUID) (bool, error)
-	apartmentID                         uuid.UUID
-	findApartmentIDNotFound             bool // explicit opt-in for "room not found" path
+	findAllFn                          func(ctx context.Context, params BillListParams) ([]BillWithRelations, int64, error)
+	listBillsByBatchIDFn               func(batchID uuid.UUID) ([]Bill, error)
+	listMonthlyBillsByApartmentMonthFn func(apartmentID uuid.UUID, billingMonth string) ([]Bill, error)
+	updateErrByBillID                  map[uuid.UUID]error // per-bill Update failure injection
+	findByIDFn                         func(ctx context.Context, id uuid.UUID) (*Bill, error)
+	findByIDWithRelationsFn            func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
+	findByContractAndMonthFn           func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
+	findNonVoidedByContractMonthFn     func(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error)
+	findActiveContractsByApartmentIDFn func(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
+	findExistingByContractsAndMonthFn  func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
+	sumPaidFn                          func(ctx context.Context, contractID uuid.UUID, since string) (int64, error)
+	hasPaidAdvanceRentFn               func(ctx context.Context, contractID uuid.UUID, month string) (bool, error)
+	findUnpaidMonthlyFn                func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
+	findAbsorbedFn                     func(ctx context.Context, contractID uuid.UUID) ([]Bill, error)
+	findCorrectedFromBillIDFn          func(ctx context.Context, billID uuid.UUID) (*uuid.UUID, error)
+	createFn                           func(ctx context.Context, bill *Bill) error
+	updateFn                           func(ctx context.Context, bill *Bill) error
+	hasPendingRecoveryFn               func(ctx context.Context, contractID uuid.UUID) (bool, error)
+	apartmentID                        uuid.UUID
+	findApartmentIDNotFound            bool // explicit opt-in for "room not found" path
 
 	createdBill  *Bill   // last bill created (kept for legacy single-bill tests)
 	createdBills []*Bill // every bill created in order (used by batch commit tests)
@@ -48,7 +48,6 @@ type mockBillingRepo struct {
 	// Trackers for line-item mutation tests (UpdateMonthlyDraft / UpdateSettlementDraft).
 	deletedSourcesByBillID map[uuid.UUID][]LineItemSource
 	createdLineItems       []BillLineItem
-
 }
 
 // defaultMockApartmentID is returned by FindApartmentIDByRoomID when neither
@@ -78,6 +77,7 @@ func (m *mockBillingRepo) FindByID(ctx context.Context, id uuid.UUID) (*Bill, er
 	}
 	return nil, gorm.ErrRecordNotFound
 }
+
 // FindByIDWithRelations mock จำลอง "latest persisted state by bill ID":
 // match จาก updatedBills ย้อนหลังก่อน (post-mutation state) แล้วค่อย fallback ไป FindByID.
 // Tests that need control over the relation fields (ApartmentID, names) can
@@ -201,6 +201,7 @@ func (m *mockBillingRepo) CreateLineItems(_ context.Context, items []BillLineIte
 	m.createdLineItems = append(m.createdLineItems, items...)
 	return nil
 }
+
 // LockBillForCorrection mirrors FindByID semantics so correction tests can
 // inject the "old bill" via findByIDFn (or createdBill fallback). In real
 // production the SELECT FOR UPDATE locks the row; here the lock is a no-op
@@ -238,6 +239,14 @@ func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryID(_ context.Context
 	return false, nil
 }
 
+func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(_ context.Context, _ uuid.UUID, _ AdjustmentUtility) (bool, error) {
+	return false, nil
+}
+
+func (m *mockBillingRepo) HasUnresolvedOverRecordByContractID(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
+
 func (m *mockBillingRepo) CountPendingBaselineCorrectionsByRoomIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]int, error) {
 	return map[uuid.UUID]int{}, nil
 }
@@ -248,7 +257,6 @@ func (m *mockBillingRepo) HasPendingRecoveryByContractID(ctx context.Context, co
 	}
 	return false, nil
 }
-
 
 type mockContractQuerier struct {
 	contract *contract.Contract
@@ -332,11 +340,11 @@ func (m *mockTxManager) RunInTx(_ context.Context, fn func(ctx context.Context) 
 // editedQueryCalls counts how many times EditedBillIDs is invoked so list
 // tests can prove batching (one call per page, no N+1).
 type mockBillAuditRepo struct {
-	createErr        error
+	createErr         error
 	createErrByBillID map[uuid.UUID]error // per-bill audit failure injection (BatchFinalizeAll tests)
-	editedErr        error
-	logs             []BillAuditLog
-	editedQueryCalls int
+	editedErr         error
+	logs              []BillAuditLog
+	editedQueryCalls  int
 }
 
 var _ BillAuditRepository = (*mockBillAuditRepo)(nil)
@@ -694,12 +702,11 @@ func TestAdvanceMonth(t *testing.T) {
 	}
 }
 
-
 func TestBatch_ComputeStatus(t *testing.T) {
 	tests := []struct {
-		name                                           string
-		created, alreadyExists, skipped, failed        int
-		want                                           BatchStatus
+		name                                    string
+		created, alreadyExists, skipped, failed int
+		want                                    BatchStatus
 	}{
 		{"empty apartment", 0, 0, 0, 0, BatchStatusCompleted},
 		{"all created", 3, 0, 0, 0, BatchStatusCompleted},
@@ -726,4 +733,3 @@ func TestBatch_ComputeStatus(t *testing.T) {
 }
 
 // --- Deposit eligibility ---
-
