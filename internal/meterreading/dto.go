@@ -407,6 +407,15 @@ type PendingBaselineCorrection struct {
 	RecoveryWater        int
 	RecoveryCreatedAt    time.Time
 	AnchorNote           string
+
+	// Q1.5 over-record meter facts (per utility). Physical = Recovery{Electricity,
+	// Water}. Recorded = the previously-recorded (wrong) value; 0 when the utility
+	// was not corrected. Affected = recorded > physical (pure meter fact — the
+	// money recommendation is derived by billing from the bill's contract rate).
+	ElectricityRecorded int
+	ElectricityAffected bool
+	WaterRecorded       int
+	WaterAffected       bool
 }
 
 // PendingBaselineCorrectionResponse is the public JSON shape returned by
@@ -423,6 +432,14 @@ type PendingBaselineCorrectionResponse struct {
 	RecoveryWater        int    `json:"recovery_water_current"`
 	RecoveryCreatedAt    string `json:"recovery_created_at"`
 	AnchorNote           string `json:"anchor_note"`
+
+	// Q1.5 over-record meter facts. recovery_*_current above is the physical
+	// value; *_recorded is the previously-recorded (wrong) value (0 = utility not
+	// corrected); *_affected = recorded > physical.
+	ElectricityRecorded int  `json:"electricity_recorded"`
+	ElectricityAffected bool `json:"electricity_affected"`
+	WaterRecorded       int  `json:"water_recorded"`
+	WaterAffected       bool `json:"water_affected"`
 }
 
 func ToPendingBaselineCorrectionResponse(p PendingBaselineCorrection) PendingBaselineCorrectionResponse {
@@ -445,6 +462,10 @@ func ToPendingBaselineCorrectionResponse(p PendingBaselineCorrection) PendingBas
 		RecoveryWater:        p.RecoveryWater,
 		RecoveryCreatedAt:    p.RecoveryCreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		AnchorNote:           p.AnchorNote,
+		ElectricityRecorded:  p.ElectricityRecorded,
+		ElectricityAffected:  p.ElectricityAffected,
+		WaterRecorded:        p.WaterRecorded,
+		WaterAffected:        p.WaterAffected,
 	}
 }
 

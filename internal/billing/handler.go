@@ -1,7 +1,6 @@
 package billing
 
 import (
-	"nana/internal/meterreading"
 	"nana/internal/shared/bind"
 	"nana/internal/shared/middleware"
 	"nana/internal/shared/money"
@@ -13,9 +12,9 @@ import (
 )
 
 type BillingHandler struct {
-	svc                BillingService
-	repo               BillingRepository
-	contracts          ContractQuerier
+	svc                 BillingService
+	repo                BillingRepository
+	contracts           ContractQuerier
 	baselineCorrections BaselineCorrectionQuerier
 }
 
@@ -73,7 +72,11 @@ func (h *BillingHandler) ListPendingBaselineCorrectionsForBill(c fiber.Ctx) erro
 	if err != nil {
 		return respond.Error(c, err)
 	}
-	return respond.Success(c, "สำเร็จ", meterreading.ToPendingBaselineCorrectionResponseList(rows))
+	// Q1.5: billing derives the deterministic refund from the bill's OWN
+	// contract rate (money authority stays here); meterreading supplied only
+	// rate-free meter facts.
+	out := buildPendingCorrectionsForBill(rows, c2.ElectricityRatePerUnit, c2.WaterRatePerUnit)
+	return respond.Success(c, "สำเร็จ", out)
 }
 
 func (h *BillingHandler) List(c fiber.Ctx) error {

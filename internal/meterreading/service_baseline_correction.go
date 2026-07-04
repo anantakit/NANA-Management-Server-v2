@@ -156,6 +156,22 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 		if r.AnchorNote != nil {
 			anchorNote = *r.AnchorNote
 		}
+
+		// Q1.5 over-record meter facts (per utility). Physical = current.
+		// recorded (nullable) = previously-recorded wrong value; affected = an
+		// over-record (recorded > physical). Pure meter facts — no money here;
+		// billing derives the refund from the bill's contract rate.
+		elecRecorded, elecAffected := 0, false
+		if r.ElectricityRecorded != nil {
+			elecRecorded = *r.ElectricityRecorded
+			elecAffected = *r.ElectricityRecorded > r.ElectricityCurrent
+		}
+		waterRecorded, waterAffected := 0, false
+		if r.WaterRecorded != nil {
+			waterRecorded = *r.WaterRecorded
+			waterAffected = *r.WaterRecorded > r.WaterCurrent
+		}
+
 		out = append(out, PendingBaselineCorrection{
 			RecoveryID:           r.ID,
 			SourceReadingID:      sourceID,
@@ -167,6 +183,10 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 			RecoveryWater:        r.WaterCurrent,
 			RecoveryCreatedAt:    r.CreatedAt,
 			AnchorNote:           anchorNote,
+			ElectricityRecorded:  elecRecorded,
+			ElectricityAffected:  elecAffected,
+			WaterRecorded:        waterRecorded,
+			WaterAffected:        waterAffected,
 		})
 	}
 	return out, nil
