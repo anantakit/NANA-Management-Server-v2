@@ -57,25 +57,32 @@ var (
 	// are the corruption-guard arm; service constructor is the wiring arm).
 	ErrRecoveryElecPrevMustEqualCurrent  = errors.New("READING_RECOVERY: electricity_previous ต้องเท่ากับ electricity_current")
 	ErrRecoveryWaterPrevMustEqualCurrent = errors.New("READING_RECOVERY: water_previous ต้องเท่ากับ water_current")
+
+	// Q1.5 Over-Record: recorded (previously-recorded wrong value) may never be
+	// below the physical current — recorded < current is an under-record, which
+	// is out of scope (L1). recorded == current is an unaffected utility;
+	// recorded > current is the over-record that drives a refund.
+	ErrRecoveryElecRecordedBelowCurrent  = errors.New("READING_RECOVERY: electricity_recorded ต้องไม่น้อยกว่า electricity_current")
+	ErrRecoveryWaterRecordedBelowCurrent = errors.New("READING_RECOVERY: water_recorded ต้องไม่น้อยกว่า water_current")
 )
 
 // --- Model ---
 
 type MeterReading struct {
-	ID                    uuid.UUID      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
-	RoomID                uuid.UUID      `gorm:"type:uuid;not null" json:"room_id"`
-	ReadingType           ReadingType    `gorm:"type:varchar(10);not null;default:'MONTHLY'" json:"reading_type"`
-	BillingMonth          *string        `gorm:"type:varchar(7)" json:"billing_month"`
-	ReadingDateActual     *time.Time     `gorm:"type:date" json:"reading_date_actual"`
-	ElectricityPrevious   int            `gorm:"not null;default:0" json:"electricity_previous"`
-	ElectricityCurrent    int            `gorm:"not null;default:0" json:"electricity_current"`
-	WaterPrevious         int            `gorm:"not null;default:0" json:"water_previous"`
-	WaterCurrent          int            `gorm:"not null;default:0" json:"water_current"`
-	ReadBy                *uuid.UUID     `gorm:"type:uuid" json:"read_by"`
-	IsRolloverElectricity bool           `gorm:"not null;default:false" json:"is_rollover_electricity"`
-	IsRolloverWater       bool           `gorm:"not null;default:false" json:"is_rollover_water"`
-	IsAnomalyElectricity  bool           `gorm:"not null;default:false" json:"is_anomaly_electricity"`
-	IsAnomalyWater        bool           `gorm:"not null;default:false" json:"is_anomaly_water"`
+	ID                    uuid.UUID   `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()" json:"id"`
+	RoomID                uuid.UUID   `gorm:"type:uuid;not null" json:"room_id"`
+	ReadingType           ReadingType `gorm:"type:varchar(10);not null;default:'MONTHLY'" json:"reading_type"`
+	BillingMonth          *string     `gorm:"type:varchar(7)" json:"billing_month"`
+	ReadingDateActual     *time.Time  `gorm:"type:date" json:"reading_date_actual"`
+	ElectricityPrevious   int         `gorm:"not null;default:0" json:"electricity_previous"`
+	ElectricityCurrent    int         `gorm:"not null;default:0" json:"electricity_current"`
+	WaterPrevious         int         `gorm:"not null;default:0" json:"water_previous"`
+	WaterCurrent          int         `gorm:"not null;default:0" json:"water_current"`
+	ReadBy                *uuid.UUID  `gorm:"type:uuid" json:"read_by"`
+	IsRolloverElectricity bool        `gorm:"not null;default:false" json:"is_rollover_electricity"`
+	IsRolloverWater       bool        `gorm:"not null;default:false" json:"is_rollover_water"`
+	IsAnomalyElectricity  bool        `gorm:"not null;default:false" json:"is_anomaly_electricity"`
+	IsAnomalyWater        bool        `gorm:"not null;default:false" json:"is_anomaly_water"`
 
 	// Reading Recovery anchor fields (Phase 1). All nullable; populated only
 	// when a reading breaks prev-chain continuity (PHYSICAL_REPLACEMENT or
@@ -84,6 +91,14 @@ type MeterReading struct {
 	AnchorReason            *AnchorReason `gorm:"type:varchar(30)" json:"anchor_reason"`
 	AnchorNote              *string       `gorm:"type:text" json:"anchor_note"`
 	RecoverySourceReadingID *uuid.UUID    `gorm:"type:uuid" json:"recovery_source_reading_id"`
+
+	// Q1.5 Over-Record: the previously-recorded (wrong) value being corrected,
+	// per utility. Persisted on the READING_RECOVERY row so the deterministic
+	// refund = (recorded − current) × rate can be computed without lineage and
+	// independent of the (narrative-only) source. NULL = utility not corrected.
+	// Lock A is unaffected: previous/current still hold the physical value.
+	ElectricityRecorded *int `gorm:"column:electricity_recorded" json:"electricity_recorded,omitempty"`
+	WaterRecorded       *int `gorm:"column:water_recorded" json:"water_recorded,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -229,6 +244,15 @@ func (m *MeterReading) ValidateAnchor() error {
 		}
 		if m.WaterPrevious != m.WaterCurrent {
 			return ErrRecoveryWaterPrevMustEqualCurrent
+		}
+		// Q1.5 over-record: recorded (when captured) must not be below the
+		// physical current — an under-record is out of scope. recorded == current
+		// is an unaffected utility; recorded > current drives the refund.
+		if m.ElectricityRecorded != nil && *m.ElectricityRecorded < m.ElectricityCurrent {
+			return ErrRecoveryElecRecordedBelowCurrent
+		}
+		if m.WaterRecorded != nil && *m.WaterRecorded < m.WaterCurrent {
+			return ErrRecoveryWaterRecordedBelowCurrent
 		}
 	}
 	return nil

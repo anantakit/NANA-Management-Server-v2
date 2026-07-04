@@ -44,7 +44,13 @@ type CreateBaselineCorrectionRequest struct {
 	RoomID             string `json:"room_id" validate:"omitempty,uuid"`
 	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
 	WaterCurrent       int    `json:"water_current" validate:"min=0"`
-	AnchorNote         string `json:"anchor_note" validate:"required,min=1"`
+	// Q1.5 over-record: the previously-recorded (wrong) value per utility being
+	// corrected. Optional + independent — nil means that utility is not part of
+	// this correction. Must be >= the matching current (ValidateAnchor + DB CHECK;
+	// recorded < current is an out-of-scope under-record).
+	ElectricityRecorded *int   `json:"electricity_recorded" validate:"omitempty,min=0"`
+	WaterRecorded       *int   `json:"water_recorded" validate:"omitempty,min=0"`
+	AnchorNote          string `json:"anchor_note" validate:"required,min=1"`
 }
 
 type ExitCreateRequest struct {
@@ -144,7 +150,7 @@ func (r UpdateRequest) RolloverFlags() MeterRolloverFlags {
 
 type ListParams struct {
 	pagination.PaginationParams
-	Month       string `query:"month" validate:"omitempty"`                          // format: YYYY-MM
+	Month       string `query:"month" validate:"omitempty"`                           // format: YYYY-MM
 	ReadingType string `query:"reading_type" validate:"omitempty,oneof=MONTHLY EXIT"` // MONTHLY or EXIT
 }
 
@@ -391,16 +397,16 @@ type LatestReadingResponse struct {
 // not narration — most recent correction surfaces first so the operator's
 // "I just made this, apply it" flow reads top-down.
 type PendingBaselineCorrection struct {
-	RecoveryID            uuid.UUID
-	SourceReadingID       uuid.UUID
-	SourceBillingMonth    string
-	SourceElectricity     int
-	SourceWater           int
-	RecoveryBillingMonth  string
-	RecoveryElectricity   int
-	RecoveryWater         int
-	RecoveryCreatedAt     time.Time
-	AnchorNote            string
+	RecoveryID           uuid.UUID
+	SourceReadingID      uuid.UUID
+	SourceBillingMonth   string
+	SourceElectricity    int
+	SourceWater          int
+	RecoveryBillingMonth string
+	RecoveryElectricity  int
+	RecoveryWater        int
+	RecoveryCreatedAt    time.Time
+	AnchorNote           string
 }
 
 // PendingBaselineCorrectionResponse is the public JSON shape returned by

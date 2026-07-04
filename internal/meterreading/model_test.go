@@ -998,10 +998,10 @@ func TestMeterReading_ValidateAnchor_RecoveryRequiresPrevEqualsCurrent(t *testin
 	sourceID := uuid.New()
 
 	cases := []struct {
-		name                   string
-		elecPrev, elecCurr     int
-		waterPrev, waterCurr   int
-		wantErr                error
+		name                 string
+		elecPrev, elecCurr   int
+		waterPrev, waterCurr int
+		wantErr              error
 	}{
 		{"both equal (valid)", 200, 200, 55, 55, nil},
 		{"elec prev != curr", 199, 200, 55, 55, ErrRecoveryElecPrevMustEqualCurrent},
@@ -1019,6 +1019,48 @@ func TestMeterReading_ValidateAnchor_RecoveryRequiresPrevEqualsCurrent(t *testin
 				ElectricityCurrent:      tc.elecCurr,
 				WaterPrevious:           tc.waterPrev,
 				WaterCurrent:            tc.waterCurr,
+			}
+			if got := m.ValidateAnchor(); got != tc.wantErr {
+				t.Errorf("ValidateAnchor() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestMeterReading_ValidateAnchor_RecoveryRecordedNotBelowCurrent locks the
+// Q1.5 over-record rule: recorded (previously-recorded wrong value) may never be
+// below the physical current — recorded < current is an under-record (out of
+// scope, L1). recorded == current (unaffected) and recorded > current
+// (over-record) are both valid; NULL recorded is valid (utility not corrected).
+func TestMeterReading_ValidateAnchor_RecoveryRecordedNotBelowCurrent(t *testing.T) {
+	recoveryReason := AnchorReasonReadingRecovery
+	note := "ค้นพบว่าจดมิเตอร์ผิด"
+	intPtr := func(v int) *int { return &v }
+
+	cases := []struct {
+		name     string
+		elecRec  *int
+		waterRec *int
+		wantErr  error
+	}{
+		{"both nil (valid — no utility corrected)", nil, nil, nil},
+		{"elec over-record (recorded > current)", intPtr(1500), nil, nil},
+		{"elec recorded == current (unaffected, valid)", intPtr(1200), nil, nil},
+		{"water over-record only", nil, intPtr(300), nil},
+		{"elec under-record rejected", intPtr(1199), nil, ErrRecoveryElecRecordedBelowCurrent},
+		{"water under-record rejected", nil, intPtr(219), ErrRecoveryWaterRecordedBelowCurrent},
+		{"elec fires before water", intPtr(1199), intPtr(219), ErrRecoveryElecRecordedBelowCurrent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MeterReading{
+				RoomID:              roomA,
+				AnchorReason:        &recoveryReason,
+				AnchorNote:          &note,
+				ElectricityPrevious: 1200, ElectricityCurrent: 1200, // physical (prev=curr, Lock A)
+				WaterPrevious: 220, WaterCurrent: 220,
+				ElectricityRecorded: tc.elecRec,
+				WaterRecorded:       tc.waterRec,
 			}
 			if got := m.ValidateAnchor(); got != tc.wantErr {
 				t.Errorf("ValidateAnchor() = %v, want %v", got, tc.wantErr)

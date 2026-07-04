@@ -258,12 +258,14 @@ func (h *MeterReadingHandler) CreateBaselineCorrection(c fiber.Ctx) error {
 	}
 
 	input := CreateBaselineCorrectionInput{
-		SourceReadingID:    sourceIDPtr,
-		RoomID:             roomIDPtr,
-		ElectricityCurrent: req.ElectricityCurrent,
-		WaterCurrent:       req.WaterCurrent,
-		AnchorNote:         req.AnchorNote,
-		ActorID:            middleware.ActorFromCtx(c),
+		SourceReadingID:     sourceIDPtr,
+		RoomID:              roomIDPtr,
+		ElectricityCurrent:  req.ElectricityCurrent,
+		WaterCurrent:        req.WaterCurrent,
+		ElectricityRecorded: req.ElectricityRecorded,
+		WaterRecorded:       req.WaterRecorded,
+		AnchorNote:          req.AnchorNote,
+		ActorID:             middleware.ActorFromCtx(c),
 	}
 
 	reading, err := h.svc.CreateBaselineCorrection(c.Context(), input)

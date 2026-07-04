@@ -39,8 +39,12 @@ type CreateBaselineCorrectionInput struct {
 	RoomID             *uuid.UUID // room anchor for the nil-source path; ignored when source present
 	ElectricityCurrent int        // operator's physical reading now
 	WaterCurrent       int
-	AnchorNote         string // required; ≥1 non-whitespace char (ValidateAnchor)
-	ActorID            *uuid.UUID
+	// Q1.5 over-record: previously-recorded (wrong) value per utility. nil =
+	// that utility not corrected. Must be >= the matching current (ValidateAnchor).
+	ElectricityRecorded *int
+	WaterRecorded       *int
+	AnchorNote          string // required; ≥1 non-whitespace char (ValidateAnchor)
+	ActorID             *uuid.UUID
 }
 
 // SoftDeletePendingBaselineCorrection enforces the four ownership +
@@ -126,10 +130,10 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 		// Nil-source rows MUST appear in the list (they no longer vanish),
 		// emitting an empty source-billing-month and zero source readings.
 		var (
-			sourceID       uuid.UUID
-			sourceMonth    string
-			sourceElec     int
-			sourceWater    int
+			sourceID    uuid.UUID
+			sourceMonth string
+			sourceElec  int
+			sourceWater int
 		)
 		if r.RecoverySourceReadingID != nil {
 			source, err := s.repo.FindByIDSimple(ctx, *r.RecoverySourceReadingID)
@@ -283,6 +287,10 @@ func (s *meterReadingService) CreateBaselineCorrection(ctx context.Context, inpu
 			AnchorReason:            &recoveryReason,
 			AnchorNote:              &anchorNote,
 			RecoverySourceReadingID: input.SourceReadingID, // nil-safe: NULL FK on the nil path
+			// Q1.5 over-record: persist recorded per utility (nil-safe: NULL when
+			// the utility is not part of this correction).
+			ElectricityRecorded: input.ElectricityRecorded,
+			WaterRecorded:       input.WaterRecorded,
 		}
 		if err := recovery.ValidateAnchor(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())
