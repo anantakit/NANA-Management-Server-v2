@@ -13,6 +13,7 @@
     "smoke:moveout-detail": "node playwright-test-moveout-detail-smoke.js",
     "smoke:bills-list": "node playwright-test-bills-list-smoke.js",
     "smoke:bill-edit": "node playwright-test-bill-edit-smoke.js",
+    "smoke:reading-recovery": "node playwright-test-reading-recovery-smoke.js",
     "smoke:rooms-list": "node playwright-test-rooms-list-smoke.js",
     "smoke:meter-scope": "node playwright-test-meter-scope-smoke.js",
     "smoke:tool-chrome": "node playwright-test-tool-chrome-smoke.js",

@@ -75,6 +75,9 @@ func Run(db *gorm.DB, env string) error {
 		if err := seedDevReconciliationFixtures(db); err != nil {
 			return fmt.Errorf("seed dev reconciliation fixtures: %w", err)
 		}
+		if err := seedDevRecoveryFixture(db); err != nil {
+			return fmt.Errorf("seed dev recovery fixture: %w", err)
+		}
 	}
 
 	slog.Info("seed data completed")
@@ -117,8 +120,8 @@ func seedApartments(db *gorm.DB) error {
 
 func seedRooms(db *gorm.DB) error {
 	roomsByApartment := map[string][]roomSeed{
-		"นานาคอร์ท": nanaCourt(),
-		"นานาเพลส":  nanaPlace(),
+		"นานาคอร์ท":   nanaCourt(),
+		"นานาเพลส":    nanaPlace(),
 		"นานาแมนชั่น": nanaMansion(),
 		// อีซี่เพลส — ยังไม่มีห้อง
 	}
@@ -238,13 +241,13 @@ func rangeRooms(prefix string, start, end int, roomType room.RoomType, floor int
 // billing configs:
 //   - CLEANING_FEE       = ฿300  (charged on every settlement)
 //   - KEY_SERVICE        = ฿50   (per-incident rate for "ลืมกุญแจ" — applied
-//                                 per monthly bill once incident tracking ships;
-//                                 admin can toggle off per apartment)
+//     per monthly bill once incident tracking ships;
+//     admin can toggle off per apartment)
 //   - PRORATE_DAILY_RATE = ฿100  (per-day rate for partial-month settlement)
 //   - LATE_PENALTY       = ฿100  (flat suggested fee surfaced in the bill drawer
-//                                 when an overdue bill is opened for collection;
-//                                 display-time only, never mutates the bill —
-//                                 see backlog_late_payment_penalty.md)
+//     when an overdue bill is opened for collection;
+//     display-time only, never mutates the bill —
+//     see backlog_late_payment_penalty.md)
 //
 // Each row is checked independently and only inserted if missing — safe
 // to re-run on existing DBs and on apartments that were created before
