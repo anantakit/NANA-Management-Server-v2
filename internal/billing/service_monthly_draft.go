@@ -253,25 +253,17 @@ func (s *billingService) applyBaselineCorrections(
 				fmt.Sprintf("รายการปรับฐานนี้ถูกบันทึกในบิลอื่นไปแล้ว (รายการที่ %d)", i+1))
 		}
 
-		reasonCode := AdjustmentReasonMeterRecovery
-		note := in.AdjustmentNote
 		amount := money.ToSatang(in.Amount)
-		recoveryFK := recoveryID
 
-		line := BillLineItem{
-			BillID:                      billID,
-			LineType:                    LineItemAdjustment,
-			Source:                      LineItemSourceManual,
-			Description:                 buildAdjustmentDescription(amount, sourceMonth),
-			Amount:                      amount,
-			Quantity:                    1,
-			UnitPrice:                   amount,
-			SortOrder:                   maxSort + 1 + i,
-			AdjustmentRecoveryReadingID: &recoveryFK,
-			AdjustmentReasonCode:        &reasonCode,
-			AdjustmentNote:              &note,
-		}
-		if err := line.ValidateAdjustment(); err != nil {
+		// Shared construction+validation (see recovery_adjustment.go). Monthly
+		// applies charge/refund only today — waive routes through the same
+		// builder once the DTO carries the operator's waive choice.
+		line, err := BuildRecoveryAdjustmentLine(billID, RecoveryResolution{
+			RecoveryReadingID: recoveryID,
+			Amount:            amount,
+			Note:              in.AdjustmentNote,
+		}, sourceMonth, maxSort+1+i)
+		if err != nil {
 			return nil, respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		if err := s.repo.CreateLineItems(txCtx, []BillLineItem{line}); err != nil {
@@ -281,8 +273,8 @@ func (s *billingService) applyBaselineCorrections(
 			AuditApplyRecoveryAdjustmentPayload{
 				Amount:            amount,
 				RecoveryReadingID: recoveryID,
-				ReasonCode:        string(reasonCode),
-				Note:              note,
+				ReasonCode:        string(*line.AdjustmentReasonCode),
+				Note:              in.AdjustmentNote,
 			}); err != nil {
 			return nil, fmt.Errorf("emit recovery adjustment audit: %w", err)
 		}

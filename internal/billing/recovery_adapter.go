@@ -128,6 +128,16 @@ func (a *RecoveryAdapter) AttachAdjustmentLine(ctx context.Context, params meter
 // Two branches preserve Thai grammar for both directions; signed Amount
 // drives the choice.
 func buildAdjustmentDescription(amount int64, sourceMonth string) string {
+	// Waive/no-charge resolution (METER_RECOVERY_WAIVED) carries amount == 0.
+	// charge/refund can never be zero (amount invariant), so amount == 0
+	// uniquely identifies a waive. Tenant-invisible (zero line hidden), so this
+	// serves the internal detail/audit view.
+	if amount == 0 {
+		if sourceMonth == "" {
+			return "ไม่คิดเงินเพิ่ม (จดมิเตอร์ผิด)"
+		}
+		return fmt.Sprintf("ไม่คิดเงินเพิ่มจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
+	}
 	// Source-optional (locked 2026-07-01): a nil-source recovery carries no
 	// reference month. Emit a source-less description rather than a dangling
 	// "เดือน " — the correction is complete without a source. No inference.
