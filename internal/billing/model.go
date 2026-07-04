@@ -89,15 +89,34 @@ const (
 type AdjustmentReasonCode string
 
 const (
-	// AdjustmentReasonMeterRecovery = charge/refund; moves money (non-zero amount).
+	// AdjustmentReasonMeterRecovery = REFUND for an over-record correction; moves
+	// money back to the tenant (amount < 0). Q1.5 removed the charge path — a
+	// too-high recorded baseline can only mean the customer over-paid.
 	AdjustmentReasonMeterRecovery AdjustmentReasonCode = "METER_RECOVERY"
 	// AdjustmentReasonMeterRecoveryWaived = the operator consciously resolved the
 	// recovery with NO money movement. Carried as a ZERO-amount ADJUSTMENT line so
-	// "resolved" stays derivable from the same inverse-FK probe as charge/refund
+	// "resolved" stays derivable from the same inverse-FK probe as refund
 	// (single source of truth); the note records why. Q1 Recovery Decision —
 	// project_reading_recovery_q1_unified_decision_surface_lock.
 	AdjustmentReasonMeterRecoveryWaived AdjustmentReasonCode = "METER_RECOVERY_WAIVED"
 )
+
+// AdjustmentUtility names which metered utility an ADJUSTMENT line settles.
+// Electricity and water are independent over-record decisions (a recovery may
+// refund electricity while water is untouched), so each ADJUSTMENT line is
+// tagged with its utility. Populated only on ADJUSTMENT lines (P3 wiring).
+// Q1.5 Over-Record Re-model — project_reading_recovery_overrecord_model_lock.
+type AdjustmentUtility string
+
+const (
+	AdjustmentUtilityElectricity AdjustmentUtility = "ELECTRICITY"
+	AdjustmentUtilityWater       AdjustmentUtility = "WATER"
+)
+
+// IsValid reports whether u is a recognised utility discriminator.
+func (u AdjustmentUtility) IsValid() bool {
+	return u == AdjustmentUtilityElectricity || u == AdjustmentUtilityWater
+}
 
 // --- Override map (jsonb on bills) ---
 
@@ -238,8 +257,12 @@ var (
 	ErrAdjustmentReasonCodeInvalid       = errors.New("ADJUSTMENT reason code ไม่ถูกต้อง")
 	ErrAdjustmentNoteRequired            = errors.New("ADJUSTMENT ต้องระบุหมายเหตุประกอบ")
 	ErrAdjustmentNoteTooShort            = errors.New("ADJUSTMENT หมายเหตุต้องยาวอย่างน้อย 10 ตัวอักษร")
-	ErrAdjustmentAmountRequired          = errors.New("ADJUSTMENT คิดเงินเพิ่ม/คืนเงินต้องไม่เป็นศูนย์")
-	ErrAdjustmentWaivedMustBeZero        = errors.New("ADJUSTMENT ที่ยกเว้น (ไม่คิดเงิน) ต้องเป็นศูนย์")
+	// Q1.5: over-record recovery is refund-only. METER_RECOVERY must move money
+	// back to the tenant (amount < 0); a zero or positive (charge) amount is
+	// rejected. Waive carries a zero amount under METER_RECOVERY_WAIVED instead.
+	ErrAdjustmentRefundMustBeNegative = errors.New("ADJUSTMENT คืนเงิน (over-record) ต้องเป็นค่าติดลบ")
+	ErrAdjustmentWaivedMustBeZero     = errors.New("ADJUSTMENT ที่ยกเว้น (ไม่คิดเงิน) ต้องเป็นศูนย์")
+	ErrAdjustmentUtilityInvalid       = errors.New("ADJUSTMENT utility ไม่ถูกต้อง (ต้องเป็น ELECTRICITY หรือ WATER)")
 )
 
 // --- Models ---
@@ -332,6 +355,9 @@ type BillLineItem struct {
 	AdjustmentRecoveryReadingID *uuid.UUID            `gorm:"type:uuid" json:"adjustment_recovery_reading_id,omitempty"`
 	AdjustmentReasonCode        *AdjustmentReasonCode `gorm:"type:varchar(30)" json:"adjustment_reason_code,omitempty"`
 	AdjustmentNote              *string               `gorm:"type:text" json:"adjustment_note,omitempty"`
+	// AdjustmentUtility (Q1.5) — which utility this over-record refund settles.
+	// Nullable in P1; populated by the per-utility apply path in P3.
+	AdjustmentUtility *AdjustmentUtility `gorm:"type:varchar(20)" json:"adjustment_utility,omitempty"`
 
 	CreatedAt time.Time `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null;default:now()" json:"updated_at"`
@@ -386,9 +412,11 @@ func (li *BillLineItem) ValidateAdjustment() error {
 	}
 	switch *li.AdjustmentReasonCode {
 	case AdjustmentReasonMeterRecovery:
-		// charge/refund — must move money (signed: >0 charge, <0 refund).
-		if li.Amount == 0 {
-			return ErrAdjustmentAmountRequired
+		// Q1.5 refund-only: over-record means the tenant over-paid, so the
+		// refund must move money back (amount < 0). Zero or positive (charge)
+		// is rejected — charge waives go through METER_RECOVERY_WAIVED (0).
+		if li.Amount >= 0 {
+			return ErrAdjustmentRefundMustBeNegative
 		}
 	case AdjustmentReasonMeterRecoveryWaived:
 		// waive/no-charge — resolution recorded with a note; no money moves.
@@ -397,6 +425,12 @@ func (li *BillLineItem) ValidateAdjustment() error {
 		}
 	default:
 		return ErrAdjustmentReasonCodeInvalid
+	}
+	// Utility discriminator (Q1.5). Nullable in P1 — when set it must be a
+	// recognised utility. The NOT-NULL-for-ADJUSTMENT rule lands in P3 with
+	// the per-utility apply path.
+	if li.AdjustmentUtility != nil && !li.AdjustmentUtility.IsValid() {
+		return ErrAdjustmentUtilityInvalid
 	}
 	if li.AdjustmentNote == nil || strings.TrimSpace(*li.AdjustmentNote) == "" {
 		return ErrAdjustmentNoteRequired

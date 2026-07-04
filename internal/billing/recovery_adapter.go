@@ -125,30 +125,26 @@ func (a *RecoveryAdapter) AttachAdjustmentLine(ctx context.Context, params meter
 
 // buildAdjustmentDescription produces the tenant-visible Description on
 // the ADJUSTMENT line per feedback_reading_recovery_doctrine.md line 75.
-// Two branches preserve Thai grammar for both directions; signed Amount
-// drives the choice.
+// Q1.5 is refund-only: amount is either 0 (waive) or < 0 (refund) — the charge
+// path is removed, so there is no positive branch.
 func buildAdjustmentDescription(amount int64, sourceMonth string) string {
 	// Waive/no-charge resolution (METER_RECOVERY_WAIVED) carries amount == 0.
-	// charge/refund can never be zero (amount invariant), so amount == 0
-	// uniquely identifies a waive. Tenant-invisible (zero line hidden), so this
-	// serves the internal detail/audit view.
+	// A refund is always < 0 (amount invariant), so amount == 0 uniquely
+	// identifies a waive. Tenant-invisible (zero line hidden), so this serves
+	// the internal detail/audit view.
 	if amount == 0 {
 		if sourceMonth == "" {
 			return "ไม่คิดเงินเพิ่ม (จดมิเตอร์ผิด)"
 		}
 		return fmt.Sprintf("ไม่คิดเงินเพิ่มจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
 	}
+	// Refund (amount < 0). Q1.5 removed the charge path — an over-record can
+	// only refund or waive, so amount is never positive here.
 	// Source-optional (locked 2026-07-01): a nil-source recovery carries no
 	// reference month. Emit a source-less description rather than a dangling
 	// "เดือน " — the correction is complete without a source. No inference.
 	if sourceMonth == "" {
-		if amount < 0 {
-			return "คืนยอดที่เก็บเกิน (จดมิเตอร์ผิด)"
-		}
-		return "เก็บยอดเพิ่ม (จดมิเตอร์ผิด)"
+		return "คืนยอดที่เก็บเกิน (จดมิเตอร์ผิด)"
 	}
-	if amount < 0 {
-		return fmt.Sprintf("คืนยอดที่เก็บเกินจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
-	}
-	return fmt.Sprintf("เก็บยอดเพิ่มเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
+	return fmt.Sprintf("คืนยอดที่เก็บเกินจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
 }

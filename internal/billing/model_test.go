@@ -1299,7 +1299,7 @@ func TestBillLineItem_ValidateAdjustment_ReasonCodeEdgeCases(t *testing.T) {
 			li := &BillLineItem{
 				LineType:                    LineItemAdjustment,
 				Source:                      LineItemSourceManual,
-				Amount:                      100, // non-zero so METER_RECOVERY passes the amount invariant
+				Amount:                      -100, // negative so METER_RECOVERY passes the refund-only invariant
 				AdjustmentRecoveryReadingID: &recID,
 				AdjustmentReasonCode:        tc.reason,
 				AdjustmentNote:              &note,
@@ -1335,7 +1335,7 @@ func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
 			li := &BillLineItem{
 				LineType:                    LineItemAdjustment,
 				Source:                      LineItemSourceManual,
-				Amount:                      100, // non-zero so the amount invariant passes; this table tests notes
+				Amount:                      -100, // negative so the refund-only invariant passes; this table tests notes
 				AdjustmentRecoveryReadingID: &recID,
 				AdjustmentReasonCode:        &reason,
 				AdjustmentNote:              tc.note,
@@ -1347,9 +1347,10 @@ func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
 	}
 }
 
-// Q1 Recovery Decision — amount invariant by reason: charge/refund (METER_RECOVERY)
-// must move money; waive (METER_RECOVERY_WAIVED) must be zero. The amount check
-// lives inside the reason switch, before the note check.
+// Q1.5 Over-Record — amount invariant by reason: METER_RECOVERY is refund-only
+// (amount < 0); waive (METER_RECOVERY_WAIVED) must be zero. Zero or positive
+// (charge) under METER_RECOVERY is rejected. The amount check lives inside the
+// reason switch, before the note check.
 func TestBillLineItem_ValidateAdjustment_AmountByReason(t *testing.T) {
 	recID := uuid.New()
 	note := "valid 10-char note"
@@ -1362,9 +1363,9 @@ func TestBillLineItem_ValidateAdjustment_AmountByReason(t *testing.T) {
 		amount  int64
 		wantErr error
 	}{
-		{"charge non-zero ok", recovery, 15000, nil},
 		{"refund negative ok", recovery, -15000, nil},
-		{"recovery zero rejected", recovery, 0, ErrAdjustmentAmountRequired},
+		{"charge positive rejected (refund-only)", recovery, 15000, ErrAdjustmentRefundMustBeNegative},
+		{"recovery zero rejected", recovery, 0, ErrAdjustmentRefundMustBeNegative},
 		{"waived zero ok", waived, 0, nil},
 		{"waived positive rejected", waived, 100, ErrAdjustmentWaivedMustBeZero},
 		{"waived negative rejected", waived, -1, ErrAdjustmentWaivedMustBeZero},
