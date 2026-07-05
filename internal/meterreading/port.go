@@ -88,5 +88,15 @@ type AttachAdjustmentParams struct {
 // Consumer-defined per cross-feature-patterns.md §4. Implemented by
 // billing.RecoveryAppliedChecker; injected via main.go.
 type BillingApplicationChecker interface {
+	// HasNonVoidAdjustmentLine — per-recovery applied state (ANY non-VOID
+	// ADJUSTMENT line references the recovery). Used by Soft Delete: a recovery
+	// with any applied utility is in use and may not be deleted.
 	HasNonVoidAdjustmentLine(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
+
+	// HasNonVoidAdjustmentLineForUtility — Q1.5 per-utility applied state, scoped
+	// to a single utility ("ELECTRICITY" / "WATER"; primitive string keeps
+	// billing types out of this port). The pending LIST uses this so a recovery
+	// stays visible until EVERY affected utility is resolved (a partial resolve —
+	// electricity done, water pending — must not hide the row).
+	HasNonVoidAdjustmentLineForUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility string) (bool, error)
 }

@@ -164,6 +164,10 @@ func (m *mockBillingApplied) HasNonVoidAdjustmentLine(_ context.Context, _ uuid.
 	return false, nil
 }
 
+func (m *mockBillingApplied) HasNonVoidAdjustmentLineForUtility(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return false, nil
+}
+
 // mockTxManager runs fn directly (no actual transaction).
 type mockTxManager struct{}
 

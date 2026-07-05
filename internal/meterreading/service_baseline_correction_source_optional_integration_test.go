@@ -49,12 +49,14 @@ func TestRecovery_NilSource_CommitsPersistsInheritsAndListsPending(t *testing.T)
 	meterSvc := meterreading.NewMeterReadingService(meterRepo, roomRepo, contractRepo, moveOutRepo, billAppliedChecker, txMgr)
 
 	// Commit a recovery with NO source — only the room anchor carries identity.
+	elecRecorded := 600 // over-record (recorded 600 > physical 450) so it's pending
 	recovery, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
-		SourceReadingID:    nil, // no source supplied
-		RoomID:             &rm.ID,
-		ElectricityCurrent: 450,
-		WaterCurrent:       60,
-		AnchorNote:         "รีเซ็ตฐานมิเตอร์ — ไม่ทราบเดือนต้นทาง",
+		SourceReadingID:     nil, // no source supplied
+		RoomID:              &rm.ID,
+		ElectricityCurrent:  450,
+		WaterCurrent:        60,
+		ElectricityRecorded: &elecRecorded,
+		AnchorNote:          "รีเซ็ตฐานมิเตอร์ — ไม่ทราบเดือนต้นทาง",
 	})
 	if err != nil {
 		t.Fatalf("CreateBaselineCorrection (nil source): %v", err)

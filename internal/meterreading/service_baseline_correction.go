@@ -117,11 +117,26 @@ func (s *meterReadingService) ListPendingBaselineCorrectionsByRoom(ctx context.C
 
 	out := make([]PendingBaselineCorrection, 0, len(rows))
 	for _, r := range rows {
-		applied, err := s.billing.HasNonVoidAdjustmentLine(ctx, r.ID)
-		if err != nil {
-			return nil, fmt.Errorf("check applied state for %s: %w", r.ID, err)
+		// Q1.5 per-utility pending: a recovery stays in the list until EVERY
+		// affected utility is resolved. A row with no affected utility (not an
+		// over-record) has nothing to resolve — drop it. A partial resolve
+		// (electricity done, water still pending) must keep the row visible.
+		affected := r.AffectedRecoveryUtilities()
+		if len(affected) == 0 {
+			continue
 		}
-		if applied {
+		allResolved := true
+		for _, u := range affected {
+			applied, err := s.billing.HasNonVoidAdjustmentLineForUtility(ctx, r.ID, u)
+			if err != nil {
+				return nil, fmt.Errorf("check applied state for %s/%s: %w", r.ID, u, err)
+			}
+			if !applied {
+				allResolved = false
+				break
+			}
+		}
+		if allResolved {
 			continue
 		}
 

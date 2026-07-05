@@ -121,6 +121,20 @@ func (m *MeterReading) BeforeCreate(tx *gorm.DB) error {
 func (m *MeterReading) IsMonthly() bool { return m.ReadingType == ReadingTypeMonthly }
 func (m *MeterReading) IsExit() bool    { return m.ReadingType == ReadingTypeExit }
 
+// AffectedRecoveryUtilities returns the utilities this recovery over-records
+// (recorded > physical current), as billing-side primitive strings. Empty when
+// the row is not an over-record. Q1.5 §0b — drives the per-utility pending list.
+func (m *MeterReading) AffectedRecoveryUtilities() []string {
+	var out []string
+	if m.ElectricityRecorded != nil && *m.ElectricityRecorded > m.ElectricityCurrent {
+		out = append(out, "ELECTRICITY")
+	}
+	if m.WaterRecorded != nil && *m.WaterRecorded > m.WaterCurrent {
+		out = append(out, "WATER")
+	}
+	return out
+}
+
 // temporalMonth returns the month portion for temporal comparison.
 // MONTHLY → billing_month, EXIT → month of reading_date_actual.
 func (m *MeterReading) temporalMonth() string {

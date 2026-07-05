@@ -32,3 +32,10 @@ func NewRecoveryAppliedChecker(repo BillingRepository) *RecoveryAppliedChecker {
 func (a *RecoveryAppliedChecker) HasNonVoidAdjustmentLine(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error) {
 	return a.repo.HasNonVoidAdjustmentLineByRecoveryID(ctx, recoveryReadingID)
 }
+
+// HasNonVoidAdjustmentLineForUtility delegates the Q1.5 per-utility applied-state
+// probe. The utility crosses the boundary as a primitive string; billing owns
+// the AdjustmentUtility type.
+func (a *RecoveryAppliedChecker) HasNonVoidAdjustmentLineForUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility string) (bool, error) {
+	return a.repo.HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx, recoveryReadingID, AdjustmentUtility(utility))
+}

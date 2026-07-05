@@ -223,3 +223,7 @@ type NoopBillingApplicationChecker struct{}
 func (NoopBillingApplicationChecker) HasNonVoidAdjustmentLine(_ context.Context, _ uuid.UUID) (bool, error) {
 	return false, nil
 }
+
+func (NoopBillingApplicationChecker) HasNonVoidAdjustmentLineForUtility(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return false, nil
+}
