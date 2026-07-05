@@ -135,3 +135,46 @@ func TestPendingList_BothAffected_PartialResolveKeepsRow(t *testing.T) {
 		t.Fatalf("pending after resolving both = %d, want 0", got)
 	}
 }
+
+// Voiding the bill that carried the resolutions re-pends EVERY affected utility:
+// applied state is derived from non-VOID lines, so a both-affected recovery
+// reappears in the list after its bill is voided (via correction).
+func TestPendingList_VoidRePendsAllAffectedUtilities(t *testing.T) {
+	e := setupPendingList(t)
+	elecRec, waterRec := 500, 100
+	corr, err := e.meter.CreateBaselineCorrection(e.ctx, meterreading.CreateBaselineCorrectionInput{
+		RoomID: &e.roomID, ElectricityCurrent: 380, WaterCurrent: 65,
+		ElectricityRecorded: &elecRec, WaterRecorded: &waterRec,
+		AnchorNote: "both over-record",
+	})
+	if err != nil {
+		t.Fatalf("CreateBaselineCorrection: %v", err)
+	}
+
+	// Resolve both in one save → row drops.
+	if _, err := e.bill.UpdateMonthlyDraft(e.ctx, e.billID, billing.UpdateMonthlyDraftRequest{
+		AppliedCorrections: []billing.AppliedCorrectionInput{
+			{RecoveryReadingID: corr.ID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดไฟฟ้า"},
+			{RecoveryReadingID: corr.ID.String(), Utility: "WATER", Decision: "ACCEPT", AdjustmentNote: "คืนยอดน้ำ"},
+		},
+	}, nil); err != nil {
+		t.Fatalf("resolve both: %v", err)
+	}
+	if got := e.pendingCount(t); got != 0 {
+		t.Fatalf("pending after resolving both = %d, want 0", got)
+	}
+
+	// Finalize, then VOID the bill → the resolutions now sit on a VOID bill and
+	// no longer count (applied state = non-VOID lines only).
+	if _, err := e.bill.FinalizeBill(e.ctx, e.billID, nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if _, err := e.bill.VoidBill(e.ctx, e.billID, billing.VoidBillRequest{Reason: "void re-pends over-records"}, nil); err != nil {
+		t.Fatalf("VoidBill: %v", err)
+	}
+
+	// Both utilities re-pend → the row reappears exactly once.
+	if got := e.pendingCount(t); got != 1 {
+		t.Fatalf("pending after void = %d, want 1 (both affected utilities re-pend)", got)
+	}
+}
