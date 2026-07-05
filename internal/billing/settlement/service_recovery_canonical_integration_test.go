@@ -84,7 +84,7 @@ func TestRR05_SettlementPendingBlocksFinalize(t *testing.T) {
 	}
 }
 
-// RR06 — resolve the recovery into the settlement draft (charge) → ADJUSTMENT on
+// RR06 — resolve the over-record into the settlement draft (refund) → ADJUSTMENT on
 // the SETTLEMENT bill → finalize passes.
 func TestRR06_SettlementResolveThenFinalize(t *testing.T) {
 	db, svc, billID, roomID := setupRecoverySettlement(t)
@@ -114,6 +114,16 @@ func TestRR06_SettlementResolveThenFinalize(t *testing.T) {
 	}
 	if adj[0].AdjustmentReasonCode == nil || *adj[0].AdjustmentReasonCode != billing.AdjustmentReasonMeterRecovery {
 		t.Errorf("reason = %v, want METER_RECOVERY", adj[0].AdjustmentReasonCode)
+	}
+
+	// Re-baseline (§3.6) applies on the SETTLEMENT bill too: the affected
+	// electricity AUTO line (from the EXIT meter) is zeroed — usage 0, amount 0.
+	var elecAuto billing.BillLineItem
+	if err := db.First(&elecAuto, "bill_id = ? AND line_type = ? AND source = ?", billID, billing.LineItemElectricity, billing.LineItemSourceAuto).Error; err != nil {
+		t.Fatalf("load settlement electricity AUTO line: %v", err)
+	}
+	if elecAuto.Amount != 0 || elecAuto.Quantity != 0 {
+		t.Errorf("settlement electricity AUTO line = amount %d / qty %d, want 0/0 (re-baselined)", elecAuto.Amount, elecAuto.Quantity)
 	}
 
 	if err := svc.FinalizeSettlement(context.Background(), billID); err != nil {
