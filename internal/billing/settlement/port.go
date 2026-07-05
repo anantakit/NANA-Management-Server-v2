@@ -146,12 +146,6 @@ type BillStore interface {
 	// monthly path uses, so a recovery can't be double-applied across bills.
 	HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 
-	// HasPendingRecoveryByContractID is the Q1 finalization-gate probe — true
-	// iff the contract's room has an unresolved recovery. FinalizeSettlement
-	// (and thus move-out closure, which drives it via port) must block while
-	// true. Waived recoveries are resolved and do not block.
-	HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
-
 	// Q1.5 per-utility probes + re-baseline (mirror the billing repo).
 	// HasNonVoidAdjustmentLineByRecoveryIDAndUtility scopes the applied-state
 	// probe to a utility; HasUnresolvedOverRecordByContractID is the per-utility

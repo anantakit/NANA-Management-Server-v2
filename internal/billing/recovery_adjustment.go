@@ -75,16 +75,6 @@ func ResolveRefundAmount(decision RecoveryDecision, recommended, override int64)
 	}
 }
 
-// PerUtilityResolution is a resolved over-record decision for one utility,
-// ready to build into an ADJUSTMENT line. AmountSatang is the final signed
-// refund (negative) or 0 for waive — produced by ResolveRefundAmount.
-type PerUtilityResolution struct {
-	Utility      AdjustmentUtility
-	Decision     RecoveryDecision
-	AmountSatang int64
-	Note         string
-}
-
 // ParseAdjustmentUtility validates a raw utility string from the apply input.
 func ParseAdjustmentUtility(s string) (AdjustmentUtility, error) {
 	u := AdjustmentUtility(s)

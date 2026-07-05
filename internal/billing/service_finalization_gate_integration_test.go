@@ -13,16 +13,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestHasPendingRecoveryByContractID_MultiRow locks the Q1 finalization-gate
-// predicate on real Postgres, specifically the multi-row case the owner
-// required: a room with a MIX of resolved + pending recoveries must still
-// report pending (block finalize) until EVERY recovery is resolved.
+// TestHasUnresolvedOverRecordByContractID_MultiRow locks the Q1.5 per-utility
+// finalization-gate predicate on real Postgres, specifically the multi-row case:
+// a room with a MIX of resolved + pending over-records must still report pending
+// (block finalize) until EVERY affected recovery×utility is resolved.
 //
 // Also pins two edge rules that a mock can't model:
 //   - a WAIVED (zero-amount) ADJUSTMENT line counts as resolved;
 //   - an ADJUSTMENT line on a VOID bill does NOT count (recovery returns to
 //     pending on void) — b.status <> 'VOID' in the join.
-func TestHasPendingRecoveryByContractID_MultiRow(t *testing.T) {
+func TestHasUnresolvedOverRecordByContractID_MultiRow(t *testing.T) {
 	db := testdb.Open(t)
 	testdb.TruncateAll(t, db)
 	ctx := context.Background()

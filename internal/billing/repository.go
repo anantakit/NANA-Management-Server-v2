@@ -94,8 +94,7 @@ type BillingRepository interface {
 	// gate: true iff the contract's room has any AFFECTED (recorded > current)
 	// recovery utility that lacks a non-VOID ADJUSTMENT line for that utility.
 	// Only over-record utilities engage (recorded IS NULL or recorded <= current
-	// never blocks — §0b). Supersedes HasPendingRecoveryByContractID once the
-	// per-utility apply path lands (P3-B).
+	// never blocks — §0b). This is the sole finalization gate since P3-B.
 	HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 
 	// CountPendingBaselineCorrectionsByRoomIDs returns, per room, the count
@@ -108,14 +107,6 @@ type BillingRepository interface {
 	// reads as zero). Backs the ReconciliationAdapter's pending-count port
 	// surfaced on the recon row.
 	CountPendingBaselineCorrectionsByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]int, error)
-
-	// HasPendingRecoveryByContractID is the scalar Q1 finalization-gate probe:
-	// true iff the contract's room has any unresolved recovery (an active
-	// READING_RECOVERY meter row with no non-VOID ADJUSTMENT line). Bills link
-	// to a room via the contract, so the gate resolves room via a contracts
-	// JOIN. Waived recoveries carry a zero-amount non-VOID ADJUSTMENT line →
-	// resolved → do not block. No bill may finalize while this is true.
-	HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 }
 
 type billingRepository struct {
@@ -877,39 +868,6 @@ func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context
 		out[r.RoomID] = r.Cnt
 	}
 	return out, nil
-}
-
-// HasPendingRecoveryByContractID is the scalar finalization-gate probe: true
-// iff the contract's room has a READING_RECOVERY meter row with NO non-VOID
-// ADJUSTMENT line (the inverse of HasNonVoidAdjustmentLineByRecoveryID's
-// "applied" definition — so the two agree exactly). A NOT EXISTS subquery
-// (not a LEFT JOIN + IS NULL) is required: a recovery can hold BOTH a VOID and
-// a non-VOID line at once (correction voids then re-resolves), and only the
-// non-VOID one resolves it.
-func (r *billingRepository) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
-	var exists bool
-	err := database.DB(ctx, r.db).
-		Raw(`SELECT EXISTS (
-			SELECT 1
-			FROM meter_readings mr
-			JOIN contracts c ON c.room_id = mr.room_id
-			WHERE c.id = ?
-			  AND mr.anchor_reason = ?
-			  AND mr.deleted_at IS NULL
-			  AND NOT EXISTS (
-				SELECT 1
-				FROM bill_line_items bli
-				JOIN bills b ON b.id = bli.bill_id
-				WHERE bli.adjustment_recovery_reading_id = mr.id
-				  AND b.status <> ?
-				  AND b.deleted_at IS NULL
-			  )
-		)`, contractID, meterreading.AnchorReasonReadingRecovery, BillStatusVoid).
-		Scan(&exists).Error
-	if err != nil {
-		return false, fmt.Errorf("check pending recovery by contract: %w", err)
-	}
-	return exists, nil
 }
 
 // GetSummary returns aggregate bill counts and total amount, filtered by apartment + month.

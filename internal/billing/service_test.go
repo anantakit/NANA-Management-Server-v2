@@ -265,13 +265,6 @@ func (m *mockBillingRepo) CountPendingBaselineCorrectionsByRoomIDs(_ context.Con
 	return map[uuid.UUID]int{}, nil
 }
 
-func (m *mockBillingRepo) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
-	if m.hasPendingRecoveryFn != nil {
-		return m.hasPendingRecoveryFn(ctx, contractID)
-	}
-	return false, nil
-}
-
 type mockContractQuerier struct {
 	contract *contract.Contract
 }

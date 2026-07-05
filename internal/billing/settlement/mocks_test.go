@@ -187,13 +187,6 @@ func (m *mockBillStore) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context
 	return false, nil
 }
 
-func (m *mockBillStore) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
-	if m.hasPendingRecoveryFn != nil {
-		return m.hasPendingRecoveryFn(ctx, contractID)
-	}
-	return false, nil
-}
-
 func (m *mockBillStore) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, _ billing.AdjustmentUtility) (bool, error) {
 	if m.hasNonVoidAdjustmentFn != nil {
 		return m.hasNonVoidAdjustmentFn(ctx, recoveryReadingID)

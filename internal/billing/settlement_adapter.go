@@ -131,12 +131,6 @@ func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryID(ctx context.Con
 	return a.repo.HasNonVoidAdjustmentLineByRecoveryID(ctx, recoveryReadingID)
 }
 
-// HasPendingRecoveryByContractID delegates the Q1 finalization-gate probe to
-// the canonical billing repo query (contract → room → unresolved recovery).
-func (a *SettlementAdapter) HasPendingRecoveryByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
-	return a.repo.HasPendingRecoveryByContractID(ctx, contractID)
-}
-
 // Q1.5 per-utility probes + re-baseline — thin delegations to the billing repo,
 // so settlement shares the exact same SQL/semantics as the monthly path.
 func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility AdjustmentUtility) (bool, error) {
