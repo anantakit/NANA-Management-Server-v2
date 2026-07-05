@@ -828,18 +828,16 @@ func (r *billingRepository) HasUnresolvedOverRecordByContractID(ctx context.Cont
 	return exists, nil
 }
 
-// CountPendingBaselineCorrectionsByRoomIDs is the batch sibling of
-// HasNonVoidAdjustmentLineByRecoveryID — grouped per room. Returns the
-// count of active READING_RECOVERY meter rows for each room that have
-// NOT yet been applied to a non-VOID bill.
+// CountPendingBaselineCorrectionsByRoomIDs is the batch sibling of the finalize
+// gate — grouped per room. Returns, per room, the count of active
+// READING_RECOVERY rows that still have at least one UNRESOLVED affected utility
+// (Q1.5 per-utility: recorded > current AND no non-VOID ADJUSTMENT line for that
+// utility). Same per-utility "resolved" definition as the pending LIST and the
+// finalize gate, so the recon badge, the BillEditDrawer list, and the gate stay
+// consistent — a partial resolve (electricity done, water pending) still counts.
 //
-// Same "applied" definition as the per-row probe above so the recon
-// workspace signal stays consistent with the BillEditDrawer pending
-// list. The LEFT JOIN matches a non-VOID applied line and the
-// `b.id IS NULL` filter keeps only unapplied recoveries.
-//
-// Rooms with zero pending corrections are absent from the map (caller
-// reads absence as zero). Empty roomIDs short-circuits to empty map.
+// Rooms with zero pending corrections are absent from the map (caller reads
+// absence as zero). Empty roomIDs short-circuits to empty map.
 func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]int, error) {
 	if len(roomIDs) == 0 {
 		return map[uuid.UUID]int{}, nil
@@ -850,15 +848,26 @@ func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context
 	}
 	var rows []row
 	err := database.DB(ctx, r.db).
-		Table("meter_readings AS mr").
-		Joins("LEFT JOIN bill_line_items bli ON bli.adjustment_recovery_reading_id = mr.id").
-		Joins("LEFT JOIN bills b ON b.id = bli.bill_id AND b.status <> ? AND b.deleted_at IS NULL", BillStatusVoid).
-		Where("mr.room_id IN ?", roomIDs).
-		Where("mr.anchor_reason = ?", meterreading.AnchorReasonReadingRecovery).
-		Where("mr.deleted_at IS NULL").
-		Where("b.id IS NULL").
-		Select("mr.room_id AS room_id, COUNT(*)::int AS cnt").
-		Group("mr.room_id").
+		Raw(`SELECT mr.room_id AS room_id, COUNT(*)::int AS cnt
+			FROM meter_readings mr
+			WHERE mr.room_id IN ?
+			  AND mr.anchor_reason = ?
+			  AND mr.deleted_at IS NULL
+			  AND (
+				(mr.electricity_recorded IS NOT NULL AND mr.electricity_recorded > mr.electricity_current
+					AND NOT EXISTS (SELECT 1 FROM bill_line_items bli JOIN bills b ON b.id = bli.bill_id
+						WHERE bli.adjustment_recovery_reading_id = mr.id AND bli.adjustment_utility = ?
+						  AND b.status <> ? AND b.deleted_at IS NULL))
+				OR
+				(mr.water_recorded IS NOT NULL AND mr.water_recorded > mr.water_current
+					AND NOT EXISTS (SELECT 1 FROM bill_line_items bli JOIN bills b ON b.id = bli.bill_id
+						WHERE bli.adjustment_recovery_reading_id = mr.id AND bli.adjustment_utility = ?
+						  AND b.status <> ? AND b.deleted_at IS NULL))
+			  )
+			GROUP BY mr.room_id`,
+			roomIDs, meterreading.AnchorReasonReadingRecovery,
+			AdjustmentUtilityElectricity, BillStatusVoid,
+			AdjustmentUtilityWater, BillStatusVoid).
 		Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("count pending baseline corrections: %w", err)
