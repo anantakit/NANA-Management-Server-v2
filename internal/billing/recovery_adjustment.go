@@ -140,6 +140,22 @@ func ResolveCorrection(
 		return RecoveryResolution{}, "", ErrCorrectionUtilityNotAffected
 	}
 
+	// Rate-0 edge (recommended == 0): a real over-record on a zero-rate utility —
+	// the tenant was never charged for it, so there is nothing to refund. Resolve
+	// as a WAIVE regardless of decision, so ACCEPT never dead-ends on the
+	// refund-only rule. Recovery still acknowledges the wrong baseline; the refund
+	// is only the financial consequence, which here is zero. rate > 0 is the
+	// current operational assumption — this only guards the future.
+	if recommended == 0 {
+		return RecoveryResolution{
+			RecoveryReadingID: recovery.ID,
+			Utility:           utility,
+			Amount:            0,
+			Note:              note,
+			Waive:             true,
+		}, lineType, nil
+	}
+
 	amount, err := ResolveRefundAmount(decision, recommended, overrideSatang)
 	if err != nil {
 		return RecoveryResolution{}, "", err

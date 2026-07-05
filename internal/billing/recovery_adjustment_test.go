@@ -3,6 +3,8 @@ package billing
 import (
 	"testing"
 
+	"nana/internal/meterreading"
+
 	"github.com/google/uuid"
 )
 
@@ -168,3 +170,35 @@ func TestResolveRefundAmount(t *testing.T) {
 }
 
 func utilPtr(u AdjustmentUtility) *AdjustmentUtility { return &u }
+
+// A genuine over-record on a zero-rate utility yields recommended 0 — there is
+// nothing to refund. ACCEPT must resolve as a WAIVE (zero-amount line), never
+// dead-end on the refund-only rule. rate > 0 is the operational assumption; this
+// guards the future rate-0 case (e.g. water bundled into rent).
+func TestResolveCorrection_ZeroRateAcceptBecomesWaived(t *testing.T) {
+	recorded := 500
+	rec := &meterreading.MeterReading{
+		ID:                  uuid.New(),
+		ElectricityCurrent:  300, // physical; recorded 500 > 300 → real over-record
+		ElectricityRecorded: &recorded,
+	}
+	res, lt, err := ResolveCorrection(rec, AdjustmentUtilityElectricity, RecoveryDecisionAccept, 0, "over-record on a zero-rate utility", 0)
+	if err != nil {
+		t.Fatalf("ResolveCorrection (rate 0): %v", err)
+	}
+	if !res.Waive || res.Amount != 0 {
+		t.Errorf("rate-0 ACCEPT = {waive:%v amount:%d}, want {waive:true amount:0}", res.Waive, res.Amount)
+	}
+	if lt != LineItemElectricity {
+		t.Errorf("re-baseline line type = %v, want ELECTRICITY", lt)
+	}
+	// And the resolution builds a valid WAIVED ADJUSTMENT line (not a rejected
+	// zero-amount refund).
+	line, err := BuildRecoveryAdjustmentLine(uuid.New(), res, "", 1)
+	if err != nil {
+		t.Fatalf("build waived line from rate-0 resolution: %v", err)
+	}
+	if line.AdjustmentReasonCode == nil || *line.AdjustmentReasonCode != AdjustmentReasonMeterRecoveryWaived {
+		t.Errorf("reason = %v, want METER_RECOVERY_WAIVED", line.AdjustmentReasonCode)
+	}
+}
