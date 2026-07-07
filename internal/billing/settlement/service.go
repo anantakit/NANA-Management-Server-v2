@@ -194,7 +194,7 @@ func (s *Service) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req U
 		// Capture BEFORE snapshots for diff-based audit. Clone the override
 		// map since `b` and the reloaded bill share the same pointer in the
 		// repo and we mutate Overrides in place below.
-		oldManuals := b.ManualItems()
+		oldManuals := b.EditableManualItems()
 		oldNote := b.Note
 		oldOverrides := make(billing.OverrideMap, len(b.Overrides))
 		for k, v := range b.Overrides {
@@ -368,7 +368,11 @@ func (s *Service) RegenerateSettlement(ctx context.Context, existingBillID uuid.
 		}
 		return nil, fmt.Errorf("find existing bill: %w", err)
 	}
-	manualItems := existing.ManualItems()
+	// Only carry hand-editable MANUAL items into the recreate. The recovery
+	// refund (Source=MANUAL, LineType=ADJUSTMENT) is re-emitted by the fresh
+	// settlement plan below from the EXIT reading — carrying it forward too would
+	// double the refund (Q1.6).
+	manualItems := existing.EditableManualItems()
 	note := existing.Note
 	existingOverrides := existing.Overrides
 	existingDepositApp := existing.DepositApp

@@ -61,6 +61,35 @@ func ComputeMonthlyBillSnapshot(
 		},
 	}
 
+	// Q1.6 — auto-emit a refund ADJUSTMENT line per over-recorded utility. When
+	// the reading is a READING_RECOVERY with recorded > current, the tenant was
+	// over-charged (recorded−current) units; the refund is deterministic. The
+	// AUTO lines above are already re-baselined to 0 (a recovery reading has
+	// prev==current → usage 0), so the refund is a separate line, not an offset.
+	// A zero-rate over-record yields Amount 0 → no line (nothing was charged).
+	sortOrder := 3
+	for _, u := range []AdjustmentUtility{AdjustmentUtilityElectricity, AdjustmentUtilityWater} {
+		rate := elecRate
+		if u == AdjustmentUtilityWater {
+			rate = waterRate
+		}
+		res, _, err := ResolveCorrection(reading, u, rate)
+		if err != nil || res.Amount == 0 {
+			continue // not an over-record, or zero-rate (nothing to refund)
+		}
+		sortOrder++
+		lines = append(lines, ComputedLineItem{
+			Type:                        LineItemAdjustment,
+			Description:                 buildAdjustmentDescription(res),
+			Amount:                      res.Amount,
+			Quantity:                    int(res.Recorded - res.Physical),
+			UnitPrice:                   res.RatePerUnit,
+			SortOrder:                   sortOrder,
+			AdjustmentRecoveryReadingID: &res.RecoveryReadingID,
+			AdjustmentUtility:           &res.Utility,
+		})
+	}
+
 	var total int64
 	for _, li := range lines {
 		total += li.Amount

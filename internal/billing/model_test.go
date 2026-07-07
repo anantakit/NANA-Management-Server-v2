@@ -504,6 +504,45 @@ func TestBill_ChargesTotalAndCreditsTotal(t *testing.T) {
 	}
 }
 
+// TestBill_EditableManualItems locks the Q1.6 discriminator that both the draft
+// audit diff and the settlement void+recreate carry-over depend on: a recovery
+// refund (Source=MANUAL, LineType=ADJUSTMENT) is system-owned and must NOT be
+// treated as a hand-editable manual item — otherwise it is spuriously audited as
+// removed, or double-emitted when a settlement is recreated.
+func TestBill_EditableManualItems(t *testing.T) {
+	b := &Bill{
+		LineItems: []BillLineItem{
+			{LineType: LineItemElectricity, Source: LineItemSourceAuto, Amount: 120000}, // AUTO — excluded
+			{LineType: LineItemOther, Source: LineItemSourceManual, Amount: 30000},        // editable manual
+			{LineType: LineItemAdjustment, Source: LineItemSourceManual, Amount: -24000}, // recovery refund — excluded
+		},
+	}
+
+	// ManualItems() still returns BOTH manual rows (unchanged semantics).
+	if got := len(b.ManualItems()); got != 2 {
+		t.Fatalf("ManualItems() = %d, want 2 (fee + recovery adjustment)", got)
+	}
+
+	// EditableManualItems() drops the recovery ADJUSTMENT.
+	editable := b.EditableManualItems()
+	if len(editable) != 1 {
+		t.Fatalf("EditableManualItems() = %d, want 1 (fee only)", len(editable))
+	}
+	if editable[0].LineType != LineItemOther {
+		t.Errorf("EditableManualItems() kept %s, want OTHER", editable[0].LineType)
+	}
+
+	// Item-level predicate.
+	adj := &BillLineItem{LineType: LineItemAdjustment, Source: LineItemSourceManual}
+	if adj.IsEditableManual() {
+		t.Error("recovery ADJUSTMENT must not be editable-manual")
+	}
+	fee := &BillLineItem{LineType: LineItemOther, Source: LineItemSourceManual}
+	if !fee.IsEditableManual() {
+		t.Error("manual OTHER must be editable-manual")
+	}
+}
+
 // --- Line item factories ---
 
 func TestNewRoomRentLine(t *testing.T) {

@@ -314,7 +314,8 @@ func (r *meterReadingRepository) HasMonthlyByRoomAndMonth(ctx context.Context, r
 }
 
 // FindMonthlyByRoomsAndMonth bulk-fetches MONTHLY readings for multiple rooms in a single query.
-// Returns map[roomID]*MeterReading. DB UNIQUE constraint guarantees ≤1 row per room+month.
+// Returns map[roomID]*MeterReading. A room may have TWO MONTHLY rows for the same
+// month — see the recovery-preference note below — so this is not strictly ≤1 per room.
 func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error) {
 	if len(roomIDs) == 0 {
 		return map[uuid.UUID]*MeterReading{}, nil
@@ -327,9 +328,22 @@ func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	// A recovery month can hold two MONTHLY rows for the same room (migration
+	// 00041): the consumption row (anchor_reason NULL) and the READING_RECOVERY
+	// re-anchor row. The recovery month is a re-anchor event, NOT a consumption
+	// month (feedback_reading_recovery_doctrine.md), so the recovery row governs
+	// the bill (usage 0 + refund). Prefer it deterministically — otherwise the map
+	// keeps whichever row Postgres returns last, and a coexisting consumption row
+	// can shadow the recovery, silently dropping the refund (over-charge never
+	// returned) or the re-baseline.
 	result := make(map[uuid.UUID]*MeterReading, len(readings))
 	for i := range readings {
-		result[readings[i].RoomID] = &readings[i]
+		row := &readings[i]
+		if existing := result[row.RoomID]; existing != nil &&
+			existing.AnchorReason != nil && *existing.AnchorReason == AnchorReasonReadingRecovery {
+			continue // recovery row already chosen — never downgrade to consumption
+		}
+		result[row.RoomID] = row
 	}
 	return result, nil
 }

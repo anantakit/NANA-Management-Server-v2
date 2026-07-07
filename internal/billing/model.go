@@ -374,6 +374,16 @@ type BillLineItem struct {
 func (li *BillLineItem) IsAuto() bool   { return li.Source == LineItemSourceAuto }
 func (li *BillLineItem) IsManual() bool { return li.Source == LineItemSourceManual }
 
+// IsEditableManual reports whether a line item is a hand-editable MANUAL item —
+// i.e. one the operator adds/removes through the edit drawer. A recovery refund
+// carries Source=MANUAL too (Q1.6) but LineType=ADJUSTMENT; it is system-owned,
+// re-emitted deterministically at generation, and MUST NOT be treated as
+// user-manual (else it is spuriously audited as removed, or double-emitted when
+// carried into a void+recreate). Mirrors DeleteEditableManualLineItems' predicate.
+func (li *BillLineItem) IsEditableManual() bool {
+	return li.IsManual() && li.LineType != LineItemAdjustment
+}
+
 // OverrideKey returns the stable key used to match overrides.
 //
 // IMPORTANT ASSUMPTION:
@@ -1009,6 +1019,20 @@ func (b *Bill) ManualItems() []BillLineItem {
 	return items
 }
 
+// EditableManualItems returns the hand-editable MANUAL items only — excluding
+// system-owned recovery ADJUSTMENT lines (Q1.6). Use this for audit diffs and
+// void+recreate carry-over; the recovery refund is re-emitted at generation, so
+// treating it as user-manual double-counts it. See IsEditableManual.
+func (b *Bill) EditableManualItems() []BillLineItem {
+	var items []BillLineItem
+	for _, li := range b.LineItems {
+		if li.IsEditableManual() {
+			items = append(items, li)
+		}
+	}
+	return items
+}
+
 // --- Bill generation batch ---
 
 type BatchStatus string
@@ -1077,6 +1101,12 @@ type ComputedLineItem struct {
 	MeterPrevious *int           `json:"meter_previous,omitempty"`
 	MeterCurrent  *int           `json:"meter_current,omitempty"`
 	Meta          map[string]any `json:"meta,omitempty"`
+
+	// Q1.6 — recovery refund ADJUSTMENT lines auto-emitted at generation carry
+	// their provenance so ToLineItems can materialize a valid ADJUSTMENT row
+	// (source=MANUAL, reason=METER_RECOVERY). Populated only on ADJUSTMENT lines.
+	AdjustmentRecoveryReadingID *uuid.UUID         `json:"adjustment_recovery_reading_id,omitempty"`
+	AdjustmentUtility           *AdjustmentUtility `json:"adjustment_utility,omitempty"`
 }
 
 type ComputedSnapshot struct {
@@ -1132,9 +1162,29 @@ func (s *ComputedSnapshot) Validate() error {
 }
 
 // ToLineItems converts snapshot items into BillLineItem rows for a given bill.
+// Q1.6 — an ADJUSTMENT snapshot line (an auto-emitted recovery refund) becomes a
+// MANUAL/METER_RECOVERY line carrying its recovery FK + utility; everything else
+// is a plain AUTO line.
 func (s *ComputedSnapshot) ToLineItems(billID uuid.UUID) []BillLineItem {
 	items := make([]BillLineItem, 0, len(s.LineItems))
 	for _, li := range s.LineItems {
+		if li.Type == LineItemAdjustment {
+			reason := AdjustmentReasonMeterRecovery
+			items = append(items, BillLineItem{
+				BillID:                      billID,
+				LineType:                    LineItemAdjustment,
+				Source:                      LineItemSourceManual,
+				Description:                 li.Description,
+				Amount:                      li.Amount,
+				Quantity:                    li.Quantity,
+				UnitPrice:                   li.UnitPrice,
+				SortOrder:                   li.SortOrder,
+				AdjustmentRecoveryReadingID: li.AdjustmentRecoveryReadingID,
+				AdjustmentReasonCode:        &reason,
+				AdjustmentUtility:           li.AdjustmentUtility,
+			})
+			continue
+		}
 		items = append(items, BillLineItem{
 			BillID:        billID,
 			LineType:      li.Type,

@@ -113,6 +113,27 @@ func (s *Service) prepareSettlementPlan(ctx context.Context, contractID uuid.UUI
 	items = append(items, elecLine)
 	order++
 
+	// Q1.6 — if the EXIT reading is itself an over-record recovery, auto-emit the
+	// refund line per affected utility (deterministic). A normal EXIT reading has
+	// no recorded value → ResolveCorrection returns not-affected and is skipped.
+	// BillID is Nil here; CreateBill's GORM cascade sets it (like the lines above).
+	for _, u := range []billing.AdjustmentUtility{billing.AdjustmentUtilityElectricity, billing.AdjustmentUtilityWater} {
+		rate := c.ElectricityRatePerUnit
+		if u == billing.AdjustmentUtilityWater {
+			rate = c.WaterRatePerUnit
+		}
+		res, _, err := billing.ResolveCorrection(exitReading, u, rate)
+		if err != nil || res.Amount == 0 {
+			continue
+		}
+		refundLine, err := billing.BuildRecoveryAdjustmentLine(uuid.Nil, res, order)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, refundLine)
+		order++
+	}
+
 	items, order, err = s.addConfigFees(ctx, items, order, apartmentID)
 	if err != nil {
 		return nil, err

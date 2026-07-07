@@ -59,7 +59,7 @@ func (s *billingService) UpdateMonthlyDraft(ctx context.Context, id uuid.UUID, r
 		// Capture BEFORE snapshots for diff-based audit. Clone Overrides since
 		// `b` and the reloaded bill share the same pointer in the repo and
 		// the mutation below replaces the map reference in place.
-		oldManuals := b.ManualItems()
+		oldManuals := b.EditableManualItems()
 		oldNote := b.Note
 		oldOverrides := make(OverrideMap, len(b.Overrides))
 		for k, v := range b.Overrides {

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"nana/internal/billing"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
@@ -136,6 +138,22 @@ func TestRecovery_CoexistsWithCurrentMonthlyReading(t *testing.T) {
 	}
 	if consumptionCount != 1 {
 		t.Errorf("expected 1 consumption row, got %d", consumptionCount)
+	}
+
+	// Q1.6 money-path determinism: with both rows present, bill generation's
+	// meter lookup MUST resolve to the recovery re-anchor row (usage 0 + refund),
+	// never the coexisting consumption row. Otherwise Postgres row order decides
+	// whether the refund is emitted at all — a silent over-charge.
+	meterMap, err := meterRepo.FindMonthlyByRoomsAndMonth(ctx, []uuid.UUID{rm.ID}, currentMonth)
+	if err != nil {
+		t.Fatalf("FindMonthlyByRoomsAndMonth: %v", err)
+	}
+	picked := meterMap[rm.ID]
+	if picked == nil {
+		t.Fatal("FindMonthlyByRoomsAndMonth returned no reading for the room")
+	}
+	if picked.ID != recovery.ID {
+		t.Fatalf("generation lookup picked %v, want recovery row %v (must prefer re-anchor over consumption)", picked.ID, recovery.ID)
 	}
 
 	// Operator-double-click guard: a SECOND recovery against the same source
