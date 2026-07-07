@@ -56,13 +56,6 @@ type MeterReadingService interface {
 	//     adjustment_recovery_reading_id). Returns ErrCorrectionAlreadyApplied.
 	SoftDeletePendingBaselineCorrection(ctx context.Context, apartmentID, roomID, correctionID uuid.UUID, actorID *uuid.UUID) error
 
-	// ListPendingBaselineCorrectionsByRoom lists every pending baseline
-	// correction for the room (applied rows excluded via the inverse-FK
-	// probe). Phase 7 doctrine line 121: room-centric signature, not
-	// bill-centric — a pending correction is a property of (room, time)
-	// regardless of which bill draft is in flight.
-	ListPendingBaselineCorrectionsByRoom(ctx context.Context, roomID uuid.UUID) ([]PendingBaselineCorrection, error)
-
 	// --- Move-out workflow ports ---
 
 	// CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.

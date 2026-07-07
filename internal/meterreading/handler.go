@@ -32,7 +32,6 @@ func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	// radix match prefers them.
 	router.Post("/baseline-corrections", h.CreateBaselineCorrection)
 	router.Delete("/rooms/:roomId/baseline-corrections/:correctionId", h.DeleteBaselineCorrection)
-	router.Get("/rooms/:roomId/pending-baseline-corrections", h.ListPendingBaselineCorrections)
 	router.Get("/rooms/:roomId/latest", h.GetLatest)
 	router.Get("/rooms/:roomId/history", h.GetRoomHistory)
 	router.Get("/:readingId", h.GetByID)
@@ -298,25 +297,6 @@ func (h *MeterReadingHandler) DeleteBaselineCorrection(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 	return respond.Success(c, "ลบการปรับฐานแล้ว", nil)
-}
-
-// ListPendingBaselineCorrections returns the room's pending baseline
-// corrections (applied rows excluded). Room-centric per Phase 7 doctrine
-// line 121 — pending state is a property of (room, time), not of any
-// specific bill.
-func (h *MeterReadingHandler) ListPendingBaselineCorrections(c fiber.Ctx) error {
-	if _, err := uuid.Parse(c.Params("apartmentId")); err != nil {
-		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
-	}
-	roomID, err := uuid.Parse(c.Params("roomId"))
-	if err != nil {
-		return respond.ValidationError(c, []string{"รหัสห้องไม่ถูกต้อง"})
-	}
-	rows, err := h.svc.ListPendingBaselineCorrectionsByRoom(c.Context(), roomID)
-	if err != nil {
-		return respond.Error(c, err)
-	}
-	return respond.Success(c, "สำเร็จ", ToPendingBaselineCorrectionResponseList(rows))
 }
 
 func (h *MeterReadingHandler) GetLatest(c fiber.Ctx) error {

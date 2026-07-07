@@ -15,14 +15,11 @@ type BillingHandler struct {
 	svc                 BillingService
 	repo                BillingRepository
 	contracts           ContractQuerier
-	baselineCorrections BaselineCorrectionQuerier
 }
 
-// NewBillingHandler wires the core billing handler. The baselineCorrections
-// dependency is for the convenience route GET /:id/pending-baseline-corrections;
-// the handler resolves bill→contract→room and forwards.
-func NewBillingHandler(svc BillingService, repo BillingRepository, contracts ContractQuerier, baselineCorrections BaselineCorrectionQuerier) *BillingHandler {
-	return &BillingHandler{svc: svc, repo: repo, contracts: contracts, baselineCorrections: baselineCorrections}
+// NewBillingHandler wires the core billing handler.
+func NewBillingHandler(svc BillingService, repo BillingRepository, contracts ContractQuerier) *BillingHandler {
+	return &BillingHandler{svc: svc, repo: repo, contracts: contracts}
 }
 
 // RegisterRoutes mounts the billing-core routes (W1 single monthly bill,
@@ -47,36 +44,6 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Patch("/:id/paid", h.MarkPaid)
 	r.Patch("/:id/monthly-draft", h.UpdateMonthlyDraft)
 	r.Post("/:id/correct", h.Correct)
-	// Phase 7 — bill-side convenience route. Service dispatch lives in
-	// meterreading; this handler resolves bill→contract→room and forwards.
-	r.Get("/:id/pending-baseline-corrections", h.ListPendingBaselineCorrectionsForBill)
-}
-
-// ListPendingBaselineCorrectionsForBill resolves the bill's contract +
-// room and forwards to meterreading. Returns DTOs in the shared shape so
-// the FE can fetch by bill ID directly without a contract-lookup round-trip.
-func (h *BillingHandler) ListPendingBaselineCorrectionsForBill(c fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
-	}
-	bill, err := h.repo.FindByID(c.Context(), id)
-	if err != nil {
-		return respond.Error(c, respond.ErrNotFound.WithMessage("ไม่พบบิล"))
-	}
-	c2, err := h.contracts.FindByIDSimple(c.Context(), bill.ContractID)
-	if err != nil {
-		return respond.Error(c, respond.ErrNotFound.WithMessage("ไม่พบสัญญาของบิล"))
-	}
-	rows, err := h.baselineCorrections.ListPendingBaselineCorrectionsByRoom(c.Context(), c2.RoomID)
-	if err != nil {
-		return respond.Error(c, err)
-	}
-	// Q1.5: billing derives the deterministic refund from the bill's OWN
-	// contract rate (money authority stays here); meterreading supplied only
-	// rate-free meter facts.
-	out := buildPendingCorrectionsForBill(rows, c2.ElectricityRatePerUnit, c2.WaterRatePerUnit)
-	return respond.Success(c, "สำเร็จ", out)
 }
 
 func (h *BillingHandler) List(c fiber.Ctx) error {

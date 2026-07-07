@@ -94,11 +94,19 @@ func (a *RecoveryAdapter) AttachAdjustmentLine(ctx context.Context, params meter
 	}
 
 	reasonCode := AdjustmentReasonCode(params.ReasonCode)
+	// Legacy attach path (deliberately-preserved dead code — see port.go). It
+	// carries no over-record evidence (recorded/physical/rate), so it uses a
+	// generic provenance description rather than the evidence builder used by the
+	// canonical apply path. Do not wire a caller without re-litigating first.
+	desc := "ปรับยอดจากการแก้ค่ามิเตอร์"
+	if params.SourceBillingMonth != "" {
+		desc = fmt.Sprintf("ปรับยอดจากการแก้ค่ามิเตอร์ (เดือน %s)", params.SourceBillingMonth)
+	}
 	line := BillLineItem{
 		BillID:                      bill.ID,
 		LineType:                    LineItemAdjustment,
 		Source:                      LineItemSourceManual,
-		Description:                 buildAdjustmentDescription(params.Amount, params.SourceBillingMonth),
+		Description:                 desc,
 		Amount:                      params.Amount,
 		Quantity:                    1,
 		UnitPrice:                   params.Amount,
@@ -123,28 +131,12 @@ func (a *RecoveryAdapter) AttachAdjustmentLine(ctx context.Context, params meter
 		})
 }
 
-// buildAdjustmentDescription produces the tenant-visible Description on
-// the ADJUSTMENT line per feedback_reading_recovery_doctrine.md line 75.
-// Q1.5 is refund-only: amount is either 0 (waive) or < 0 (refund) — the charge
-// path is removed, so there is no positive branch.
-func buildAdjustmentDescription(amount int64, sourceMonth string) string {
-	// Waive/no-charge resolution (METER_RECOVERY_WAIVED) carries amount == 0.
-	// A refund is always < 0 (amount invariant), so amount == 0 uniquely
-	// identifies a waive. Tenant-invisible (zero line hidden), so this serves
-	// the internal detail/audit view.
-	if amount == 0 {
-		if sourceMonth == "" {
-			return "ไม่คิดเงินเพิ่ม (จดมิเตอร์ผิด)"
-		}
-		return fmt.Sprintf("ไม่คิดเงินเพิ่มจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
-	}
-	// Refund (amount < 0). Q1.5 removed the charge path — an over-record can
-	// only refund or waive, so amount is never positive here.
-	// Source-optional (locked 2026-07-01): a nil-source recovery carries no
-	// reference month. Emit a source-less description rather than a dangling
-	// "เดือน " — the correction is complete without a source. No inference.
-	if sourceMonth == "" {
-		return "คืนยอดที่เก็บเกิน (จดมิเตอร์ผิด)"
-	}
-	return fmt.Sprintf("คืนยอดที่เก็บเกินจากเดือน %s (จดมิเตอร์ผิด)", sourceMonth)
+// buildAdjustmentDescription states the over-record EVIDENCE — recorded →
+// physical — as the tenant-visible line-1 subtitle (P4.5). The title
+// ("คืนค่าไฟฟ้า"/"คืนค่าน้ำ") is derived by the renderer from adjustment_utility,
+// and line-2 ("เกิน N หน่วย × ฿X/หน่วย") from quantity × unit_price, so the
+// refund is auditable without any external reference. A WAIVE (amount == 0) is
+// tenant-invisible (zero line hidden); its description serves the admin audit.
+func buildAdjustmentDescription(res RecoveryResolution) string {
+	return fmt.Sprintf("จดไว้ %d → จริง %d", res.Recorded, res.Physical)
 }

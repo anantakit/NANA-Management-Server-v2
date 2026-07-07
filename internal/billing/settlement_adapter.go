@@ -119,6 +119,10 @@ func (a *SettlementAdapter) DeleteLineItemsBySource(ctx context.Context, billID 
 	return a.repo.DeleteLineItemsBySource(ctx, billID, source)
 }
 
+func (a *SettlementAdapter) DeleteEditableManualLineItems(ctx context.Context, billID uuid.UUID) error {
+	return a.repo.DeleteEditableManualLineItems(ctx, billID)
+}
+
 func (a *SettlementAdapter) CreateLineItems(ctx context.Context, items []BillLineItem) error {
 	return a.repo.CreateLineItems(ctx, items)
 }

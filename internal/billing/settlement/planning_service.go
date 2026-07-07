@@ -98,15 +98,19 @@ func (s *Service) prepareSettlementPlan(ctx context.Context, contractID uuid.UUI
 
 	waterUnits := exitReading.WaterUsed()
 	elecUnits := exitReading.ElectricityUsed()
-	items = append(items,
-		billing.NewWaterLine(waterUnits, c.WaterRatePerUnit,
-			fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order),
-	)
+	// Snapshot the exit reading (previous → current) on each metered line so the
+	// settlement bill shows the same evidence as a monthly bill (migration 00047).
+	wPrev, wCur := exitReading.WaterPrevious, exitReading.WaterCurrent
+	ePrev, eCur := exitReading.ElectricityPrevious, exitReading.ElectricityCurrent
+	waterLine := billing.NewWaterLine(waterUnits, c.WaterRatePerUnit,
+		fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order)
+	waterLine.MeterPrevious, waterLine.MeterCurrent = &wPrev, &wCur
+	items = append(items, waterLine)
 	order++
-	items = append(items,
-		billing.NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-			fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order),
-	)
+	elecLine := billing.NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
+		fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order)
+	elecLine.MeterPrevious, elecLine.MeterCurrent = &ePrev, &eCur
+	items = append(items, elecLine)
 	order++
 
 	items, order, err = s.addConfigFees(ctx, items, order, apartmentID)

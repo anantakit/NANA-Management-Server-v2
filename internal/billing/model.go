@@ -348,6 +348,13 @@ type BillLineItem struct {
 	UnitPrice   int64          `gorm:"not null;default:0" json:"unit_price"`
 	SortOrder   int            `gorm:"not null;default:0" json:"sort_order"`
 
+	// Meter reading snapshot (previous → current) that produced this line's
+	// usage. Nullable; populated only on metered AUTO lines (ELECTRICITY / WATER)
+	// at generation. Frozen on the line so re-rendering a bill never drifts if
+	// the meter row is later edited. See migration 00047.
+	MeterPrevious *int `gorm:"column:meter_previous" json:"meter_previous,omitempty"`
+	MeterCurrent  *int `gorm:"column:meter_current" json:"meter_current,omitempty"`
+
 	// Reading Recovery anchor fields (Phase 4). All nullable; populated only
 	// when LineType = ADJUSTMENT. Source MUST = MANUAL when populated (CHECK
 	// constraint bill_line_items_adjustment_source_manual + ValidateAdjustment).
@@ -436,10 +443,18 @@ func (li *BillLineItem) ValidateAdjustment() error {
 	if !li.AdjustmentUtility.IsValid() {
 		return ErrAdjustmentUtilityInvalid
 	}
-	if li.AdjustmentNote == nil || strings.TrimSpace(*li.AdjustmentNote) == "" {
+	// Note rule (Q1.5): a WAIVE (declining to refund a known over-charge) must
+	// carry a reason; a refund (ACCEPT) is deterministic + self-explaining
+	// (the line's own evidence), so its note is optional. When a note IS present
+	// on either, it must be ≥10 chars.
+	note := ""
+	if li.AdjustmentNote != nil {
+		note = strings.TrimSpace(*li.AdjustmentNote)
+	}
+	if *li.AdjustmentReasonCode == AdjustmentReasonMeterRecoveryWaived && note == "" {
 		return ErrAdjustmentNoteRequired
 	}
-	if len(strings.TrimSpace(*li.AdjustmentNote)) < 10 {
+	if note != "" && len(note) < 10 {
 		return ErrAdjustmentNoteTooShort
 	}
 	return nil
@@ -1053,13 +1068,15 @@ var (
 )
 
 type ComputedLineItem struct {
-	Type        LineItemType   `json:"type"`
-	Description string         `json:"description"`
-	Amount      int64          `json:"amount"`
-	Quantity    int            `json:"quantity,omitempty"`
-	UnitPrice   int64          `json:"unit_price,omitempty"`
-	SortOrder   int            `json:"sort_order,omitempty"`
-	Meta        map[string]any `json:"meta,omitempty"`
+	Type          LineItemType   `json:"type"`
+	Description   string         `json:"description"`
+	Amount        int64          `json:"amount"`
+	Quantity      int            `json:"quantity,omitempty"`
+	UnitPrice     int64          `json:"unit_price,omitempty"`
+	SortOrder     int            `json:"sort_order,omitempty"`
+	MeterPrevious *int           `json:"meter_previous,omitempty"`
+	MeterCurrent  *int           `json:"meter_current,omitempty"`
+	Meta          map[string]any `json:"meta,omitempty"`
 }
 
 type ComputedSnapshot struct {
@@ -1119,14 +1136,16 @@ func (s *ComputedSnapshot) ToLineItems(billID uuid.UUID) []BillLineItem {
 	items := make([]BillLineItem, 0, len(s.LineItems))
 	for _, li := range s.LineItems {
 		items = append(items, BillLineItem{
-			BillID:      billID,
-			LineType:    li.Type,
-			Source:      LineItemSourceAuto,
-			Description: li.Description,
-			Amount:      li.Amount,
-			Quantity:    li.Quantity,
-			UnitPrice:   li.UnitPrice,
-			SortOrder:   li.SortOrder,
+			BillID:        billID,
+			LineType:      li.Type,
+			Source:        LineItemSourceAuto,
+			Description:   li.Description,
+			Amount:        li.Amount,
+			Quantity:      li.Quantity,
+			UnitPrice:     li.UnitPrice,
+			SortOrder:     li.SortOrder,
+			MeterPrevious: li.MeterPrevious,
+			MeterCurrent:  li.MeterCurrent,
 		})
 	}
 	return items

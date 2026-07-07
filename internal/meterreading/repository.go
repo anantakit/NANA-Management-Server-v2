@@ -56,13 +56,6 @@ type MeterReadingRepository interface {
 	// DESC, created_at DESC). Used by the "latest baseline" invariant
 	// guard for Soft Delete.
 	FindLatestBaselineCorrectionByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
-
-	// FindPendingBaselineCorrectionsByRoomID lists every active
-	// READING_RECOVERY anchor row for the room. The "pending" filter
-	// (excluded if applied) is layered at the service via the
-	// BillingApplicationChecker port — keeps the repo SQL pure.
-	// Sort: created_at DESC, billing_month DESC (most recent first).
-	FindPendingBaselineCorrectionsByRoomID(ctx context.Context, roomID uuid.UUID) ([]MeterReading, error)
 }
 
 type meterReadingRepository struct {
@@ -406,25 +399,6 @@ func (r *meterReadingRepository) FindLatestBaselineCorrectionByRoomID(ctx contex
 		return nil, err
 	}
 	return &m, nil
-}
-
-// FindPendingBaselineCorrectionsByRoomID returns every active
-// READING_RECOVERY anchor row for the room, sorted newest-first.
-// Applied-state filtering is layered at the service level via the
-// BillingApplicationChecker port — keeps repo SQL pure (no JOIN into
-// bill_line_items here; cross-feature read would be a logic leak).
-func (r *meterReadingRepository) FindPendingBaselineCorrectionsByRoomID(ctx context.Context, roomID uuid.UUID) ([]MeterReading, error) {
-	var rows []MeterReading
-	err := database.DB(ctx, r.db).
-		Where("room_id = ?", roomID).
-		Where("anchor_reason = ?", AnchorReasonReadingRecovery).
-		Where("deleted_at IS NULL").
-		Order("created_at DESC, billing_month DESC").
-		Find(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	return rows, nil
 }
 
 // DeleteExitByRoomID soft-deletes any active EXIT reading for a room.

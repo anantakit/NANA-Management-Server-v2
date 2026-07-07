@@ -4,8 +4,6 @@ import (
 	"time"
 
 	"nana/internal/shared/pagination"
-
-	"github.com/google/uuid"
 )
 
 // --- Request DTOs ---
@@ -385,96 +383,6 @@ type LatestReadingResponse struct {
 	WaterCurrent       int     `json:"water_current"`
 	BillingMonth       *string `json:"billing_month"`
 	ReadingDateActual  *string `json:"reading_date_actual"`
-}
-
-// PendingBaselineCorrection is the internal service-shape for a pending
-// READING_RECOVERY anchor row. Travels across the meterreading → billing
-// boundary (the billing handler resolves bill → room and forwards). Public
-// JSON shape is PendingBaselineCorrectionResponse.
-//
-// Sort contract (locked by ListPendingBaselineCorrectionsByRoom): newest-first
-// (created_at DESC, source_billing_month DESC). Bill edit is action surface,
-// not narration — most recent correction surfaces first so the operator's
-// "I just made this, apply it" flow reads top-down.
-type PendingBaselineCorrection struct {
-	RecoveryID           uuid.UUID
-	SourceReadingID      uuid.UUID
-	SourceBillingMonth   string
-	SourceElectricity    int
-	SourceWater          int
-	RecoveryBillingMonth string
-	RecoveryElectricity  int
-	RecoveryWater        int
-	RecoveryCreatedAt    time.Time
-	AnchorNote           string
-
-	// Q1.5 over-record meter facts (per utility). Physical = Recovery{Electricity,
-	// Water}. Recorded = the previously-recorded (wrong) value; 0 when the utility
-	// was not corrected. Affected = recorded > physical (pure meter fact — the
-	// money recommendation is derived by billing from the bill's contract rate).
-	ElectricityRecorded int
-	ElectricityAffected bool
-	WaterRecorded       int
-	WaterAffected       bool
-}
-
-// PendingBaselineCorrectionResponse is the public JSON shape returned by
-// GET /pending-baseline-corrections. Field names mirror the FE type in
-// frontend/src/features/bills/types.ts.
-type PendingBaselineCorrectionResponse struct {
-	RecoveryID           string `json:"recovery_id"`
-	SourceReadingID      string `json:"source_reading_id"`
-	SourceBillingMonth   string `json:"source_billing_month"`
-	SourceElectricity    int    `json:"source_electricity_current"`
-	SourceWater          int    `json:"source_water_current"`
-	RecoveryBillingMonth string `json:"recovery_billing_month"`
-	RecoveryElectricity  int    `json:"recovery_electricity_current"`
-	RecoveryWater        int    `json:"recovery_water_current"`
-	RecoveryCreatedAt    string `json:"recovery_created_at"`
-	AnchorNote           string `json:"anchor_note"`
-
-	// Q1.5 over-record meter facts. recovery_*_current above is the physical
-	// value; *_recorded is the previously-recorded (wrong) value (0 = utility not
-	// corrected); *_affected = recorded > physical.
-	ElectricityRecorded int  `json:"electricity_recorded"`
-	ElectricityAffected bool `json:"electricity_affected"`
-	WaterRecorded       int  `json:"water_recorded"`
-	WaterAffected       bool `json:"water_affected"`
-}
-
-func ToPendingBaselineCorrectionResponse(p PendingBaselineCorrection) PendingBaselineCorrectionResponse {
-	// Source-optional (locked 2026-07-01): a nil-source recovery carries a
-	// zero SourceReadingID. Guard the zero UUID — uuid.Nil.String() yields
-	// "00000000-..." (non-empty), so emit "" instead. Consumers key the
-	// source block's presence on source_billing_month (see FE §2.5).
-	sourceReadingID := ""
-	if p.SourceReadingID != uuid.Nil {
-		sourceReadingID = p.SourceReadingID.String()
-	}
-	return PendingBaselineCorrectionResponse{
-		RecoveryID:           p.RecoveryID.String(),
-		SourceReadingID:      sourceReadingID,
-		SourceBillingMonth:   p.SourceBillingMonth,
-		SourceElectricity:    p.SourceElectricity,
-		SourceWater:          p.SourceWater,
-		RecoveryBillingMonth: p.RecoveryBillingMonth,
-		RecoveryElectricity:  p.RecoveryElectricity,
-		RecoveryWater:        p.RecoveryWater,
-		RecoveryCreatedAt:    p.RecoveryCreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		AnchorNote:           p.AnchorNote,
-		ElectricityRecorded:  p.ElectricityRecorded,
-		ElectricityAffected:  p.ElectricityAffected,
-		WaterRecorded:        p.WaterRecorded,
-		WaterAffected:        p.WaterAffected,
-	}
-}
-
-func ToPendingBaselineCorrectionResponseList(rows []PendingBaselineCorrection) []PendingBaselineCorrectionResponse {
-	out := make([]PendingBaselineCorrectionResponse, len(rows))
-	for i, r := range rows {
-		out[i] = ToPendingBaselineCorrectionResponse(r)
-	}
-	return out
 }
 
 type RoomBaselineResponse struct {

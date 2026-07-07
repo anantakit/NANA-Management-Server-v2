@@ -175,6 +175,14 @@ func (m *mockBillStore) DeleteLineItemsBySource(_ context.Context, billID uuid.U
 	return nil
 }
 
+func (m *mockBillStore) DeleteEditableManualLineItems(_ context.Context, billID uuid.UUID) error {
+	if m.deletedSourcesByBillID == nil {
+		m.deletedSourcesByBillID = map[uuid.UUID][]billing.LineItemSource{}
+	}
+	m.deletedSourcesByBillID[billID] = append(m.deletedSourcesByBillID[billID], billing.LineItemSourceManual)
+	return nil
+}
+
 func (m *mockBillStore) CreateLineItems(_ context.Context, items []billing.BillLineItem) error {
 	m.createdLineItems = append(m.createdLineItems, items...)
 	return nil

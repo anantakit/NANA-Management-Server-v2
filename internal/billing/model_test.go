@@ -1314,29 +1314,38 @@ func TestBillLineItem_ValidateAdjustment_ReasonCodeEdgeCases(t *testing.T) {
 
 func TestBillLineItem_ValidateAdjustment_NoteEdgeCases(t *testing.T) {
 	recID := uuid.New()
-	reason := AdjustmentReasonMeterRecovery
+	refund := AdjustmentReasonMeterRecovery
+	waived := AdjustmentReasonMeterRecoveryWaived
 	strPtr := func(s string) *string { return &s }
 
+	// Q1.5 note rule: a refund (ACCEPT) is deterministic + self-explaining, so
+	// its note is OPTIONAL; a waive (declining a known over-charge) REQUIRES a
+	// reason. When present on either, a note must be ≥10 chars.
 	cases := []struct {
 		name    string
+		reason  AdjustmentReasonCode
+		amount  int64
 		note    *string
 		wantErr error
 	}{
-		{"nil note", nil, ErrAdjustmentNoteRequired},
-		{"empty string", strPtr(""), ErrAdjustmentNoteRequired},
-		{"ascii whitespace only", strPtr("   "), ErrAdjustmentNoteRequired},
-		{"control whitespace only", strPtr("\n\t  "), ErrAdjustmentNoteRequired},
-		{"9 chars (too short)", strPtr("123456789"), ErrAdjustmentNoteTooShort},
-		{"9 visible chars with trailing ws", strPtr("123456789   "), ErrAdjustmentNoteTooShort},
-		{"exactly 10 chars", strPtr("1234567890"), nil},
-		{"normal note", strPtr("คืนยอดที่เก็บเกินจากเดือน 2026-04"), nil},
+		{"refund nil note → ok", refund, -100, nil, nil},
+		{"refund empty note → ok", refund, -100, strPtr(""), nil},
+		{"refund whitespace-only → ok", refund, -100, strPtr("\n\t  "), nil},
+		{"refund 9 chars → too short", refund, -100, strPtr("123456789"), ErrAdjustmentNoteTooShort},
+		{"refund exactly 10 → ok", refund, -100, strPtr("1234567890"), nil},
+		{"waive nil note → required", waived, 0, nil, ErrAdjustmentNoteRequired},
+		{"waive empty note → required", waived, 0, strPtr(""), ErrAdjustmentNoteRequired},
+		{"waive whitespace-only → required", waived, 0, strPtr("   "), ErrAdjustmentNoteRequired},
+		{"waive 9 chars → too short", waived, 0, strPtr("123456789"), ErrAdjustmentNoteTooShort},
+		{"waive exactly 10 → ok", waived, 0, strPtr("1234567890"), nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			reason := tc.reason
 			li := &BillLineItem{
 				LineType:                    LineItemAdjustment,
 				Source:                      LineItemSourceManual,
-				Amount:                      -100, // negative so the refund-only invariant passes; this table tests notes
+				Amount:                      tc.amount,
 				AdjustmentRecoveryReadingID: &recID,
 				AdjustmentUtility:           utilPtr(AdjustmentUtilityElectricity),
 				AdjustmentReasonCode:        &reason,

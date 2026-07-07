@@ -29,6 +29,8 @@ func ComputeMonthlyBillSnapshot(
 	nextMonth := advanceMonth(billingMonth)
 	elecUnits := reading.ElectricityUsed()
 	waterUnits := reading.WaterUsed()
+	elecPrev, elecCur := reading.ElectricityPrevious, reading.ElectricityCurrent
+	waterPrev, waterCur := reading.WaterPrevious, reading.WaterCurrent
 
 	lines := []ComputedLineItem{
 		{
@@ -38,20 +40,24 @@ func ComputeMonthlyBillSnapshot(
 			SortOrder:   1,
 		},
 		{
-			Type:        LineItemElectricity,
-			Description: fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits),
-			Amount:      int64(elecUnits) * elecRate,
-			Quantity:    elecUnits,
-			UnitPrice:   elecRate,
-			SortOrder:   2,
+			Type:          LineItemElectricity,
+			Description:   fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits),
+			Amount:        int64(elecUnits) * elecRate,
+			Quantity:      elecUnits,
+			UnitPrice:     elecRate,
+			SortOrder:     2,
+			MeterPrevious: &elecPrev,
+			MeterCurrent:  &elecCur,
 		},
 		{
-			Type:        LineItemWater,
-			Description: fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits),
-			Amount:      int64(waterUnits) * waterRate,
-			Quantity:    waterUnits,
-			UnitPrice:   waterRate,
-			SortOrder:   3,
+			Type:          LineItemWater,
+			Description:   fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits),
+			Amount:        int64(waterUnits) * waterRate,
+			Quantity:      waterUnits,
+			UnitPrice:     waterRate,
+			SortOrder:     3,
+			MeterPrevious: &waterPrev,
+			MeterCurrent:  &waterCur,
 		},
 	}
 

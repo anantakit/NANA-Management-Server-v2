@@ -8,7 +8,6 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/billing"
-	"nana/internal/meterreading"
 	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
@@ -211,8 +210,9 @@ func (s *Service) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req U
 			}
 		}
 
-		// Delete existing MANUAL items
-		if err := s.bills.DeleteLineItemsBySource(txCtx, id, billing.LineItemSourceManual); err != nil {
+		// Delete existing editable MANUAL items — recovery ADJUSTMENT lines
+		// (also source=MANUAL) are preserved for the applied-corrections flow.
+		if err := s.bills.DeleteEditableManualLineItems(txCtx, id); err != nil {
 			return fmt.Errorf("delete manual items: %w", err)
 		}
 
@@ -258,31 +258,15 @@ func (s *Service) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req U
 			return fmt.Errorf("reload bill: %w", err)
 		}
 
-		// Resolve pending recoveries into this settlement DRAFT (charge/refund/
-		// waive) → ADJUSTMENT lines. Mirror of UpdateMonthlyDraft's apply path;
-		// shares BuildRecoveryAdjustmentLine so construction never drifts. Reload
-		// again afterwards so the appended lines roll into CalculateTotal.
-		appliedLines, reBaselined, err := s.applyRecoveryResolutions(txCtx, id, reloaded, req.AppliedCorrections, actor)
-		if err != nil {
-			return err
-		}
-		if len(appliedLines) > 0 {
-			reloaded, err = s.bills.FindByID(txCtx, id)
-			if err != nil {
-				return fmt.Errorf("reload bill after recovery apply: %w", err)
-			}
-		}
+		// Q1.6 — recovery refunds are emitted automatically at settlement
+		// generation from the exit reading's meter-truth fact, not applied via
+		// this edit path. This path only curates overrides / deposit / note.
 
 		// Apply overrides
 		if req.Overrides != nil {
 			overrides := make(billing.OverrideMap, len(req.Overrides))
 			for key, amount := range req.Overrides {
 				overrides[key] = money.ToSatang(amount)
-			}
-			// Re-baseline wins: drop overrides for re-baselined utilities so the
-			// zeroed AUTO line (amount 0) is used, not a stale override (§3.6).
-			for _, lt := range reBaselined {
-				delete(overrides, string(lt))
 			}
 			reloaded.Overrides = overrides
 			if err := reloaded.ValidateOverrides(); err != nil {
@@ -322,133 +306,6 @@ func (s *Service) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req U
 	return s.bills.FindByIDWithRelations(ctx, id)
 }
 
-// applyRecoveryResolutions materializes one ADJUSTMENT line per input on the
-// settlement DRAFT and emits APPLY_RECOVERY_ADJUSTMENT audit rows. Mirror of
-// billing.applyBaselineCorrections (monthly) — same shared builder, same
-// race-safe applied-state recheck, same audit shape; only the bill destination
-// differs (settlement vs monthly). Q1 Recovery Decision.
-func (s *Service) applyRecoveryResolutions(
-	txCtx context.Context,
-	billID uuid.UUID,
-	bill *billing.Bill,
-	inputs []billing.AppliedCorrectionInput,
-	actor *uuid.UUID,
-) ([]billing.BillLineItem, []billing.LineItemType, error) {
-	if len(inputs) == 0 {
-		return nil, nil, nil
-	}
-
-	// The refund uses the bill's OWN contract rate (Q1.5 money authority).
-	ctr, err := s.contracts.FindByIDSimple(txCtx, bill.ContractID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load contract for recovery rate: %w", err)
-	}
-
-	// Append AFTER the current max sort_order so ADJUSTMENT rows land at the
-	// bottom of the bill.
-	maxSort := 0
-	for _, li := range bill.LineItems {
-		if li.SortOrder > maxSort {
-			maxSort = li.SortOrder
-		}
-	}
-
-	created := make([]billing.BillLineItem, 0, len(inputs))
-	var reBaselined []billing.LineItemType
-	for i, in := range inputs {
-		recoveryID, err := uuid.Parse(in.RecoveryReadingID)
-		if err != nil {
-			return nil, nil, respond.ErrBadRequest.WithMessage(
-				fmt.Sprintf("รหัสการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
-		}
-		utility, err := billing.ParseAdjustmentUtility(in.Utility)
-		if err != nil {
-			return nil, nil, respond.ErrBadRequest.WithMessage(
-				fmt.Sprintf("%s (รายการที่ %d)", err.Error(), i+1))
-		}
-		decision := billing.RecoveryDecision(in.Decision) // DTO oneof-validated
-
-		// Load the recovery meter row to confirm anchor identity + recover
-		// source_billing_month for the tenant-visible description.
-		recovery, err := s.meters.FindByIDSimple(txCtx, recoveryID)
-		if err != nil {
-			if database.IsNotFound(err) {
-				return nil, nil, respond.ErrNotFound.WithMessage(
-					fmt.Sprintf("ไม่พบรายการปรับฐาน (รายการที่ %d)", i+1))
-			}
-			return nil, nil, fmt.Errorf("load recovery %s: %w", recoveryID, err)
-		}
-		if recovery.AnchorReason == nil || *recovery.AnchorReason != meterreading.AnchorReasonReadingRecovery {
-			return nil, nil, respond.ErrBadRequest.WithMessage(
-				fmt.Sprintf("รายการปรับฐานไม่ถูกต้อง (รายการที่ %d)", i+1))
-		}
-		sourceMonth := ""
-		if recovery.RecoverySourceReadingID != nil {
-			source, err := s.meters.FindByIDSimple(txCtx, *recovery.RecoverySourceReadingID)
-			if err == nil && source.BillingMonth != nil {
-				sourceMonth = *source.BillingMonth
-			}
-		}
-
-		// Race guard: re-check PENDING state for THIS utility inside the TX.
-		applied, err := s.bills.HasNonVoidAdjustmentLineByRecoveryIDAndUtility(txCtx, recoveryID, utility)
-		if err != nil {
-			return nil, nil, fmt.Errorf("recheck applied state %s/%s: %w", recoveryID, utility, err)
-		}
-		if applied {
-			return nil, nil, respond.ErrConflict.WithMessage(
-				fmt.Sprintf("รายการปรับฐานนี้ถูกบันทึกในบิลอื่นไปแล้ว (รายการที่ %d)", i+1))
-		}
-
-		var overrideSatang int64
-		if decision == billing.RecoveryDecisionOverride {
-			if in.OverrideRefundBaht == nil {
-				return nil, nil, respond.ErrBadRequest.WithMessage(
-					fmt.Sprintf("ต้องระบุยอดคืนสำหรับการปรับยอด (รายการที่ %d)", i+1))
-			}
-			overrideSatang = -money.ToSatang(*in.OverrideRefundBaht)
-		}
-		rate := ctr.ElectricityRatePerUnit
-		if utility == billing.AdjustmentUtilityWater {
-			rate = ctr.WaterRatePerUnit
-		}
-
-		// Shared per-utility resolution (identical to the monthly path).
-		resolution, reBaselineType, err := billing.ResolveCorrection(recovery, utility, decision, overrideSatang, in.AdjustmentNote, rate)
-		if err != nil {
-			return nil, nil, respond.ErrBadRequest.WithMessage(
-				fmt.Sprintf("%s (รายการที่ %d)", err.Error(), i+1))
-		}
-
-		line, err := billing.BuildRecoveryAdjustmentLine(billID, resolution, sourceMonth, maxSort+1+i)
-		if err != nil {
-			return nil, nil, respond.ErrBadRequest.WithMessage(err.Error())
-		}
-		if err := s.bills.CreateLineItems(txCtx, []billing.BillLineItem{line}); err != nil {
-			return nil, nil, fmt.Errorf("insert adjustment line: %w", err)
-		}
-
-		// Re-baseline (§3.6): zero the affected AUTO utility line on the EXIT
-		// settlement bill. Recovery row untouched; refund is a separate line.
-		if err := s.bills.ZeroAutoLineUsage(txCtx, billID, reBaselineType); err != nil {
-			return nil, nil, fmt.Errorf("re-baseline auto line %s: %w", reBaselineType, err)
-		}
-		reBaselined = append(reBaselined, reBaselineType)
-
-		if err := s.audit.RecordAudit(txCtx, billID, billing.AuditApplyRecoveryAdjustment, actor,
-			billing.AuditApplyRecoveryAdjustmentPayload{
-				Amount:            resolution.Amount,
-				RecoveryReadingID: recoveryID,
-				Utility:           string(utility),
-				ReasonCode:        string(*line.AdjustmentReasonCode),
-				Note:              in.AdjustmentNote,
-			}); err != nil {
-			return nil, nil, fmt.Errorf("emit recovery adjustment audit: %w", err)
-		}
-		created = append(created, line)
-	}
-	return created, reBaselined, nil
-}
 
 // FinalizeSettlement recomputes totals from line items and marks the DRAFT
 // settlement bill as FINALIZED. Called by the move-out service via port,

@@ -59,32 +59,15 @@ type ManualLineItemRequest struct {
 //   - Deposit fields are intentionally absent — settlement-only concept.
 //
 // See project_billing_editable_monthly_arch_lock.md for the why.
-// AppliedCorrectionInput is one operator-committed Adjustment Application
-// applied to the current monthly DRAFT bill. Phase 7 — Amount + note now
-// live on the bill side, where the operator decides money in financial
-// context. RecoveryReadingID FK enforces provenance back to the meter row.
-// AppliedCorrectionInput is one per-utility over-record resolution (Q1.5).
-// Electricity and water resolve independently, so a recovery row with both
-// affected yields two inputs. The refund figure is NOT supplied — the server
-// derives it from the bill's contract rate + recorded/physical; the operator
-// only chooses a decision and, for OVERRIDE, a smaller partial magnitude.
-type AppliedCorrectionInput struct {
-	RecoveryReadingID string `json:"recovery_reading_id" validate:"required,uuid"`
-	Utility           string `json:"utility" validate:"required,oneof=ELECTRICITY WATER"`
-	// Decision: ACCEPT (full recommended refund), OVERRIDE (smaller partial),
-	// WAIVE (no money — a zero-amount ADJUSTMENT). Never inferred.
-	Decision string `json:"decision" validate:"required,oneof=ACCEPT OVERRIDE WAIVE"`
-	// OverrideRefundBaht is the positive refund magnitude for a partial (OVERRIDE
-	// only); the server bounds it to (0, recommended]. Ignored for ACCEPT/WAIVE.
-	OverrideRefundBaht *float64 `json:"override_refund_baht" validate:"omitempty,gt=0"`
-	AdjustmentNote     string   `json:"adjustment_note" validate:"required,min=10"`
-}
-
+//
+// Q1.6 — recovery refunds are no longer applied via this edit path. They are
+// emitted automatically at bill generation from the meter-truth fact, so there
+// is no operator decision / applied-corrections payload. This request only
+// curates the bill's own MANUAL items / AUTO overrides / note.
 type UpdateMonthlyDraftRequest struct {
-	ManualItems        []ManualLineItemRequest  `json:"manual_items" validate:"dive"`
-	Note               *string                  `json:"note"`
-	Overrides          map[string]float64       `json:"overrides"` // override_key (LineType) → baht
-	AppliedCorrections []AppliedCorrectionInput `json:"applied_corrections" validate:"dive"`
+	ManualItems []ManualLineItemRequest `json:"manual_items" validate:"dive"`
+	Note        *string                 `json:"note"`
+	Overrides   map[string]float64      `json:"overrides"` // override_key (LineType) → baht
 }
 
 type BillListParams struct {
@@ -147,6 +130,10 @@ type LineItemResponse struct {
 	OriginalAmount float64   `json:"original_amount"`
 	IsOverridden   bool      `json:"is_overridden"`
 	Overrideable   bool      `json:"overrideable"`
+	// Meter reading snapshot (unit counts, not money) that produced a metered
+	// AUTO line's usage. Nil on non-metered lines. See migration 00047.
+	MeterPrevious *int `json:"meter_previous,omitempty"`
+	MeterCurrent  *int `json:"meter_current,omitempty"`
 	// Phase 6 — Reading Recovery ADJUSTMENT provenance.
 	// Populated only on ADJUSTMENT line items (omitempty drops them on every
 	// other line type). FK back to the recovery meter row (Phase 5 atomicity).
@@ -154,6 +141,9 @@ type LineItemResponse struct {
 	AdjustmentRecoveryReadingID *uuid.UUID `json:"adjustment_recovery_reading_id,omitempty"`
 	AdjustmentReasonCode        *string    `json:"adjustment_reason_code,omitempty"`
 	AdjustmentNote              *string    `json:"adjustment_note,omitempty"`
+	// AdjustmentUtility (ELECTRICITY/WATER) — the renderer derives the line title
+	// ("คืนค่าไฟฟ้า"/"คืนค่าน้ำ") from it. Populated only on recovery ADJUSTMENT lines.
+	AdjustmentUtility *string `json:"adjustment_utility,omitempty"`
 }
 
 type BillResponse struct {
@@ -356,6 +346,8 @@ func toLineItemResponse(li BillLineItem, overrides OverrideMap) LineItemResponse
 		OriginalAmount: originalAmount,
 		IsOverridden:   isOverridden,
 		Overrideable:   overrideable,
+		MeterPrevious:  li.MeterPrevious,
+		MeterCurrent:   li.MeterCurrent,
 	}
 	// Phase 6 — ADJUSTMENT provenance pass-through. Fields are nil on every
 	// non-ADJUSTMENT line; omitempty drops them from the JSON output.
@@ -366,6 +358,10 @@ func toLineItemResponse(li BillLineItem, overrides OverrideMap) LineItemResponse
 			resp.AdjustmentReasonCode = &rc
 		}
 		resp.AdjustmentNote = li.AdjustmentNote
+		if li.AdjustmentUtility != nil {
+			u := string(*li.AdjustmentUtility)
+			resp.AdjustmentUtility = &u
+		}
 	}
 	return resp
 }

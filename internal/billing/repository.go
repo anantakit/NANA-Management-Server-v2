@@ -30,6 +30,7 @@ type BillingRepository interface {
 	Create(ctx context.Context, bill *Bill) error
 	Update(ctx context.Context, bill *Bill) error
 	DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source LineItemSource) error
+	DeleteEditableManualLineItems(ctx context.Context, billID uuid.UUID) error
 	CreateLineItems(ctx context.Context, items []BillLineItem) error
 	// ZeroAutoLineUsage re-baselines an AUTO utility line to no billable
 	// consumption (quantity + amount → 0) for an over-record correction (Q1.5
@@ -671,6 +672,18 @@ func (r *billingRepository) ListMonthlyBillsByApartmentMonth(ctx context.Context
 func (r *billingRepository) DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source LineItemSource) error {
 	return database.DB(ctx, r.db).
 		Where("bill_id = ? AND source = ?", billID, source).
+		Delete(&BillLineItem{}).Error
+}
+
+// DeleteEditableManualLineItems removes the hand-editable MANUAL line items from
+// a bill while PRESERVING recovery ADJUSTMENT lines. Recovery adjustments are
+// source=MANUAL (ValidateAdjustment requires it) but are NOT part of the manual
+// editor's replace-set — they are managed by the applied-corrections flow and
+// the VOID chain. The draft-save wipe must scope past them, else re-saving a
+// bill with an applied recovery silently drops the refund.
+func (r *billingRepository) DeleteEditableManualLineItems(ctx context.Context, billID uuid.UUID) error {
+	return database.DB(ctx, r.db).
+		Where("bill_id = ? AND source = ? AND line_type <> ?", billID, LineItemSourceManual, LineItemAdjustment).
 		Delete(&BillLineItem{}).Error
 }
 

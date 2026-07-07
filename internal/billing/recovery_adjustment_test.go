@@ -8,76 +8,73 @@ import (
 	"github.com/google/uuid"
 )
 
+func utilPtr(u AdjustmentUtility) *AdjustmentUtility { return &u }
+
 func TestBuildRecoveryAdjustmentLine(t *testing.T) {
 	billID := uuid.New()
 	recID := uuid.New()
-	note := "แก้ค่ามิเตอร์ที่จดผิด"
 
+	// Evidence: recorded 1500 → physical 1200, rate 50 satang/unit → overUnits
+	// 300, refund −15000. quantity=300, unit_price=50 carry the evidence.
 	cases := []struct {
-		name        string
-		res         RecoveryResolution
-		sourceMonth string
-		wantReason  AdjustmentReasonCode
-		wantAmount  int64
-		wantDesc    string
-		wantUtility *AdjustmentUtility
-		wantErr     error
+		name          string
+		res           RecoveryResolution
+		wantAmount    int64
+		wantQuantity  int
+		wantUnitPrice int64
+		wantDesc      string
+		wantUtility   *AdjustmentUtility
+		wantErr       error
 	}{
 		{
-			name:        "refund with source + utility",
-			res:         RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: -15000, Note: note},
-			sourceMonth: "2026-04",
-			wantReason:  AdjustmentReasonMeterRecovery,
-			wantAmount:  -15000,
-			wantDesc:    "คืนยอดที่เก็บเกินจากเดือน 2026-04 (จดมิเตอร์ผิด)",
-			wantUtility: utilPtr(AdjustmentUtilityElectricity),
+			name:          "refund electricity — evidence on the line",
+			res:           RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: -15000, Recorded: 1500, Physical: 1200, RatePerUnit: 50},
+			wantAmount:    -15000,
+			wantQuantity:  300,
+			wantUnitPrice: 50,
+			wantDesc:      "จดไว้ 1500 → จริง 1200",
+			wantUtility:   utilPtr(AdjustmentUtilityElectricity),
 		},
 		{
-			name:        "refund source-less",
-			res:         RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityWater, Amount: -15000, Note: note},
-			wantReason:  AdjustmentReasonMeterRecovery,
-			wantAmount:  -15000,
-			wantDesc:    "คืนยอดที่เก็บเกิน (จดมิเตอร์ผิด)",
-			wantUtility: utilPtr(AdjustmentUtilityWater),
-		},
-		{
-			name:        "waive forces zero + waived reason regardless of Amount",
-			res:         RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: -999, Note: note, Waive: true},
-			wantReason:  AdjustmentReasonMeterRecoveryWaived,
-			wantAmount:  0,
-			wantDesc:    "ไม่คิดเงินเพิ่ม (จดมิเตอร์ผิด)",
-			wantUtility: utilPtr(AdjustmentUtilityElectricity),
+			name:          "refund water",
+			res:           RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityWater, Amount: -15000, Recorded: 1500, Physical: 1200, RatePerUnit: 50},
+			wantAmount:    -15000,
+			wantQuantity:  300,
+			wantUnitPrice: 50,
+			wantDesc:      "จดไว้ 1500 → จริง 1200",
+			wantUtility:   utilPtr(AdjustmentUtilityWater),
 		},
 		{
 			name:    "positive (charge) rejected — refund-only",
-			res:     RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: 15000, Note: note},
+			res:     RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: 15000, Recorded: 1500, Physical: 1200, RatePerUnit: 50},
 			wantErr: ErrAdjustmentRefundMustBeNegative,
 		},
 		{
-			name:    "zero non-waive rejected (forgot amount)",
-			res:     RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: 0, Note: note},
+			// A zero-rate over-record resolves with Amount 0; the caller must SKIP
+			// it (emit no line). If it ever reaches the builder, ValidateAdjustment
+			// rejects a zero METER_RECOVERY amount — a loud guard, not a silent 0-line.
+			name:    "zero amount rejected (zero-rate over-record is skipped by caller)",
+			res:     RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: 0, Recorded: 1500, Physical: 1200, RatePerUnit: 0},
 			wantErr: ErrAdjustmentRefundMustBeNegative,
-		},
-		{
-			name:    "short note rejected via ValidateAdjustment passthrough",
-			res:     RecoveryResolution{RecoveryReadingID: recID, Utility: AdjustmentUtilityElectricity, Amount: -100, Note: "short"},
-			wantErr: ErrAdjustmentNoteTooShort,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			line, err := BuildRecoveryAdjustmentLine(billID, tc.res, tc.sourceMonth, 7)
+			line, err := BuildRecoveryAdjustmentLine(billID, tc.res, 7)
 			if err != tc.wantErr {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 			if tc.wantErr != nil {
 				return
 			}
-			if line.AdjustmentReasonCode == nil || *line.AdjustmentReasonCode != tc.wantReason {
-				t.Errorf("reason = %v, want %v", line.AdjustmentReasonCode, tc.wantReason)
+			if line.AdjustmentReasonCode == nil || *line.AdjustmentReasonCode != AdjustmentReasonMeterRecovery {
+				t.Errorf("reason = %v, want METER_RECOVERY", line.AdjustmentReasonCode)
 			}
-			if line.Amount != tc.wantAmount || line.UnitPrice != tc.wantAmount {
-				t.Errorf("amount/unitPrice = %d/%d, want %d", line.Amount, line.UnitPrice, tc.wantAmount)
+			if line.Amount != tc.wantAmount {
+				t.Errorf("amount = %d, want %d", line.Amount, tc.wantAmount)
+			}
+			if line.Quantity != tc.wantQuantity || line.UnitPrice != tc.wantUnitPrice {
+				t.Errorf("quantity/unitPrice = %d/%d, want %d/%d", line.Quantity, line.UnitPrice, tc.wantQuantity, tc.wantUnitPrice)
 			}
 			if line.Description != tc.wantDesc {
 				t.Errorf("description = %q, want %q", line.Description, tc.wantDesc)
@@ -112,6 +109,7 @@ func TestRecommendRefund(t *testing.T) {
 		{"equal → not over-record", 1200, 1200, 800, 0, false},
 		{"under-record → not over-record", 1200, 1500, 800, 0, false},
 		{"minimal over-record", 1201, 1200, 800, -800, true},
+		{"zero-rate over-record → 0 refund, still ok", 1500, 1200, 0, 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,69 +134,43 @@ func TestIsAffected(t *testing.T) {
 	}
 }
 
-// ResolveRefundAmount — override ∈ [recommended, 0): smaller refund only, no
-// over-refund, no charge, no escape hatch (Q1.5 §0a #2).
-func TestResolveRefundAmount(t *testing.T) {
-	const recommended = -3000
-	cases := []struct {
-		name     string
-		decision RecoveryDecision
-		override int64
-		want     int64
-		wantErr  error
-	}{
-		{"accept → full recommendation", RecoveryDecisionAccept, 0, recommended, nil},
-		{"waive → zero", RecoveryDecisionWaive, 0, 0, nil},
-		{"override smaller refund ok", RecoveryDecisionOverride, -2500, -2500, nil},
-		{"override equal to recommended ok", RecoveryDecisionOverride, -3000, -3000, nil},
-		{"override larger refund rejected", RecoveryDecisionOverride, -3500, 0, ErrRecoveryOverrideOutOfBounds},
-		{"override positive (charge) rejected", RecoveryDecisionOverride, 100, 0, ErrRecoveryOverrideOutOfBounds},
-		{"override zero (not a refund) rejected", RecoveryDecisionOverride, 0, 0, ErrRecoveryOverrideOutOfBounds},
-		{"unknown decision rejected", RecoveryDecision("BOGUS"), -100, 0, ErrRecoveryDecisionInvalid},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveRefundAmount(tc.decision, recommended, tc.override)
-			if err != tc.wantErr {
-				t.Fatalf("err = %v, want %v", err, tc.wantErr)
-			}
-			if err == nil && got != tc.want {
-				t.Errorf("amount = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
-func utilPtr(u AdjustmentUtility) *AdjustmentUtility { return &u }
-
-// A genuine over-record on a zero-rate utility yields recommended 0 — there is
-// nothing to refund. ACCEPT must resolve as a WAIVE (zero-amount line), never
-// dead-end on the refund-only rule. rate > 0 is the operational assumption; this
-// guards the future rate-0 case (e.g. water bundled into rent).
-func TestResolveCorrection_ZeroRateAcceptBecomesWaived(t *testing.T) {
-	recorded := 500
+// ResolveCorrection — Q1.6 pure refund builder: NO decision, NO note. Derives
+// the deterministic refund from recorded/physical/rate. Rate-0 → Amount 0
+// (caller skips the line). A utility that is not an over-record → error.
+func TestResolveCorrection(t *testing.T) {
+	recorded := 1500
 	rec := &meterreading.MeterReading{
 		ID:                  uuid.New(),
-		ElectricityCurrent:  300, // physical; recorded 500 > 300 → real over-record
+		ElectricityCurrent:  1200, // physical; recorded 1500 > 1200 → over-record of 300
 		ElectricityRecorded: &recorded,
 	}
-	res, lt, err := ResolveCorrection(rec, AdjustmentUtilityElectricity, RecoveryDecisionAccept, 0, "over-record on a zero-rate utility", 0)
+
+	// Normal over-record at ฿8/unit (800 satang).
+	res, lt, err := ResolveCorrection(rec, AdjustmentUtilityElectricity, 800)
 	if err != nil {
-		t.Fatalf("ResolveCorrection (rate 0): %v", err)
+		t.Fatalf("ResolveCorrection: %v", err)
 	}
-	if !res.Waive || res.Amount != 0 {
-		t.Errorf("rate-0 ACCEPT = {waive:%v amount:%d}, want {waive:true amount:0}", res.Waive, res.Amount)
+	if res.Amount != -(300*800) || res.Recorded != 1500 || res.Physical != 1200 || res.RatePerUnit != 800 {
+		t.Errorf("resolution = %+v, want amount %d / recorded 1500 / physical 1200 / rate 800", res, -(300 * 800))
+	}
+	if res.RecoveryReadingID != rec.ID {
+		t.Errorf("recovery FK = %v, want %v", res.RecoveryReadingID, rec.ID)
 	}
 	if lt != LineItemElectricity {
 		t.Errorf("re-baseline line type = %v, want ELECTRICITY", lt)
 	}
-	// And the resolution builds a valid WAIVED ADJUSTMENT line (not a rejected
-	// zero-amount refund).
-	line, err := BuildRecoveryAdjustmentLine(uuid.New(), res, "", 1)
+
+	// Zero-rate over-record → Amount 0 (nothing was charged; caller emits no line).
+	res0, _, err := ResolveCorrection(rec, AdjustmentUtilityElectricity, 0)
 	if err != nil {
-		t.Fatalf("build waived line from rate-0 resolution: %v", err)
+		t.Fatalf("ResolveCorrection rate-0: %v", err)
 	}
-	if line.AdjustmentReasonCode == nil || *line.AdjustmentReasonCode != AdjustmentReasonMeterRecoveryWaived {
-		t.Errorf("reason = %v, want METER_RECOVERY_WAIVED", line.AdjustmentReasonCode)
+	if res0.Amount != 0 {
+		t.Errorf("rate-0 amount = %d, want 0", res0.Amount)
+	}
+
+	// Water was not recorded on this row → not an over-record → error.
+	if _, _, err := ResolveCorrection(rec, AdjustmentUtilityWater, 1800); err != ErrCorrectionUtilityNotAffected {
+		t.Errorf("water err = %v, want ErrCorrectionUtilityNotAffected", err)
 	}
 }

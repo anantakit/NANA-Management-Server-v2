@@ -33,18 +33,6 @@ type BillingConfigQuerier interface {
 	FindByApartmentID(ctx context.Context, apartmentID uuid.UUID) ([]billingconfig.BillingConfig, error)
 }
 
-// BaselineCorrectionQuerier exposes meterreading's pending-correction
-// lookup to the billing handler. Phase 7 plan B3: the bill convenience
-// endpoint (GET /bills/:id/pending-baseline-corrections) resolves
-// bill→contract→room then forwards to meterreading. Service-layer
-// dispatch lives in meterreading — this is a routing convenience port.
-//
-// Consumer-defined per cross-feature-patterns.md §4. Satisfied directly
-// by meterreading.MeterReadingService (structural typing — the method
-// signature matches).
-type BaselineCorrectionQuerier interface {
-	ListPendingBaselineCorrectionsByRoom(ctx context.Context, roomID uuid.UUID) ([]meterreading.PendingBaselineCorrection, error)
-}
 
 // PaymentRoutingQuerier resolves the payment destination for a room.
 // Implemented by apartment.PaymentRoutingService; nil destination means no rules

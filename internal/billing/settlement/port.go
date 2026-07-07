@@ -135,6 +135,12 @@ type BillStore interface {
 	// MANUAL items; AUTO items are never touched this way.
 	DeleteLineItemsBySource(ctx context.Context, billID uuid.UUID, source billing.LineItemSource) error
 
+	// DeleteEditableManualLineItems removes hand-editable MANUAL items while
+	// PRESERVING recovery ADJUSTMENT lines (source=MANUAL but managed by the
+	// applied-corrections flow, not the manual editor). Used by the settlement
+	// draft-save wipe so re-saving does not drop an applied recovery refund.
+	DeleteEditableManualLineItems(ctx context.Context, billID uuid.UUID) error
+
 	// CreateLineItems inserts a slice of line items belonging to a single
 	// bill. Used by the draft-edit replace path + the settlement
 	// regeneration carry-over path.

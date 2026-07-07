@@ -150,7 +150,7 @@ func main() {
 	// Billing handler also takes the meterService for the Phase 7 convenience
 	// route GET /:id/pending-baseline-corrections (bill→contract→room→meter).
 	billService := billing.NewBillingService(billRepo, billAuditRepo, contractRepo, meterRepo, bcRepo, routingService, txManager)
-	billHandler := billing.NewBillingHandler(billService, billRepo, contractRepo, meterService)
+	billHandler := billing.NewBillingHandler(billService, billRepo, contractRepo)
 
 	// Wire dependencies — Monthly billing workflow (W2 batch mechanics).
 	// MonthlyAdapter satisfies monthly.BillStore + monthly.AuditStore over

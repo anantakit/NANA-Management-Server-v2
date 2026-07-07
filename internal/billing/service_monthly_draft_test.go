@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"nana/internal/contract"
-	"nana/internal/meterreading"
 	"nana/internal/shared/respond"
 
 	"github.com/google/uuid"
@@ -162,137 +160,9 @@ func TestUpdateMonthlyDraft_HappyPath(t *testing.T) {
 	}
 }
 
-// Source-optional regression (locked 2026-07-01): a nil-source READING_RECOVERY
-// must still be APPLICABLE to a monthly draft. Before the relaxation the apply
-// path rejected it with "รายการปรับฐานขาดมิเตอร์ต้นทาง" — a residual gate from
-// the source-required era. This test locks that the gate is gone: the recovery
-// applies, an ADJUSTMENT line is created, and the tenant-visible description
-// falls back to the source-less variant (no dangling "เดือน ", no inference).
-func TestUpdateMonthlyDraft_AppliesNilSourceRecovery(t *testing.T) {
-	bill := monthlyDraftFixture()
-	repo := &mockBillingRepo{}
-	repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) { return bill, nil }
-	audit := &mockBillAuditRepo{}
-
-	recoveryID := uuid.New()
-	recoveryReason := meterreading.AnchorReasonReadingRecovery
-	elecRecorded := 1100 // over-record: recorded 1100 > physical 1000
-	meterQ := &mockMeterQuerier{
-		findByIDSimpleFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
-			return &meterreading.MeterReading{
-				ID:                      recoveryID,
-				AnchorReason:            &recoveryReason,
-				RecoverySourceReadingID: nil, // nil source — the point of this test
-				ElectricityCurrent:      1000,
-				ElectricityRecorded:     &elecRecorded,
-				WaterCurrent:            60,
-			}, nil
-		},
-	}
-	ctrQ := &mockContractQuerier{contract: &contract.Contract{ElectricityRatePerUnit: 500, WaterRatePerUnit: 1800}}
-	svc := NewBillingService(repo, audit, ctrQ, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
-
-	// ACCEPT the deterministic refund: (1100-1000) × 500 satang = -50000 (-500 baht).
-	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
-		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recoveryID.String(), Utility: "ELECTRICITY", Decision: "ACCEPT", AdjustmentNote: "คืนยอดที่เก็บเกิน — จดมิเตอร์ผิด"},
-		},
-	}, nil)
-	if err != nil {
-		t.Fatalf("nil-source recovery must apply, got error: %v", err)
-	}
-
-	// Exactly one ADJUSTMENT line, source-less description, correct FK + amount.
-	var adj *BillLineItem
-	for i := range repo.createdLineItems {
-		if repo.createdLineItems[i].LineType == LineItemAdjustment {
-			adj = &repo.createdLineItems[i]
-			break
-		}
-	}
-	if adj == nil {
-		t.Fatal("no ADJUSTMENT line created for nil-source recovery")
-	}
-	if adj.AdjustmentRecoveryReadingID == nil || *adj.AdjustmentRecoveryReadingID != recoveryID {
-		t.Errorf("adjustment FK = %v, want recovery %v", adj.AdjustmentRecoveryReadingID, recoveryID)
-	}
-	if adj.Amount != -50000 {
-		t.Errorf("adjustment amount = %d, want -50000 satang", adj.Amount)
-	}
-	if want := "คืนยอดที่เก็บเกิน (จดมิเตอร์ผิด)"; adj.Description != want {
-		t.Errorf("description = %q, want source-less %q", adj.Description, want)
-	}
-	if strings.Contains(adj.Description, "เดือน") {
-		t.Errorf("nil-source description %q must not reference a month", adj.Description)
-	}
-	// Re-baseline (§3.6): the affected ELECTRICITY AUTO line is zeroed.
-	var zeroedElec bool
-	for _, z := range repo.zeroedAutoLines {
-		if z.LineType == LineItemElectricity {
-			zeroedElec = true
-		}
-	}
-	if !zeroedElec {
-		t.Error("affected electricity AUTO line was not re-baselined (ZeroAutoLineUsage not called)")
-	}
-}
-
-// Q1 Recovery Decision — monthly draft resolves a recovery as waive/no-charge
-// (explicit Waive=true), producing a zero-amount METER_RECOVERY_WAIVED line.
-// Amount is deliberately non-zero to prove waive is explicit, not inferred.
-func TestUpdateMonthlyDraft_AppliesWaive(t *testing.T) {
-	bill := monthlyDraftFixture()
-	repo := &mockBillingRepo{}
-	repo.findByIDFn = func(_ context.Context, _ uuid.UUID) (*Bill, error) { return bill, nil }
-	audit := &mockBillAuditRepo{}
-
-	recoveryID := uuid.New()
-	recoveryReason := meterreading.AnchorReasonReadingRecovery
-	elecRecorded := 1100 // affected (over-record) so the utility can be resolved
-	meterQ := &mockMeterQuerier{
-		findByIDSimpleFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
-			return &meterreading.MeterReading{
-				ID: recoveryID, AnchorReason: &recoveryReason,
-				ElectricityCurrent: 1000, ElectricityRecorded: &elecRecorded,
-			}, nil
-		},
-	}
-	ctrQ := &mockContractQuerier{contract: &contract.Contract{ElectricityRatePerUnit: 500, WaterRatePerUnit: 1800}}
-	svc := NewBillingService(repo, audit, ctrQ, meterQ, &mockConfigQuerier{}, nil, &mockTxManager{})
-
-	// WAIVE: affected utility, but operator returns no money → zero-amount line.
-	_, err := svc.UpdateMonthlyDraft(context.Background(), bill.ID, UpdateMonthlyDraftRequest{
-		AppliedCorrections: []AppliedCorrectionInput{
-			{RecoveryReadingID: recoveryID.String(), Utility: "ELECTRICITY", Decision: "WAIVE", AdjustmentNote: "ตรวจแล้วไม่คิดเงินเพิ่ม"},
-		},
-	}, nil)
-	if err != nil {
-		t.Fatalf("waive must apply: %v", err)
-	}
-
-	var adj *BillLineItem
-	for i := range repo.createdLineItems {
-		if repo.createdLineItems[i].LineType == LineItemAdjustment {
-			adj = &repo.createdLineItems[i]
-			break
-		}
-	}
-	if adj == nil {
-		t.Fatal("no ADJUSTMENT line created for waive")
-	}
-	if adj.Amount != 0 {
-		t.Errorf("waive amount = %d, want 0", adj.Amount)
-	}
-	if adj.AdjustmentReasonCode == nil || *adj.AdjustmentReasonCode != AdjustmentReasonMeterRecoveryWaived {
-		t.Errorf("reason = %v, want METER_RECOVERY_WAIVED", adj.AdjustmentReasonCode)
-	}
-}
-
-// auditActionCounts groups recorded audit events by action for assertion.
-// Helper local to draft tests so the surface stays small; promote later if
-// other test files reach for the same shape.
+// auditActionCounts tallies audit rows by action for the assertions below.
 func auditActionCounts(logs []BillAuditLog) map[BillAuditAction]int {
-	counts := map[BillAuditAction]int{}
+	counts := make(map[BillAuditAction]int, len(logs))
 	for _, l := range logs {
 		counts[l.Action]++
 	}
