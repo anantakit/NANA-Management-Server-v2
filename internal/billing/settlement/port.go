@@ -152,13 +152,13 @@ type BillStore interface {
 	// monthly path uses, so a recovery can't be double-applied across bills.
 	HasNonVoidAdjustmentLineByRecoveryID(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 
-	// Q1.5 per-utility probes + re-baseline (mirror the billing repo).
+	// Q1.6 per-utility probes + re-baseline (mirror the billing repo).
 	// HasNonVoidAdjustmentLineByRecoveryIDAndUtility scopes the applied-state
-	// probe to a utility; HasUnresolvedOverRecordByContractID is the per-utility
-	// finalize gate; ZeroAutoLineUsage re-baselines an affected AUTO line to
-	// usage 0 / amount 0 (§3.6).
+	// probe to a utility; HasUnreflectedOverRecordByContractID is the per-utility
+	// freshness gate (bill predates a meter correction → stale); ZeroAutoLineUsage
+	// re-baselines an affected AUTO line to usage 0 / amount 0 (§3.6).
 	HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility billing.AdjustmentUtility) (bool, error)
-	HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+	HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 	ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType billing.LineItemType) error
 }
 

@@ -226,16 +226,18 @@ var (
 	ErrNotDraft     = errors.New("บิลไม่ใช่สถานะร่าง")
 	ErrNotFinalized = errors.New("บิลไม่ใช่สถานะยืนยันแล้ว")
 	ErrNoLineItems  = errors.New("บิลต้องมีรายการอย่างน้อย 1 รายการ")
-	// ErrPendingRecoveryBlocksFinalization gates finalization (monthly +
-	// settlement + move-out closure): a room with an unresolved recovery must
-	// have it resolved (charge/refund/waive) before any of its bills finalize.
-	// Q1 doctrine: project_reading_recovery_q1_unified_decision_surface_lock.
-	ErrPendingRecoveryBlocksFinalization = errors.New("มีรายการแก้ค่ามิเตอร์ที่ยังไม่ได้ตัดสิน — ต้องเลือกคิดเงินเพิ่ม คืนเงิน หรือไม่คิดเงิน ก่อนออกบิล")
-	ErrAlreadyVoided                     = errors.New("บิลถูกยกเลิกแล้ว")
-	ErrAlreadyPaid                       = errors.New("บิลถูกชำระแล้ว")
-	ErrVoidReasonEmpty                   = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
-	ErrNotAbsorbed                       = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลปิดสัญญา")
-	ErrBatchAlreadyCommitted             = errors.New("batch ถูก commit ไปแล้ว")
+	// ErrBillStaleAfterRecovery gates finalization (monthly + settlement +
+	// move-out closure): a meter correction (recovery) was recorded AFTER this
+	// bill was generated, so the bill does not reflect the latest meter truth —
+	// its refund line is missing. Q1.6 has no decision; the fix is to regenerate
+	// (VOID + GENERATE), which auto-emits the refund. The stale bill must not
+	// finalize as-is.
+	ErrBillStaleAfterRecovery = errors.New("มีการแก้ค่ามิเตอร์หลังจากสร้างบิลนี้ กรุณาสร้างบิลใหม่ก่อนสรุปบิล")
+	ErrAlreadyVoided          = errors.New("บิลถูกยกเลิกแล้ว")
+	ErrAlreadyPaid            = errors.New("บิลถูกชำระแล้ว")
+	ErrVoidReasonEmpty        = errors.New("กรุณาระบุเหตุผลในการยกเลิก")
+	ErrNotAbsorbed            = errors.New("บิลไม่ได้อยู่ในสถานะถูกรวมเข้าบิลปิดสัญญา")
+	ErrBatchAlreadyCommitted  = errors.New("batch ถูก commit ไปแล้ว")
 	// Correction (void+recreate) errors. ErrAlreadySuperseded fires when a bill
 	// is already linked to a replacement — chain corrections must target the
 	// latest bill in the chain.

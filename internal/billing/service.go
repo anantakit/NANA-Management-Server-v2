@@ -322,7 +322,7 @@ func (s *billingService) FinalizeBill(ctx context.Context, id uuid.UUID, actor *
 		// Domain-sentinel errors → 400 AppError so the API responds with the
 		// Thai validation message verbatim.
 		if errors.Is(err, ErrNotDraft) || errors.Is(err, ErrNoLineItems) ||
-			errors.Is(err, ErrPendingRecoveryBlocksFinalization) {
+			errors.Is(err, ErrBillStaleAfterRecovery) {
 			return nil, respond.ErrBadRequest.WithMessage(err.Error())
 		}
 		if _, ok := respond.Is(err); ok {
@@ -359,16 +359,17 @@ func finalizeBillInTx(txCtx context.Context, repo BillingRepository, audit BillA
 		return fmt.Errorf("find bill: %w", err)
 	}
 
-	// Q1.5 finalization gate: a room with any unresolved over-record (affected
-	// recovery×utility lacking a non-VOID ADJUSTMENT line) must resolve it
-	// (refund/waive) before any of its bills finalize. Raw sentinel — FinalizeBill
-	// maps it to 400, batch classifies it as a business-rule skip.
-	pending, err := repo.HasUnresolvedOverRecordByContractID(txCtx, b.ContractID)
+	// Q1.6 freshness gate: block finalizing a bill that predates a meter
+	// correction. If the contract has an over-record recovery whose refund is not
+	// yet reflected on any live bill, this bill is stale — the operator must
+	// regenerate (VOID + GENERATE) so the refund is auto-emitted. Raw sentinel —
+	// FinalizeBill maps it to 400, batch classifies it as a business-rule skip.
+	stale, err := repo.HasUnreflectedOverRecordByContractID(txCtx, b.ContractID)
 	if err != nil {
-		return fmt.Errorf("check pending recovery: %w", err)
+		return fmt.Errorf("check stale bill after recovery: %w", err)
 	}
-	if pending {
-		return ErrPendingRecoveryBlocksFinalization
+	if stale {
+		return ErrBillStaleAfterRecovery
 	}
 
 	previousStatus := string(b.Status)

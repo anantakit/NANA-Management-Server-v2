@@ -141,8 +141,8 @@ func (a *SettlementAdapter) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx c
 	return a.repo.HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx, recoveryReadingID, utility)
 }
 
-func (a *SettlementAdapter) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
-	return a.repo.HasUnresolvedOverRecordByContractID(ctx, contractID)
+func (a *SettlementAdapter) HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+	return a.repo.HasUnreflectedOverRecordByContractID(ctx, contractID)
 }
 
 func (a *SettlementAdapter) ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType LineItemType) error {

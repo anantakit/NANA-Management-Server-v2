@@ -306,7 +306,6 @@ func (s *Service) UpdateSettlementDraft(ctx context.Context, id uuid.UUID, req U
 	return s.bills.FindByIDWithRelations(ctx, id)
 }
 
-
 // FinalizeSettlement recomputes totals from line items and marks the DRAFT
 // settlement bill as FINALIZED. Called by the move-out service via port,
 // AND also reachable as a public Service method.
@@ -328,16 +327,18 @@ func (s *Service) FinalizeSettlement(ctx context.Context, billID uuid.UUID) erro
 		return respond.ErrBadRequest.WithMessage("สรุปยอดได้เฉพาะบิลปิดสัญญา")
 	}
 
-	// Q1.5 finalization gate: block while the contract's room has any unresolved
-	// over-record (affected recovery×utility without a non-VOID ADJUSTMENT line).
-	// Also gates move-out closure, which drives FinalizeSettlement via the
-	// moveout→billing port — the error rolls back that workflow step.
-	pending, err := s.bills.HasUnresolvedOverRecordByContractID(ctx, b.ContractID)
+	// Q1.6 freshness gate: block finalizing a settlement bill that predates a
+	// meter correction — the contract has an over-record recovery whose refund is
+	// not yet reflected on any live bill, so this bill is stale and must be
+	// regenerated (VOID + GENERATE). Also gates move-out closure, which drives
+	// FinalizeSettlement via the moveout→billing port — the error rolls back that
+	// workflow step.
+	stale, err := s.bills.HasUnreflectedOverRecordByContractID(ctx, b.ContractID)
 	if err != nil {
-		return fmt.Errorf("check pending recovery: %w", err)
+		return fmt.Errorf("check stale bill after recovery: %w", err)
 	}
-	if pending {
-		return respond.ErrBadRequest.WithMessage(billing.ErrPendingRecoveryBlocksFinalization.Error())
+	if stale {
+		return respond.ErrBadRequest.WithMessage(billing.ErrBillStaleAfterRecovery.Error())
 	}
 
 	// Recompute totals from source of truth

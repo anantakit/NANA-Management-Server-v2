@@ -262,7 +262,7 @@ func (m *mockBillingRepo) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(_ conte
 	return false, nil
 }
 
-func (m *mockBillingRepo) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+func (m *mockBillingRepo) HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
 	if m.hasPendingRecoveryFn != nil {
 		return m.hasPendingRecoveryFn(ctx, contractID)
 	}
@@ -625,7 +625,7 @@ func TestFinalizeBill_BlockedByPendingRecovery(t *testing.T) {
 		t.Fatal("expected finalize to be blocked by pending recovery")
 	}
 	var appErr *respond.AppError
-	if !errors.As(err, &appErr) || appErr.Message != ErrPendingRecoveryBlocksFinalization.Error() {
+	if !errors.As(err, &appErr) || appErr.Message != ErrBillStaleAfterRecovery.Error() {
 		t.Fatalf("expected pending-recovery AppError, got %v", err)
 	}
 }

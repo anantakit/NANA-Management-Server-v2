@@ -539,8 +539,8 @@ func classifyFinalizeError(err error) (BatchFinalizeFailureCode, string) {
 		return FailureCodeNoLineItems, "ออกบิลไม่ได้: บิลไม่มีรายการ"
 	case errors.Is(err, billing.ErrNotDraft):
 		return FailureCodeNotDraft, "ออกบิลไม่ได้: บิลไม่ใช่สถานะร่าง"
-	case errors.Is(err, billing.ErrPendingRecoveryBlocksFinalization):
-		return FailureCodePendingRecovery, "ออกบิลไม่ได้: มีรายการแก้ค่ามิเตอร์ที่ยังไม่ได้ตัดสิน"
+	case errors.Is(err, billing.ErrBillStaleAfterRecovery):
+		return FailureCodeStaleAfterRecovery, "ออกบิลไม่ได้: มีการแก้ค่ามิเตอร์หลังจากสร้างบิลนี้ กรุณาสร้างบิลใหม่"
 	default:
 		return FailureCodeInfraError, "เกิดข้อผิดพลาดของระบบ กรุณาลองอีกครั้ง"
 	}

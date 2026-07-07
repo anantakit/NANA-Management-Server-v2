@@ -91,12 +91,13 @@ type BillingRepository interface {
 	// independently, so applied-state is derived per (recovery, utility).
 	HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility AdjustmentUtility) (bool, error)
 
-	// HasUnresolvedOverRecordByContractID is the Q1.5 per-utility finalization
+	// HasUnreflectedOverRecordByContractID is the Q1.6 per-utility freshness
 	// gate: true iff the contract's room has any AFFECTED (recorded > current)
-	// recovery utility that lacks a non-VOID ADJUSTMENT line for that utility.
-	// Only over-record utilities engage (recorded IS NULL or recorded <= current
-	// never blocks — §0b). This is the sole finalization gate since P3-B.
-	HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+	// recovery utility whose refund is not reflected on a live bill (no non-VOID
+	// ADJUSTMENT line) — the bill predates the meter correction (stale). Only
+	// over-record utilities engage (recorded IS NULL or recorded <= current never
+	// blocks — §0b). This is the sole finalization gate since P3-B.
+	HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 
 	// CountPendingBaselineCorrectionsByRoomIDs returns, per room, the count
 	// of active READING_RECOVERY meter rows that have NOT yet been applied
@@ -790,15 +791,18 @@ func (r *billingRepository) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx c
 	return count > 0, nil
 }
 
-// HasUnresolvedOverRecordByContractID is the Q1.5 per-utility finalization gate.
+// HasUnreflectedOverRecordByContractID is the Q1.6 per-utility freshness gate.
 // It enumerates the AFFECTED (recorded > current) utilities of the contract's
 // recovery rows via a UNION ALL, then returns true iff any such (recovery,
-// utility) pair lacks a non-VOID ADJUSTMENT line for that utility. A NOT EXISTS
-// (not a LEFT JOIN) is required because a pair can hold both a VOID and a
-// non-VOID line at once; only the non-VOID one resolves it. Waived pairs carry a
-// zero-amount non-VOID line → resolved. Utilities with recorded IS NULL or
-// recorded <= current never enter the set (not an over-record — §0b).
-func (r *billingRepository) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+// utility) pair lacks a non-VOID ADJUSTMENT line for that utility — i.e. the
+// recovery's refund is not reflected on any live bill, so an existing bill
+// predates the correction (stale). A NOT EXISTS (not a LEFT JOIN) is required
+// because a pair can hold both a VOID and a non-VOID line at once; only the
+// non-VOID one counts as reflected. In Q1.6 the reflecting ADJUSTMENT is
+// auto-emitted at generation, so regenerating (VOID + GENERATE) clears the gate.
+// Utilities with recorded IS NULL or recorded <= current never enter the set
+// (not an over-record — §0b).
+func (r *billingRepository) HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
 	var exists bool
 	err := database.DB(ctx, r.db).
 		Raw(`SELECT EXISTS (

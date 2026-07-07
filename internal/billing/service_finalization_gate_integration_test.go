@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestHasUnresolvedOverRecordByContractID_MultiRow locks the Q1.5 per-utility
+// TestHasUnreflectedOverRecordByContractID_MultiRow locks the Q1.5 per-utility
 // finalization-gate predicate on real Postgres, specifically the multi-row case:
 // a room with a MIX of resolved + pending over-records must still report pending
 // (block finalize) until EVERY affected recovery×utility is resolved.
@@ -22,7 +22,7 @@ import (
 //   - a WAIVED (zero-amount) ADJUSTMENT line counts as resolved;
 //   - an ADJUSTMENT line on a VOID bill does NOT count (recovery returns to
 //     pending on void) — b.status <> 'VOID' in the join.
-func TestHasUnresolvedOverRecordByContractID_MultiRow(t *testing.T) {
+func TestHasUnreflectedOverRecordByContractID_MultiRow(t *testing.T) {
 	db := testdb.Open(t)
 	testdb.TruncateAll(t, db)
 	ctx := context.Background()
@@ -85,9 +85,9 @@ func TestHasUnresolvedOverRecordByContractID_MultiRow(t *testing.T) {
 	resolve(voidBill.ID, recC.ID, -15000, AdjustmentReasonMeterRecovery)
 
 	// Multi-row: recB pending + recC void-only → still pending overall → block.
-	pending, err := repo.HasUnresolvedOverRecordByContractID(ctx, c.ID)
+	pending, err := repo.HasUnreflectedOverRecordByContractID(ctx, c.ID)
 	if err != nil {
-		t.Fatalf("HasUnresolvedOverRecordByContractID: %v", err)
+		t.Fatalf("HasUnreflectedOverRecordByContractID: %v", err)
 	}
 	if !pending {
 		t.Fatal("expected pending=true (recB pending, recC only resolved on a VOID bill)")
@@ -97,9 +97,9 @@ func TestHasUnresolvedOverRecordByContractID_MultiRow(t *testing.T) {
 	resolve(draftBill.ID, recC.ID, -15000, AdjustmentReasonMeterRecovery)
 	resolve(draftBill.ID, recB.ID, 0, AdjustmentReasonMeterRecoveryWaived)
 
-	pending, err = repo.HasUnresolvedOverRecordByContractID(ctx, c.ID)
+	pending, err = repo.HasUnreflectedOverRecordByContractID(ctx, c.ID)
 	if err != nil {
-		t.Fatalf("HasUnresolvedOverRecordByContractID (after resolve): %v", err)
+		t.Fatalf("HasUnreflectedOverRecordByContractID (after resolve): %v", err)
 	}
 	if pending {
 		t.Fatal("expected pending=false after all over-records resolved (refund + refund + waive)")

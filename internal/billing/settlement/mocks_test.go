@@ -202,7 +202,7 @@ func (m *mockBillStore) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx conte
 	return false, nil
 }
 
-func (m *mockBillStore) HasUnresolvedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
+func (m *mockBillStore) HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
 	if m.hasPendingRecoveryFn != nil {
 		return m.hasPendingRecoveryFn(ctx, contractID)
 	}
