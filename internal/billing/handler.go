@@ -44,6 +44,7 @@ func (h *BillingHandler) RegisterRoutes(r fiber.Router) {
 	r.Patch("/:id/paid", h.MarkPaid)
 	r.Patch("/:id/monthly-draft", h.UpdateMonthlyDraft)
 	r.Post("/:id/correct", h.Correct)
+	r.Post("/:id/regenerate-draft", h.RegenerateDraft)
 }
 
 func (h *BillingHandler) List(c fiber.Ctx) error {
@@ -177,6 +178,26 @@ func (h *BillingHandler) Correct(c fiber.Ctx) error {
 	}
 
 	return respond.Created(c, "สร้างบิลร่างใหม่แทนใบเดิมแล้ว", ToBillResponseWithRelations(*bill))
+}
+
+// RegenerateDraft (Monthly Draft Refresh, Epic A) atomically voids a stale
+// MONTHLY DRAFT and rebuilds it from source-of-truth via the shared monthly
+// generation path — used when a Reading Recovery made the draft stale. Returns
+// 201 with the new DRAFT. Guards (non-DRAFT / SETTLEMENT) surface as 400 with the
+// Thai sentinel. No body — the bill id is the whole request. Race-safe via
+// row-lock inside the service TX.
+func (h *BillingHandler) RegenerateDraft(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return respond.Error(c, respond.ErrBadRequest.WithMessage("id ไม่ถูกต้อง"))
+	}
+
+	bill, err := h.svc.RegenerateDraft(c.Context(), id, middleware.ActorFromCtx(c))
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Created(c, "อัปเดตร่างบิลแล้ว", ToBillResponseWithRelations(*bill))
 }
 
 // UpdateSettlementDraft handler migrated to settlement.Handler in W4 commit 3 (2026-06-19).

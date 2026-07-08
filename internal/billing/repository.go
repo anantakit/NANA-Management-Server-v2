@@ -940,6 +940,26 @@ func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context
 			WHERE mr.room_id IN ?
 			  AND mr.anchor_reason = ?
 			  AND mr.deleted_at IS NULL
+			  AND EXISTS (
+				-- S0 gate (ontology lock 2026-07-08): count only recoveries whose
+				-- SOURCE month was actually billed (FINALIZED/PAID) — the same gate
+				-- the finalize path uses. Source-less (NULL FK) / unbilled-source
+				-- recoveries are P-only re-anchors, not stale, so they drop out.
+				-- Scope the source bill to the room's ACTIVE contract (the recovery's
+				-- own contract per Lock D), NOT any historical tenant — otherwise a
+				-- prior tenant's bill for the same month would falsely flag the
+				-- current draft stale (a phantom prompt that never clears).
+				SELECT 1 FROM meter_readings src
+				JOIN contracts co ON co.room_id = mr.room_id
+					AND co.status = ?
+					AND co.deleted_at IS NULL
+				JOIN bills sb ON sb.contract_id = co.id
+					AND sb.billing_month = src.billing_month
+					AND sb.bill_type = ?
+					AND (sb.status = ? OR sb.status = ?)
+					AND sb.deleted_at IS NULL
+				WHERE src.id = mr.recovery_source_reading_id AND src.deleted_at IS NULL
+			  )
 			  AND (
 				(mr.electricity_recorded IS NOT NULL AND mr.electricity_recorded > mr.electricity_current
 					AND NOT EXISTS (SELECT 1 FROM bill_line_items bli JOIN bills b ON b.id = bli.bill_id
@@ -953,6 +973,7 @@ func (r *billingRepository) CountPendingBaselineCorrectionsByRoomIDs(ctx context
 			  )
 			GROUP BY mr.room_id`,
 			roomIDs, meterreading.AnchorReasonReadingRecovery,
+			contract.ContractStatusActive, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
 			AdjustmentUtilityElectricity, BillStatusVoid,
 			AdjustmentUtilityWater, BillStatusVoid).
 		Scan(&rows).Error

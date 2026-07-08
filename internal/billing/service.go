@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"nana/internal/billingconfig"
+	"nana/internal/contract"
+	"nana/internal/meterreading"
 	"nana/internal/shared/billingmonth"
 	"nana/internal/shared/database"
 	"nana/internal/shared/respond"
@@ -22,6 +24,10 @@ type BillingService interface {
 	FinalizeBill(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error)
 	VoidBill(ctx context.Context, id uuid.UUID, req VoidBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
 	CorrectBill(ctx context.Context, id uuid.UUID, req CorrectBillRequest, actor *uuid.UUID) (*BillWithRelations, error)
+	// RegenerateDraft (Monthly Draft Refresh, Epic A) atomically voids a stale
+	// MONTHLY DRAFT and rebuilds it from source-of-truth via the shared monthly
+	// generation path. SETTLEMENT is rejected at the guard.
+	RegenerateDraft(ctx context.Context, id uuid.UUID, actor *uuid.UUID) (*BillWithRelations, error)
 	MarkPaid(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 
 	// Monthly draft editing
@@ -265,35 +271,13 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, ErrMeterMonthMismatch
 	}
 
-	recon, err := ResolveRecoveryReconciliation(ctx, reading, contractID, s.repo)
+	bill, err := s.buildMonthlyDraftBill(ctx, c, reading, req.BillingMonth)
 	if err != nil {
-		return nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
+		return nil, err
 	}
-	snapshot := ComputeMonthlyBillSnapshot(req.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon)
-
-	// Resolve payment destination outside the TX (read-only). Null when no rules configured.
-	aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
-	paymentDest := s.tryResolvePaymentDestination(ctx, aptID, roomNum)
-
-	// Pre-generate the bill ID so the CREATE_DRAFT audit row can reference
-	// it inside the same TX as the bill insert. BeforeCreate skips uuid.New()
-	// when ID is already set. Note: line items in the snapshot still hold
-	// uuid.Nil for their BillID — repo.Create resolves them via the parent
-	// bill association at insert time.
-	bill := Bill{
-		ID:           uuid.New(),
-		ContractID:   contractID,
-		BillingMonth: req.BillingMonth,
-		BillType:     BillTypeMonthly,
-		Status:       BillStatusDraft,
-		LineItems:    snapshot.ToLineItems(uuid.Nil),
-		TotalAmount:  snapshot.TotalAmount,
-	}
-	ApplyPaymentSnapshot(&bill, paymentDest)
 
 	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
-		if err := s.repo.Create(txCtx, &bill); err != nil {
+		if err := s.repo.Create(txCtx, bill); err != nil {
 			return fmt.Errorf("create monthly bill: %w", err)
 		}
 		return recordAudit(txCtx, s.audit, bill.ID, AuditCreateDraft, actor, AuditCreateDraftPayload{
@@ -307,6 +291,40 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, fmt.Errorf("create monthly bill: %w", err)
 	}
 	return s.repo.FindByIDWithRelations(ctx, bill.ID)
+}
+
+// buildMonthlyDraftBill assembles a fresh DRAFT monthly Bill from source-of-truth
+// — contract + meter reading + recovery reconciliation (S0-gated forward credit)
+// + payment routing. It is READ-ONLY (no writes) and is the SINGLE monthly
+// generation path: CreateMonthlyBill (and therefore the reconciliation-workspace
+// generate + batch commit, which delegate to it) AND RegenerateDraft both call
+// it, so a regenerated draft is byte-identical to a freshly generated one. The
+// caller persists inside its own TX (RegenerateDraft additionally voids the old
+// draft in that same TX for atomicity). The bill ID is pre-generated so the
+// caller's CREATE_DRAFT audit can reference it in the same TX as the insert.
+func (s *billingService) buildMonthlyDraftBill(ctx context.Context, c *contract.Contract, reading *meterreading.MeterReading, billingMonth string) (*Bill, error) {
+	recon, err := ResolveRecoveryReconciliation(ctx, reading, c.ID, s.repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
+	}
+	snapshot := ComputeMonthlyBillSnapshot(billingMonth,
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon)
+
+	// Payment destination is a read-only lookup; null when no rules configured.
+	aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)
+	paymentDest := s.tryResolvePaymentDestination(ctx, aptID, roomNum)
+
+	bill := &Bill{
+		ID:           uuid.New(),
+		ContractID:   c.ID,
+		BillingMonth: billingMonth,
+		BillType:     BillTypeMonthly,
+		Status:       BillStatusDraft,
+		LineItems:    snapshot.ToLineItems(uuid.Nil),
+		TotalAmount:  snapshot.TotalAmount,
+	}
+	ApplyPaymentSnapshot(bill, paymentDest)
+	return bill, nil
 }
 
 // FinalizeBill transitions a DRAFT bill (monthly or settlement) to FINALIZED.
