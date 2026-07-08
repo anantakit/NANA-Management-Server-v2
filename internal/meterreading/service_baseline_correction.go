@@ -35,16 +35,16 @@ import (
 //
 // Doctrine: feedback_reading_recovery_doctrine.md.
 type CreateBaselineCorrectionInput struct {
-	SourceReadingID    *uuid.UUID // nil = no source supplied (optional narrative metadata)
+	SourceReadingID    *uuid.UUID // nil = no source supplied (source-less = pure re-anchor, no refund)
 	RoomID             *uuid.UUID // room anchor for the nil-source path; ignored when source present
 	ElectricityCurrent int        // operator's physical reading now
 	WaterCurrent       int
-	// Q1.5 over-record: previously-recorded (wrong) value per utility. nil =
-	// that utility not corrected. Must be >= the matching current (ValidateAnchor).
-	ElectricityRecorded *int
-	WaterRecorded       *int
-	AnchorNote          string // required; ≥1 non-whitespace char (ValidateAnchor)
-	ActorID             *uuid.UUID
+	// Q1.6 over-record: recorded (wrong) value per utility is DERIVED from the
+	// source reading's current, not supplied by the operator — the source row is
+	// the evidence of how much was mis-recorded. Set only when source.current >
+	// physical (an over-record). Source-less → NULL (re-anchor only, no refund).
+	AnchorNote string // required; ≥1 non-whitespace char (ValidateAnchor)
+	ActorID    *uuid.UUID
 }
 
 // SoftDeletePendingBaselineCorrection enforces the four ownership +
@@ -128,9 +128,14 @@ func (s *meterReadingService) SoftDeletePendingBaselineCorrection(ctx context.Co
 // Plan:     /Users/anantakit/.claude/plans/smooth-coalescing-flute.md.
 func (s *meterReadingService) CreateBaselineCorrection(ctx context.Context, input CreateBaselineCorrectionInput) (*MeterReading, error) {
 	var roomID uuid.UUID
+	// Q1.6 over-record: recorded is DERIVED from the source reading's current
+	// (the wrong value the operator is correcting), per-utility, only when it
+	// exceeds the operator's physical reading. Source-less → both stay nil
+	// (re-anchor only, no refund).
+	var recordedElec, recordedWater *int
 
 	if input.SourceReadingID != nil {
-		// --- Source-supplied path (unchanged) ---
+		// --- Source-supplied path ---
 		source, err := s.repo.FindByIDSimple(ctx, *input.SourceReadingID)
 		if err != nil {
 			if database.IsNotFound(err) {
@@ -171,6 +176,19 @@ func (s *meterReadingService) CreateBaselineCorrection(ctx context.Context, inpu
 		}
 		if hasMoveOut {
 			return nil, ErrBaselineCorrectionSettlementBoundaryCrossed
+		}
+
+		// Derive the over-record per utility from the source's recorded value.
+		// Only a utility whose source current EXCEEDS the operator's physical is
+		// an over-record (recorded > physical → refund). The other utility stays
+		// nil — no refund emitted on the side that doesn't qualify.
+		if source.ElectricityCurrent > input.ElectricityCurrent {
+			v := source.ElectricityCurrent
+			recordedElec = &v
+		}
+		if source.WaterCurrent > input.WaterCurrent {
+			v := source.WaterCurrent
+			recordedWater = &v
 		}
 	} else {
 		// --- Source-optional (nil) path ---
@@ -213,10 +231,10 @@ func (s *meterReadingService) CreateBaselineCorrection(ctx context.Context, inpu
 			AnchorReason:            &recoveryReason,
 			AnchorNote:              &anchorNote,
 			RecoverySourceReadingID: input.SourceReadingID, // nil-safe: NULL FK on the nil path
-			// Q1.5 over-record: persist recorded per utility (nil-safe: NULL when
-			// the utility is not part of this correction).
-			ElectricityRecorded: input.ElectricityRecorded,
-			WaterRecorded:       input.WaterRecorded,
+			// Q1.6 over-record: recorded per utility is derived from the source
+			// above (nil when source-less or when that utility is not over-recorded).
+			ElectricityRecorded: recordedElec,
+			WaterRecorded:       recordedWater,
 		}
 		if err := recovery.ValidateAnchor(); err != nil {
 			return respond.ErrBadRequest.WithMessage(err.Error())

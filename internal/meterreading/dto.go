@@ -42,13 +42,10 @@ type CreateBaselineCorrectionRequest struct {
 	RoomID             string `json:"room_id" validate:"omitempty,uuid"`
 	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
 	WaterCurrent       int    `json:"water_current" validate:"min=0"`
-	// Q1.5 over-record: the previously-recorded (wrong) value per utility being
-	// corrected. Optional + independent — nil means that utility is not part of
-	// this correction. Must be >= the matching current (ValidateAnchor + DB CHECK;
-	// recorded < current is an out-of-scope under-record).
-	ElectricityRecorded *int   `json:"electricity_recorded" validate:"omitempty,min=0"`
-	WaterRecorded       *int   `json:"water_recorded" validate:"omitempty,min=0"`
-	AnchorNote          string `json:"anchor_note" validate:"required,min=1"`
+	// Q1.6 over-record: the recorded (wrong) value is DERIVED server-side from the
+	// source reading's current, not supplied by the operator (the source row is the
+	// evidence of how much was mis-recorded). Source-less → re-anchor only, no refund.
+	AnchorNote string `json:"anchor_note" validate:"required,min=1"`
 }
 
 type ExitCreateRequest struct {
