@@ -134,6 +134,40 @@ async function selectApartment(page, name) {
     // Success toast confirms the recovery committed.
     const okToast = await page.getByText('บันทึกแล้ว — ระบุยอดตอนออกบิล').waitFor({ timeout: 4000 }).then(() => true).catch(() => false)
     check('correction committed (success toast)', okToast)
+    await page.waitForTimeout(500)
+
+    // ── Reconciliation readiness + generation ──
+    // The recovery row IS this cycle's meter anchor (Lock E). The room must be
+    // bill-ready WITHOUT a separate normal reading (product invariant).
+    const month = new Date().toISOString().slice(0, 7)
+    await page.goto(`${FRONTEND}/monthly-bills/${month}`, { waitUntil: 'networkidle' })
+    await page.waitForTimeout(1200)
+    const rowAction = await page.evaluate(() => {
+      const r = document.querySelector('[data-test="reconciliation-row"][data-room-number="A211"]')
+      return r ? r.getAttribute('data-action') : 'NO_ROW'
+    })
+    // Recovery-only room must NOT be flagged missing-meter.
+    check('recovery-only room is bill-ready (not missing-meter)', rowAction !== 'open-meter', `action=${rowAction}`)
+
+    // Generate via the workspace CTA (ออกบิล N ห้อง). After reset only A211 is
+    // freshly ready, so this generates its bill from the recovery anchor.
+    const genCTA = page.locator('button', { hasText: /ออกบิล \d+ ห้อง/ })
+    if ((await genCTA.count()) && !(await genCTA.first().isDisabled())) {
+      await genCTA.first().click()
+      await page.waitForTimeout(2500)
+    }
+
+    // Open A211's bill (row now view-bill) and inspect the breakdown.
+    await page.locator('[data-test="reconciliation-row"][data-room-number="A211"]').first().click()
+    const billDrawer = page.locator('[role="dialog"]')
+    await billDrawer.first().waitFor({ state: 'visible', timeout: 6000 })
+    await page.waitForTimeout(800)
+    const billText = await billDrawer.first().innerText()
+
+    check('bill shows auto refund line "คืนค่าไฟฟ้า"', /คืนค่าไฟฟ้า/.test(billText))
+    check('bill shows over-record evidence (เกิน N หน่วย × ฿rate)', /เกิน\s*300\s*หน่วย/.test(billText))
+    check('electricity refund only (no water refund line)', !/คืนค่าน้ำ/.test(billText))
+    check('no decision/waive text on the bill', !/ไม่คืนค่า|เก็บเพิ่ม|คืนบางส่วน|ACCEPT|WAIVE/.test(billText))
 
     // ── Negative network assertions ──
     check('no call to deleted pending-baseline-corrections endpoint', !hitPendingEndpoint)
