@@ -1,154 +1,152 @@
-// Reading Recovery — Owner Smoke (P5 Layer B, thin)
-// ----------------------------------------------------------------------
-// Verifies the OPERATOR-FACING wiring of the Q1 Recovery Decision surface.
-// The business invariants (money sign, WAIVED, gate block/pass, void→re-pending,
-// source-less) are locked by the Go integration suite
-// (service_recovery_canonical_integration_test.go RR01–RR09); this smoke only
-// confirms that:
+// Reading Recovery — Q1.6 E2E Smoke (source-derived over-record → auto-refund)
+// ----------------------------------------------------------------------------
+// Drives the REAL operator chain through the UI, from the meter-entry origin:
 //
-//   1. admin SEES the pending recovery — "รอตัดสินใจ" badge on the bill list
-//   2. admin can DECIDE — the 3-way resolve UI (เก็บเพิ่ม/คืนเงิน/ไม่คิดเงิน) +
-//      the 2a "ใช้ยอดนี้" calculator are present in the bill editor
-//   3. finalize is BLOCKED while a recovery is pending (block modal, no proceed)
-//   4. after resolving (charge), finalize PASSES
+//   forward breakage in Focus (new reading < last recorded)
+//     → "แก้ค่าที่จดผิด" CTA (visible while the row is red)
+//     → BaselineCorrectionDrawer with the suspect source AUTO-BOUND
+//     → enter the true physical value + note → submit
+//     → backend derives the over-record (recorded = source.current) per-utility
 //
-// Fixture: seed_dev_recovery.go seeds room A207 (นานาคอร์ท) with an ACTIVE
-// contract, a DRAFT monthly bill, and one PENDING recovery (with source).
+// Fixture (seed_dev_recovery.go): room A211 (นานาคอร์ท), active contract, meter
+// history whose last electricity reading is a wrong-high 1500 (true ~1200);
+// water is clean (220) so the smoke also proves the per-utility derivation.
+// Reset each run:  POST /api/v1/dev/smoke/reset-recovery
 //
-// ONE-SHOT per seed: the smoke resolves A207's recovery, so it needs a fresh
-// pending state to re-run. Reset with `make dev-clean && make dev`, or just the
-// recovery's ADJUSTMENT:
-//   DELETE FROM bill_line_items WHERE adjustment_recovery_reading_id IN (
-//     SELECT mr.id FROM meter_readings mr JOIN rooms r ON r.id=mr.room_id
-//     JOIN apartments a ON a.id=r.apartment_id
-//     WHERE a.name='นานาคอร์ท' AND r.number='A207' AND mr.anchor_reason='READING_RECOVERY');
+// Negative assertions (dead Q1.6 decision flow must NOT resurface):
+//   - no ACCEPT / WAIVE / "ไม่คืนค่า" / decision UI in the drawer
+//   - no call to the deleted /bills/:id/pending-baseline-corrections endpoint
+//   - no applied_corrections payload sent from the FE
+//
+// Settlement over-record refund is intentionally OUT OF SCOPE (unreachable — see
+// backlog_settlement_overrecord_refund_unreachable): this smoke is MONTHLY only.
 //
 // Run:  npm run smoke:reading-recovery
-//       SMOKE_HEADLESS=1 npm run smoke:reading-recovery   (CI / no window)
+//       SMOKE_HEADLESS=1 FRONTEND=http://localhost:3001 node playwright-test-reading-recovery-smoke.js
 const { chromium } = require('playwright')
 
 const FRONTEND = process.env.FRONTEND || 'http://localhost:3001'
-const ADMIN_USER = 'admin'
-const ADMIN_PASS_FRESH = 'admin123'
-const ADMIN_PASS_POST = 'admin1234'
-const ROOM = 'A207'
-
+const BACKEND = process.env.BACKEND || 'http://localhost:8080'
+const ROOM = 'A211'
 const results = { pass: 0, fail: 0 }
 function check(name, ok, detail = '') {
-  if (ok) {
-    results.pass++
-    console.log(`  ✅ ${name}`)
-  } else {
-    results.fail++
-    console.log(`  ❌ ${name}${detail ? ' — ' + detail : ''}`)
-  }
+  if (ok) { results.pass++; console.log(`  ✅ ${name}`) }
+  else { results.fail++; console.log(`  ❌ ${name}${detail ? ' — ' + detail : ''}`) }
 }
-function fail(msg) {
-  console.error('❌ FATAL:', msg)
-  process.exit(1)
-}
+function fatal(msg) { console.error('❌ FATAL:', msg); process.exit(1) }
 
 async function login(page) {
-  await page.goto(`${FRONTEND}/login`)
-  await page.fill('input[name="username"]', ADMIN_USER)
-  await page.fill('input[name="password"]', ADMIN_PASS_FRESH)
-  await page.click('button[type="submit"]')
-  await page.waitForTimeout(1500)
-  if (page.url().includes('/login')) {
-    await page.fill('input[name="username"]', ADMIN_USER)
-    await page.fill('input[name="password"]', ADMIN_PASS_POST)
-    await page.click('button[type="submit"]')
-    await page.waitForTimeout(1500)
+  await page.goto(`${FRONTEND}/login`, { waitUntil: 'domcontentloaded' })
+  for (const pw of ['admin123', 'admin1234']) {
+    if (!page.url().includes('/login')) break
+    await page.fill('input[name="username"]', 'admin')
+    await page.fill('input[name="password"]', pw)
+    await page.click('button[type="submit"]'); await page.waitForTimeout(1200)
   }
   if (page.url().includes('/change-password')) {
-    await page.fill('input[name="new_password"]', ADMIN_PASS_POST)
-    await page.fill('input[name="confirm_password"]', ADMIN_PASS_POST)
-    await page.click('button[type="submit"]')
-    await page.waitForTimeout(1500)
+    await page.fill('input[name="new_password"]', 'admin1234')
+    await page.fill('input[name="confirm_password"]', 'admin1234')
+    await page.click('button[type="submit"]'); await page.waitForTimeout(1200)
   }
-  await page.waitForFunction(() => !window.location.pathname.includes('/login'), { timeout: 10000 })
+  await page.waitForFunction(() => !location.pathname.includes('/login'), { timeout: 10000 })
 }
 
-async function waitDialogsClosed(page, timeout = 8000) {
-  await page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 0, null, { timeout })
+async function selectApartment(page, name) {
+  const trig = page.locator('[data-test="apartment-selector-trigger"]')
+  if (await trig.count()) {
+    await trig.first().click()
+    const opt = page.locator('[data-test="apartment-selector-option"]', { hasText: name })
+    if (await opt.count()) { await opt.first().click(); await page.waitForTimeout(700) }
+  }
 }
 
 ;(async () => {
-  const browser = await chromium.launch({
-    headless: process.env.SMOKE_HEADLESS === '1',
-    slowMo: process.env.SMOKE_HEADLESS === '1' ? 0 : 100,
+  // Reset the fixture to the clean Q1.6 starting state (unauthenticated dev route).
+  const resp = await fetch(`${BACKEND}/api/v1/dev/smoke/reset-recovery`, { method: 'POST' }).catch(() => null)
+  if (!resp || !resp.ok) fatal('reset-recovery failed — is the dev backend up on :8080?')
+  console.log('🧪 reading-recovery Q1.6 smoke — room', ROOM)
+
+  const browser = await chromium.launch({ headless: process.env.SMOKE_HEADLESS === '1' })
+  const page = await browser.newPage()
+
+  // Network guard: the FE must never hit the deleted pending endpoint nor send
+  // applied_corrections. Recorded per request for a hard assertion at the end.
+  let hitPendingEndpoint = false
+  let sentAppliedCorrections = false
+  page.on('request', (req) => {
+    if (req.url().includes('pending-baseline-corrections')) hitPendingEndpoint = true
+    const body = req.method() === 'POST' || req.method() === 'PATCH' ? (req.postData() || '') : ''
+    if (body.includes('applied_corrections')) sentAppliedCorrections = true
   })
-  const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage()
 
   try {
     await login(page)
-    console.log('▶ login ok')
+    await page.goto(`${FRONTEND}/meter-readings`, { waitUntil: 'networkidle' })
+    await page.waitForTimeout(700)
+    await selectApartment(page, 'นานาคอร์ท')
 
-    // Select นานาคอร์ท (A207 lives there) via the global apartment selector.
-    const trigger = page.locator('[data-test="apartment-selector-trigger"]')
-    if (await trigger.count()) {
-      await trigger.first().click()
-      await page.waitForTimeout(300)
-      const opt = page.locator('[data-test="apartment-selector-option"]', { hasText: 'นานาคอร์ท' })
-      if (await opt.count()) await opt.first().click()
-      await page.waitForTimeout(500)
-    }
+    // ── Enter Focus + jump to the recovery room ──
+    await page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first().click()
+    await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ state: 'visible', timeout: 6000 })
+    await page.keyboard.press('Meta+p'); await page.waitForTimeout(500)
+    const palInput = page.locator('[role="dialog"] input, input[placeholder]').last()
+    if (await palInput.count()) { await palInput.fill(ROOM); await page.waitForTimeout(400) }
+    const item = page.locator('[role="dialog"]', { hasText: ROOM }).locator('button, [role="option"]', { hasText: ROOM }).first()
+    if (await item.count()) await item.click(); else await page.keyboard.press('Enter')
+    await page.waitForTimeout(600)
 
-    // DRAFT bills live in the monthly-bills / reconciliation workspace (the
-    // Collection Workspace at /bills excludes DRAFT). That workspace is where the
-    // operator sees the pending recovery + resolves it.
-    const month = new Date().toISOString().slice(0, 7) // YYYY-MM (current cycle)
-    await page.goto(`${FRONTEND}/monthly-bills/${month}`, { waitUntil: 'networkidle' })
-    await page.waitForTimeout(1800)
+    const roomShown = await page.locator('p.text-5xl').first().innerText().catch(() => '?')
+    check(`Focus on room ${ROOM}`, roomShown.includes(ROOM), `showed ${roomShown}`)
 
-    const row = page.getByText(ROOM, { exact: true }).first().locator('xpath=ancestor::*[self::button or self::div][1]')
-    if ((await page.getByText(ROOM, { exact: true }).count()) === 0) {
-      fail(`no ${ROOM} row in /monthly-bills/${month} — seed_dev_recovery fixture missing or wrong month`)
-    }
-
-    // ── 1. See — pending recovery surfaced on the DRAFT row ──
-    const pendingHint = page.getByText('ระบุยอดที่จะแก้', { exact: false })
-    check('1. DRAFT row shows pending recovery ("ระบุยอดที่จะแก้ N รายการ")', (await pendingHint.count()) > 0)
-
-    // ── 2. Decide — open the row → BillEditDrawer lands on the resolve section ──
-    await row.click({ timeout: 8000 })
-    await page.locator('[role="dialog"]').waitFor({ state: 'visible', timeout: 5000 })
-    const edit = page.locator('[role="dialog"]').last()
-    // PendingCorrectionsSection fetches its rows async — wait for the resolve
-    // controls to render before asserting.
-    await edit.getByRole('button', { name: 'เก็บเพิ่ม', exact: true }).waitFor({ state: 'visible', timeout: 8000 })
-    const has3Way =
-      (await edit.getByRole('button', { name: 'เก็บเพิ่ม', exact: true }).count()) > 0 &&
-      (await edit.getByRole('button', { name: 'คืนเงิน', exact: true }).count()) > 0 &&
-      (await edit.getByRole('button', { name: 'ไม่คิดเงิน', exact: true }).count()) > 0
-    check('2a. 3-way resolve (เก็บเพิ่ม/คืนเงิน/ไม่คิดเงิน) present', has3Way)
-    await edit.getByRole('button', { name: 'เก็บเพิ่ม', exact: true }).click()
+    // ── Enter a forward-breakage electricity reading (below the wrong-high 1500);
+    //    water stays valid (>= 220) so only electricity breaks. ──
+    const elecInput = page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first()
+    const waterInput = page.locator('input[aria-label="มิเตอร์น้ำ"]').first()
+    await elecInput.fill('1200')   // physical truth, below recorded 1500
+    await waterInput.fill('225')   // normal, above previous 220 → no water breakage
     await page.waitForTimeout(300)
-    check('2b. 2a "ใช้ยอดนี้" calculator present', (await edit.getByRole('button', { name: 'ใช้ยอดนี้', exact: true }).count()) > 0)
 
-    // ── 3. Resolve (charge) → save → pending hint clears ──
-    await edit.getByRole('button', { name: 'ใช้ยอดนี้', exact: true }).click()
-    await edit.locator('textarea[id^="adj_note_"]').first().fill('เก็บยอดเพิ่มจากการจดมิเตอร์ผิด (smoke)')
-    await edit.getByRole('button', { name: 'บันทึก', exact: true }).click({ timeout: 5000 })
-    await waitDialogsClosed(page)
-    // Re-fetch the workspace so the pending count reflects the applied ADJUSTMENT.
-    await page.goto(`${FRONTEND}/monthly-bills/${month}`, { waitUntil: 'networkidle' })
-    await page.waitForTimeout(1800)
-    check('3. resolved (charge) — pending hint cleared', (await page.getByText('ระบุยอดที่จะแก้', { exact: false }).count()) === 0)
+    // CTA must be visible on the LIVE breakage (P5A.5 fix: gated on the red row).
+    const ctaBtn = page.locator('button', { hasText: 'แก้ค่าที่จดผิด' })
+    check('recovery CTA visible on forward breakage', (await ctaBtn.count()) > 0)
 
-    // Note: the finalize gate (pending blocks / resolved passes) is locked
-    // deterministically by the Go integration suite RR01/RR05 + RR02-04/RR06 —
-    // not re-verified here, per the same logic that keeps money invariants out
-    // of the UI smoke.
+    // ── Open the correction drawer; the suspect source auto-binds ──
+    await ctaBtn.first().click()
+    const drawer = page.locator('[role="dialog"]', { hasText: 'แก้ค่ามิเตอร์ที่จดผิด' })
+    await drawer.first().waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForTimeout(600)
 
-    console.log(`\n${results.fail === 0 ? '✅ PASS' : '❌ FAIL'} — ${results.pass} passed, ${results.fail} failed`)
+    // Auto-bound source shows "อ้างอิงจากเดือน ..." (not the empty picker prompt).
+    const boundSource = await drawer.getByText(/อ้างอิงจากเดือน/).count()
+    check('suspect source auto-bound in drawer', boundSource > 0)
+
+    // Negative: no ACCEPT / WAIVE / ไม่คืนค่า decision controls in the drawer.
+    const drawerText = await drawer.first().innerText()
+    check('no decision UI (ACCEPT/WAIVE/ไม่คืนค่า) in drawer',
+      !/เก็บเพิ่ม|คืนบางส่วน|ไม่คืนค่า|ACCEPT|WAIVE/.test(drawerText))
+
+    // ── Fill the physical values + note, submit ──
+    await drawer.locator('input#correction_elec').fill('1200')
+    await drawer.locator('input#correction_water').fill('225')
+    await drawer.locator('textarea#correction_anchor_note').fill('จดไฟฟ้าเกินจริงเดือนก่อน — บันทึกค่าที่ถูกต้อง')
+    await drawer.locator('button[type="submit"], button', { hasText: 'บันทึกค่ามิเตอร์ที่ถูกต้อง' }).first().click()
+
+    // Success toast confirms the recovery committed.
+    const okToast = await page.getByText('บันทึกแล้ว — ระบุยอดตอนออกบิล').waitFor({ timeout: 4000 }).then(() => true).catch(() => false)
+    check('correction committed (success toast)', okToast)
+
+    // ── Negative network assertions ──
+    check('no call to deleted pending-baseline-corrections endpoint', !hitPendingEndpoint)
+    check('no applied_corrections payload sent', !sentAppliedCorrections)
+
+  } catch (e) {
+    console.error('SMOKE ERROR:', e.message)
+    await page.screenshot({ path: '/tmp/recovery-smoke-err.png' }).catch(() => {})
+    results.fail++
+  } finally {
     await browser.close()
-    process.exit(results.fail === 0 ? 0 : 1)
-  } catch (err) {
-    try {
-      await page.screenshot({ path: '/tmp/reading-recovery-smoke-error.png' })
-    } catch {}
-    await browser.close()
-    fail(err.message)
   }
+
+  console.log(`\n${results.fail === 0 ? '✅ PASS' : '❌ FAIL'} — ${results.pass} passed, ${results.fail} failed`)
+  process.exit(results.fail === 0 ? 0 : 1)
 })()

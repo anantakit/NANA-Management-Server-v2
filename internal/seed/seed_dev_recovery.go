@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"nana/internal/apartment"
-	"nana/internal/billing"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
 	"nana/internal/room"
@@ -14,22 +13,27 @@ import (
 	"gorm.io/gorm"
 )
 
-// seedDevRecoveryFixture creates ONE deterministic Reading-Recovery scenario for
-// the P5 owner smoke (playwright-test-reading-recovery-smoke.js): room A207 in
-// นานาคอร์ท gets an active contract, a DRAFT monthly bill, and a PENDING
-// source-less recovery. That is exactly enough state to drive the operator
-// journey — see the "รอตัดสินใจ" badge on the bill list, open the bill, resolve
-// the recovery (3-way + 2a), see finalize blocked while pending, then finalize
-// after resolving.
+// recoveryRoomNumber is the dedicated นานาคอร์ท room for the Q1.6 Reading-Recovery
+// E2E smoke. A211 is verified-free: it is seeded (A201-A211 fan floor 2) but
+// referenced by NO other fixture (contracts stop at A107, tenant-history A108/109,
+// move-out uses A201-A210, smoke uses B/C/D/E rooms). Keeping it isolated avoids
+// the A207 double-booking that collided with move-out scenario #9.
+const recoveryRoomNumber = "A211"
+
+// seedDevRecoveryFixture sets up the Q1.6 Reading-Recovery starting state: A211
+// gets an active contract and a meter history whose LAST reading electricity
+// current is a wrong-high value (1500) while the room's true physical is ~1200.
+// That is exactly the state the operator hits mid-entry — typing this cycle's
+// real reading (lower than the last recorded value) is a forward breakage →
+// "แก้ค่าที่จดผิด" → recovery from that source → backend derives the over-record
+// (recorded 1500 − physical) → refund auto-emits at generation.
 //
-// The invariants themselves are locked by the Go integration suite
-// (service_recovery_canonical_integration_test.go RR01-RR09); this fixture is
-// only for the UI smoke + owner manual walkthrough.
+// NO pre-seeded recovery or bill — the smoke drives the whole chain through the
+// UI. Water is deliberately clean (no over-record) so the smoke also exercises
+// the per-utility derivation.
 //
-// Idempotent: skips when A207 already carries an active contract. Room choice
-// (A207) is a confirmed-vacant นานาคอร์ท room with no prior tenant history,
-// adjacent to the reconciliation fixtures (A205/A206). Delete this file + its
-// caller in seed.go when a real regression environment replaces the smoke.
+// Idempotent: skips when A211 already carries an active contract. Re-runnability
+// for the mutating smoke is handled by ResetRecoverySmoke.
 func seedDevRecoveryFixture(db *gorm.DB) error {
 	var apt apartment.Apartment
 	if err := db.Where("name = ?", "นานาคอร์ท").First(&apt).Error; err != nil {
@@ -37,8 +41,8 @@ func seedDevRecoveryFixture(db *gorm.DB) error {
 	}
 
 	var rm room.Room
-	if err := db.Where("apartment_id = ? AND number = ?", apt.ID, "A207").First(&rm).Error; err != nil {
-		slog.Warn("recovery fixture: room A207 not found", "err", err)
+	if err := db.Where("apartment_id = ? AND number = ?", apt.ID, recoveryRoomNumber).First(&rm).Error; err != nil {
+		slog.Warn("recovery fixture: room not found", "room", recoveryRoomNumber, "err", err)
 		return nil
 	}
 
@@ -46,7 +50,7 @@ func seedDevRecoveryFixture(db *gorm.DB) error {
 	if err := db.Model(&contract.Contract{}).
 		Where("room_id = ? AND status = ?", rm.ID, contract.ContractStatusActive).
 		Count(&activeCount).Error; err != nil {
-		return fmt.Errorf("check existing contract on A207: %w", err)
+		return fmt.Errorf("check existing contract on %s: %w", recoveryRoomNumber, err)
 	}
 	if activeCount > 0 {
 		return nil // already seeded
@@ -54,10 +58,10 @@ func seedDevRecoveryFixture(db *gorm.DB) error {
 
 	now := time.Now().UTC()
 	cycleStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	billingMonth := cycleStart.Format("2006-01")
-	recoveryMonth := cycleStart.AddDate(0, -1, 0).Format("2006-01") // last month — the mis-read cycle
+	twoMonthsAgo := cycleStart.AddDate(0, -2, 0).Format("2006-01")
+	lastMonth := cycleStart.AddDate(0, -1, 0).Format("2006-01") // the mis-read cycle
 
-	tn, err := upsertReconciliationTenant(db, "1100100100207", "ธนภร ทดสอบแก้ค่ามิเตอร์", "0890000207")
+	tn, err := upsertReconciliationTenant(db, "1100100100211", "ธนภร ทดสอบแก้ค่ามิเตอร์", "0890000211")
 	if err != nil {
 		return err
 	}
@@ -78,64 +82,85 @@ func seedDevRecoveryFixture(db *gorm.DB) error {
 		return fmt.Errorf("create recovery contract: %w", err)
 	}
 	if err := db.Model(&rm).Update("status", room.RoomStatusOccupied).Error; err != nil {
-		return fmt.Errorf("mark A207 occupied: %w", err)
+		return fmt.Errorf("mark %s occupied: %w", recoveryRoomNumber, err)
 	}
 
-	// DRAFT monthly bill (with AUTO lines so it can finalize once the recovery
-	// is resolved).
-	bill := billing.Bill{
-		ContractID:   c.ID,
-		BillingMonth: billingMonth,
-		BillType:     billing.BillTypeMonthly,
-		Status:       billing.BillStatusDraft,
+	// Meter history, no recovery and no bill. The last reading's electricity
+	// CURRENT (1500) is the wrong-high value: physically the meter is ~1200, so
+	// when the operator enters this cycle's real reading it reads lower than 1500
+	// → a forward breakage → recovery-from-source. Water is clean.
+	readings := []meterreading.MeterReading{
+		{
+			RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &twoMonthsAgo,
+			ElectricityPrevious: 1000, ElectricityCurrent: 1200,
+			WaterPrevious: 180, WaterCurrent: 200,
+		},
+		{
+			RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &lastMonth,
+			ElectricityPrevious: 1200, ElectricityCurrent: 1500, // mis-recorded high
+			WaterPrevious: 200, WaterCurrent: 220,
+		},
 	}
-	if err := db.Create(&bill).Error; err != nil {
-		return fmt.Errorf("create recovery draft bill: %w", err)
-	}
-	lines := []billing.BillLineItem{
-		{BillID: bill.ID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: rm.BaseRent, SortOrder: 1},
-		{BillID: bill.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า", Amount: 80000, Quantity: 100, UnitPrice: 800, SortOrder: 2},
-		{BillID: bill.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ", Amount: 36000, Quantity: 20, UnitPrice: 1800, SortOrder: 3},
-	}
-	if err := db.Create(&lines).Error; err != nil {
-		return fmt.Errorf("create recovery bill line items: %w", err)
-	}
-
-	// Source reading (the mis-read cycle) so the 2a calculator has a meter
-	// delta to suggest from — the smoke exercises the [ใช้ยอดนี้] path.
-	src := meterreading.MeterReading{
-		RoomID:              rm.ID,
-		ReadingType:         meterreading.ReadingTypeMonthly,
-		BillingMonth:        &recoveryMonth,
-		ElectricityPrevious: 1300,
-		ElectricityCurrent:  1400,
-		WaterPrevious:       190,
-		WaterCurrent:        200,
-	}
-	if err := db.Create(&src).Error; err != nil {
-		return fmt.Errorf("create recovery source reading: %w", err)
+	if err := db.Create(&readings).Error; err != nil {
+		return fmt.Errorf("create recovery meter history: %w", err)
 	}
 
-	// PENDING recovery for the room (prev=curr per migration 00040), pointing at
-	// the source so the resolve surface can show a suggested amount.
-	reason := meterreading.AnchorReasonReadingRecovery
-	note := fmt.Sprintf("จดมิเตอร์ผิดเดือน %s — บันทึกค่าที่ถูกต้อง", recoveryMonth)
-	rec := meterreading.MeterReading{
-		RoomID:                  rm.ID,
-		ReadingType:             meterreading.ReadingTypeMonthly,
-		BillingMonth:            &billingMonth,
-		ElectricityPrevious:     1500,
-		ElectricityCurrent:      1500,
-		WaterPrevious:           220,
-		WaterCurrent:            220,
-		AnchorReason:            &reason,
-		AnchorNote:              &note,
-		RecoverySourceReadingID: &src.ID,
+	slog.Info("seeded recovery smoke fixture (Q1.6 clean start)", "room", recoveryRoomNumber, "source_month", lastMonth)
+	return nil
+}
+
+// ResetRecoverySmoke restores the recovery room to the clean Q1.6 starting state
+// so the mutating E2E smoke can re-run. It removes everything the smoke can
+// create — bills and their dependents (audit + deliveries + line items +
+// payments), plus recovery meter rows and any current-month reading — then
+// re-asserts the wrong-high last reading. Contract + tenant + the two seeded
+// history rows stay. Idempotent.
+//
+// Delete order respects FKs: bill_audit_log + bill_deliveries are RESTRICT so
+// they go before bills; bill_line_items + bill_payments cascade with bills.
+// bill_line_items carry an ON DELETE RESTRICT FK to meter_readings
+// (adjustment_recovery_reading_id), so bills (→ line items) are removed before
+// the recovery meter rows.
+func ResetRecoverySmoke(db *gorm.DB) error {
+	var apt apartment.Apartment
+	if err := db.Where("name = ?", "นานาคอร์ท").First(&apt).Error; err != nil {
+		return fmt.Errorf("find apartment: %w", err)
 	}
-	if err := db.Create(&rec).Error; err != nil {
-		return fmt.Errorf("create pending recovery: %w", err)
+	var rm room.Room
+	if err := db.Where("apartment_id = ? AND number = ?", apt.ID, recoveryRoomNumber).First(&rm).Error; err != nil {
+		return nil // nothing seeded yet
+	}
+	var c contract.Contract
+	if err := db.Where("room_id = ? AND status = ?", rm.ID, contract.ContractStatusActive).First(&c).Error; err != nil {
+		return nil // fixture not present
 	}
 
-	slog.Info("seeded recovery smoke fixture", "room", "A207", "bill_month", billingMonth)
+	billIDs := `SELECT id FROM bills WHERE contract_id = ?`
+	for _, stmt := range []string{
+		`DELETE FROM bill_audit_log WHERE bill_id IN (` + billIDs + `)`,
+		`DELETE FROM bill_deliveries WHERE bill_id IN (` + billIDs + `)`,
+		`DELETE FROM bills WHERE contract_id = ?`, // cascades bill_line_items + bill_payments
+	} {
+		if err := db.Exec(stmt, c.ID).Error; err != nil {
+			return fmt.Errorf("reset (%.40s): %w", stmt, err)
+		}
+	}
+	if err := db.Exec(`DELETE FROM meter_readings WHERE room_id = ? AND anchor_reason = ?`,
+		rm.ID, meterreading.AnchorReasonReadingRecovery).Error; err != nil {
+		return fmt.Errorf("reset: delete recovery rows: %w", err)
+	}
+	if err := db.Exec(`DELETE FROM meter_readings WHERE room_id = ? AND reading_type = ? AND billing_month = ?`,
+		rm.ID, meterreading.ReadingTypeMonthly, time.Now().UTC().Format("2006-01")).Error; err != nil {
+		return fmt.Errorf("reset: delete current-month reading: %w", err)
+	}
+
+	// Re-assert the wrong-high last reading in case the smoke corrected it.
+	lastMonth := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC).
+		AddDate(0, -1, 0).Format("2006-01")
+	if err := db.Exec(`UPDATE meter_readings SET electricity_current = 1500, water_current = 220
+		WHERE room_id = ? AND reading_type = ? AND billing_month = ? AND anchor_reason IS NULL`,
+		rm.ID, meterreading.ReadingTypeMonthly, lastMonth).Error; err != nil {
+		return fmt.Errorf("reset: restore wrong-high last reading: %w", err)
+	}
 	return nil
 }
