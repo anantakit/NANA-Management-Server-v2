@@ -99,6 +99,15 @@ type BillingRepository interface {
 	// blocks — §0b). This is the sole finalization gate since P3-B.
 	HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 
+	// FindRecoverySourceRefundRates is the Q1.6 forward-credit S0 gate + rate
+	// lookup (ontology lock 2026-07-08). Given a recovery reading's
+	// source_reading_id, it resolves the source month's FINALIZED/PAID MONTHLY
+	// bill for contractID and returns that bill's electricity/water line
+	// unit_price — the historical rate the tenant was actually charged. Returns
+	// (nil, nil) when no such bill exists: the source month was never billed, so
+	// per the ontology there is nothing to refund (no phantom credit).
+	FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*SourceRefundRates, error)
+
 	// CountPendingBaselineCorrectionsByRoomIDs returns, per room, the count
 	// of active READING_RECOVERY meter rows that have NOT yet been applied
 	// to any non-VOID bill. Mirrors the per-row applied-state derivation
@@ -810,6 +819,13 @@ func (r *billingRepository) HasUnreflectedOverRecordByContractID(ctx context.Con
 				SELECT mr.id AS recovery_id, ? AS utility
 				FROM meter_readings mr
 				JOIN contracts c ON c.room_id = mr.room_id
+				JOIN meter_readings src ON src.id = mr.recovery_source_reading_id
+				  AND src.deleted_at IS NULL
+				JOIN bills sb ON sb.contract_id = c.id
+				  AND sb.billing_month = src.billing_month
+				  AND sb.bill_type = ?
+				  AND (sb.status = ? OR sb.status = ?)
+				  AND sb.deleted_at IS NULL
 				WHERE c.id = ?
 				  AND mr.anchor_reason = ?
 				  AND mr.deleted_at IS NULL
@@ -819,6 +835,13 @@ func (r *billingRepository) HasUnreflectedOverRecordByContractID(ctx context.Con
 				SELECT mr.id AS recovery_id, ? AS utility
 				FROM meter_readings mr
 				JOIN contracts c ON c.room_id = mr.room_id
+				JOIN meter_readings src ON src.id = mr.recovery_source_reading_id
+				  AND src.deleted_at IS NULL
+				JOIN bills sb ON sb.contract_id = c.id
+				  AND sb.billing_month = src.billing_month
+				  AND sb.bill_type = ?
+				  AND (sb.status = ? OR sb.status = ?)
+				  AND sb.deleted_at IS NULL
 				WHERE c.id = ?
 				  AND mr.anchor_reason = ?
 				  AND mr.deleted_at IS NULL
@@ -835,14 +858,61 @@ func (r *billingRepository) HasUnreflectedOverRecordByContractID(ctx context.Con
 				  AND b.deleted_at IS NULL
 			)
 		)`,
-			AdjustmentUtilityElectricity, contractID, meterreading.AnchorReasonReadingRecovery,
-			AdjustmentUtilityWater, contractID, meterreading.AnchorReasonReadingRecovery,
+			AdjustmentUtilityElectricity, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
+			contractID, meterreading.AnchorReasonReadingRecovery,
+			AdjustmentUtilityWater, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
+			contractID, meterreading.AnchorReasonReadingRecovery,
 			BillStatusVoid).
 		Scan(&exists).Error
 	if err != nil {
 		return false, fmt.Errorf("check unresolved over-record by contract: %w", err)
 	}
 	return exists, nil
+}
+
+// FindRecoverySourceRefundRates resolves the Q1.6 forward-credit S0 gate + rate
+// in one query (ontology lock 2026-07-08). It walks source_reading → its
+// billing_month → the FINALIZED/PAID MONTHLY bill for (contractID, that month) →
+// that bill's electricity/water line unit_price. Zero rows means the source
+// month was never billed (S0) → (nil, nil), and the caller emits no refund. A
+// billed month yields its two utility lines; a missing utility line defaults to
+// rate 0 (→ a 0 refund downstream). contractID scopes the bill (a valid
+// recovery's source is within the current contract, Lock D).
+func (r *billingRepository) FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*SourceRefundRates, error) {
+	var rows []struct {
+		LineType  LineItemType
+		UnitPrice int64
+	}
+	err := database.DB(ctx, r.db).
+		Raw(`SELECT bli.line_type AS line_type, bli.unit_price AS unit_price
+			FROM meter_readings src
+			JOIN bills b ON b.contract_id = ?
+				AND b.billing_month = src.billing_month
+				AND b.bill_type = ?
+				AND (b.status = ? OR b.status = ?)
+				AND b.deleted_at IS NULL
+			JOIN bill_line_items bli ON bli.bill_id = b.id
+				AND bli.line_type IN (?, ?)
+			WHERE src.id = ? AND src.deleted_at IS NULL`,
+			contractID, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
+			LineItemElectricity, LineItemWater, sourceReadingID).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("find recovery source refund rates: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil // source month never billed (S0) → nothing to refund
+	}
+	out := &SourceRefundRates{}
+	for _, row := range rows {
+		switch row.LineType {
+		case LineItemElectricity:
+			out.Electricity = row.UnitPrice
+		case LineItemWater:
+			out.Water = row.UnitPrice
+		}
+	}
+	return out, nil
 }
 
 // CountPendingBaselineCorrectionsByRoomIDs is the batch sibling of the finalize

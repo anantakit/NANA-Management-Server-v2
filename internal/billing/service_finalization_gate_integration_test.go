@@ -33,15 +33,41 @@ func TestHasUnreflectedOverRecordByContractID_MultiRow(t *testing.T) {
 	tn := fixtures.SeedTenant(t, db)
 	c := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 6)
 
-	seedRecovery := func(month string) *meterreading.MeterReading {
+	// seedRecovery creates an F-APPLICABLE over-record (ontology lock 2026-07-08):
+	// a source reading in `sourceMonth` whose month carries a FINALIZED bill (so
+	// the over-record maps to real money the gate must protect), plus the recovery
+	// row that points at it. Without the billed source the gate would treat the
+	// over-record as P-only and never block — see the S0 path elsewhere.
+	seedRecovery := func(month, sourceMonth string) *meterreading.MeterReading {
+		src := &meterreading.MeterReading{
+			RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &sourceMonth,
+			ElectricityPrevious: 100, ElectricityCurrent: 200, // the wrong-high 200 that was billed
+			WaterPrevious: 50, WaterCurrent: 50,
+		}
+		if err := db.Create(src).Error; err != nil {
+			t.Fatalf("seed source reading %s: %v", sourceMonth, err)
+		}
+		sb := &Bill{ContractID: c.ID, BillingMonth: sourceMonth, BillType: BillTypeMonthly, Status: BillStatusFinalized}
+		if err := db.Create(sb).Error; err != nil {
+			t.Fatalf("seed source bill %s: %v", sourceMonth, err)
+		}
+		sbLines := []BillLineItem{
+			{BillID: sb.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Description: "ค่าไฟฟ้า", Amount: 100 * 150, Quantity: 100, UnitPrice: 150, SortOrder: 2},
+			{BillID: sb.ID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ", Amount: 0, Quantity: 0, UnitPrice: 180, SortOrder: 3},
+		}
+		if err := db.Create(&sbLines).Error; err != nil {
+			t.Fatalf("seed source bill lines %s: %v", sourceMonth, err)
+		}
+
 		reason := meterreading.AnchorReasonReadingRecovery
 		note := "จดมิเตอร์ผิด " + month
 		elecRecorded := 200 // over-record: recorded 200 > physical 100 (elec affected)
 		r := &meterreading.MeterReading{
-			RoomID:              rm.ID,
-			ReadingType:         meterreading.ReadingTypeMonthly,
-			BillingMonth:        &month,
-			ElectricityPrevious: 100, ElectricityCurrent: 100, // prev=curr (recovery invariant, migration 00040)
+			RoomID:                  rm.ID,
+			ReadingType:             meterreading.ReadingTypeMonthly,
+			BillingMonth:            &month,
+			RecoverySourceReadingID: &src.ID,
+			ElectricityPrevious:     100, ElectricityCurrent: 100, // prev=curr (recovery invariant, migration 00040)
 			WaterPrevious: 50, WaterCurrent: 50,
 			ElectricityRecorded: &elecRecorded,
 			AnchorReason:        &reason, AnchorNote: &note,
@@ -72,9 +98,9 @@ func TestHasUnreflectedOverRecordByContractID_MultiRow(t *testing.T) {
 		}
 	}
 
-	recA := seedRecovery("2026-03")
-	recB := seedRecovery("2026-04")
-	recC := seedRecovery("2026-05")
+	recA := seedRecovery("2026-03", "2025-10")
+	recB := seedRecovery("2026-04", "2025-11")
+	recC := seedRecovery("2026-05", "2025-12")
 
 	draftBill := seedBill(BillStatusDraft)
 	voidBill := seedBill(BillStatusVoid)

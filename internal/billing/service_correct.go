@@ -126,8 +126,12 @@ func (s *billingService) correctMonthlyBillInTx(
 		return uuid.Nil, ErrMeterNotFound
 	}
 
+	recon, err := ResolveRecoveryReconciliation(txCtx, reading, c.ID, s.repo)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
+	}
 	snapshot := ComputeMonthlyBillSnapshot(old.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon)
 
 	// Pre-generate the new bill's ID so both the SUPERSEDE link (set on
 	// old NOW) and the CREATE_FROM_CORRECTION audit can reference it.

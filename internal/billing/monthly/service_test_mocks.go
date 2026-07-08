@@ -30,6 +30,7 @@ type mockStore struct {
 	createFn                          func(ctx context.Context, bill *billing.Bill) error
 	findByIDFn                        func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
 	findByContractAndMonthFn          func(ctx context.Context, contractID uuid.UUID, month string, bt billing.BillType) (*billing.Bill, error)
+	findRecoverySourceRefundRatesFn   func(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*billing.SourceRefundRates, error)
 	findActiveContractsByApartmentFn  func(ctx context.Context, apartmentID uuid.UUID) ([]billing.ContractWithRoom, error)
 	findExistingByContractsAndMonthFn func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*billing.Bill, error)
 	listByBatchIDFn                   func(batchID uuid.UUID) ([]billing.Bill, error)
@@ -75,6 +76,13 @@ func (m *mockStore) FindByContractAndMonth(ctx context.Context, contractID uuid.
 		return m.findByContractAndMonthFn(ctx, contractID, month, bt)
 	}
 	return nil, errMockNotFound
+}
+
+func (m *mockStore) FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*billing.SourceRefundRates, error) {
+	if m.findRecoverySourceRefundRatesFn != nil {
+		return m.findRecoverySourceRefundRatesFn(ctx, sourceReadingID, contractID)
+	}
+	return nil, nil // default: source never billed → no forward credit
 }
 
 func (m *mockStore) ListByBatchID(_ context.Context, batchID uuid.UUID) ([]billing.Bill, error) {

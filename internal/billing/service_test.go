@@ -27,6 +27,7 @@ type mockBillingRepo struct {
 	findByIDFn                         func(ctx context.Context, id uuid.UUID) (*Bill, error)
 	findByIDWithRelationsFn            func(ctx context.Context, id uuid.UUID) (*BillWithRelations, error)
 	findByContractAndMonthFn           func(ctx context.Context, contractID uuid.UUID, month string, bt BillType) (*Bill, error)
+	findRecoverySourceRefundRatesFn    func(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*SourceRefundRates, error)
 	findNonVoidedByContractMonthFn     func(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error)
 	findActiveContractsByApartmentIDFn func(ctx context.Context, apartmentID uuid.UUID) ([]ContractWithRoom, error)
 	findExistingByContractsAndMonthFn  func(ctx context.Context, contractIDs []uuid.UUID, month string) (map[uuid.UUID]*Bill, error)
@@ -109,6 +110,12 @@ func (m *mockBillingRepo) FindByContractAndMonth(ctx context.Context, contractID
 }
 func (m *mockBillingRepo) FindDraftBillForContractAndMonth(_ context.Context, _ uuid.UUID, _ string, _ BillType) (*Bill, error) {
 	return nil, gorm.ErrRecordNotFound
+}
+func (m *mockBillingRepo) FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*SourceRefundRates, error) {
+	if m.findRecoverySourceRefundRatesFn != nil {
+		return m.findRecoverySourceRefundRatesFn(ctx, sourceReadingID, contractID)
+	}
+	return nil, nil // default: source never billed → no forward credit
 }
 func (m *mockBillingRepo) FindNonVoidedByContractAndMonth(ctx context.Context, contractID uuid.UUID, month string) ([]Bill, error) {
 	if m.findNonVoidedByContractMonthFn != nil {

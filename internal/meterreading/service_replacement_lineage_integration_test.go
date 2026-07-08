@@ -186,6 +186,7 @@ func TestReplacement_NextMonthInheritsNewMeterStart(t *testing.T) {
 		c.ElectricityRatePerUnit,
 		c.WaterRatePerUnit,
 		&mNext.MeterReading,
+		nil,
 	)
 	var elecQty, waterQty int
 	var sawElec, sawWater bool

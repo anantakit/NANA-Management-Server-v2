@@ -58,6 +58,10 @@ func (a *MonthlyAdapter) FindByContractAndMonth(ctx context.Context, contractID 
 	return a.repo.FindByContractAndMonth(ctx, contractID, billingMonth, billType)
 }
 
+func (a *MonthlyAdapter) FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*SourceRefundRates, error) {
+	return a.repo.FindRecoverySourceRefundRates(ctx, sourceReadingID, contractID)
+}
+
 func (a *MonthlyAdapter) ListByBatchID(ctx context.Context, batchID uuid.UUID) ([]Bill, error) {
 	return a.repo.ListBillsByBatchID(ctx, batchID)
 }

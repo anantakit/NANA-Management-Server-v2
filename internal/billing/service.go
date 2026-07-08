@@ -265,8 +265,12 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 		return nil, ErrMeterMonthMismatch
 	}
 
+	recon, err := ResolveRecoveryReconciliation(ctx, reading, contractID, s.repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
+	}
 	snapshot := ComputeMonthlyBillSnapshot(req.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon)
 
 	// Resolve payment destination outside the TX (read-only). Null when no rules configured.
 	aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)

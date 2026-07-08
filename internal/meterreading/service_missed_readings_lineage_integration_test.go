@@ -186,6 +186,7 @@ func TestMissedReadings_ActiveContract_NextMonthInheritsLastReading(t *testing.T
 		c.ElectricityRatePerUnit,
 		c.WaterRatePerUnit,
 		&mNext.MeterReading,
+		nil,
 	)
 	elecQty, waterQty := pickLineQuantitiesM(t, "Month N+3", snapshot.LineItems)
 	if elecQty != 150 {

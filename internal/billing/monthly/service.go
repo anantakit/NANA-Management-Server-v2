@@ -204,8 +204,13 @@ func (s *service) buildBatchItems(
 			BillID:     cls.BillID,
 		}
 		if cls.ResultType == billing.ResultCreated {
+			reading := in.meterMap[c.RoomID]
+			recon, rErr := billing.ResolveRecoveryReconciliation(ctx, reading, c.ContractID, s.bills)
+			if rErr != nil {
+				return nil, fmt.Errorf("resolve recovery reconciliation: %w", rErr)
+			}
 			item.ComputedSnapshot = billing.ComputeMonthlyBillSnapshot(
-				billingMonth, c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, in.meterMap[c.RoomID],
+				billingMonth, c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon,
 			)
 		}
 		items = append(items, item)

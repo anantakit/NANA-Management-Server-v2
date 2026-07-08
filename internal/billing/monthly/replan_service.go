@@ -84,12 +84,18 @@ func (s *service) RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID
 	)
 	var snapshot billing.ComputedSnapshot
 	if cls.ResultType == billing.ResultCreated {
+		reading := in.meterMap[contract.RoomID]
+		recon, rErr := billing.ResolveRecoveryReconciliation(ctx, reading, contract.ContractID, s.bills)
+		if rErr != nil {
+			return nil, fmt.Errorf("resolve recovery reconciliation: %w", rErr)
+		}
 		snapshot = billing.ComputeMonthlyBillSnapshot(
 			batch.BillingMonth,
 			contract.MonthlyRent,
 			contract.ElectricityRatePerUnit,
 			contract.WaterRatePerUnit,
-			in.meterMap[contract.RoomID],
+			reading,
+			recon,
 		)
 	}
 

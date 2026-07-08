@@ -78,6 +78,13 @@ type BillStore interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
 	FindByContractAndMonth(ctx context.Context, contractID uuid.UUID, billingMonth string, billType billing.BillType) (*billing.Bill, error)
 
+	// FindRecoverySourceRefundRates resolves the Q1.6 forward-credit S0 gate +
+	// rate for a recovery reading (ontology lock 2026-07-08): the source month's
+	// FINALIZED/PAID bill line unit_price, or (nil, nil) when the source was
+	// never billed. Consumed by billing.ResolveRecoveryReconciliation so the
+	// batch/replan snapshot emits F only for a real, source-billed over-record.
+	FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*billing.SourceRefundRates, error)
+
 	// ListByBatchID returns every bill linked to the given batch_id.
 	// Used by BatchFinalizeAll. Settlement bills are excluded at SQL.
 	ListByBatchID(ctx context.Context, batchID uuid.UUID) ([]billing.Bill, error)

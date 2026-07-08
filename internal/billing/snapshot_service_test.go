@@ -8,9 +8,14 @@ import (
 	"github.com/google/uuid"
 )
 
+func i64ptr(v int64) *int64 { return &v }
+
 // Q1.6 P2 — the refund is emitted AT GENERATION from the meter-truth fact, with
 // no decision. A READING_RECOVERY reading with recorded > current auto-produces a
-// refund ADJUSTMENT line; the affected AUTO line is already 0 (usage 0).
+// refund ADJUSTMENT line; the affected AUTO line is already 0 (usage 0). Ontology
+// lock 2026-07-08: the refund RATE comes from `recon` (the SOURCE bill's line
+// unit_price), NOT the current contract rate passed as elecRate — here elecRate
+// is deliberately 1000 while recon carries 800, and the refund resolves at 800.
 func TestComputeMonthlyBillSnapshot_AutoRefundOnOverRecord(t *testing.T) {
 	recorded := 1500
 	recID := uuid.New()
@@ -24,7 +29,8 @@ func TestComputeMonthlyBillSnapshot_AutoRefundOnOverRecord(t *testing.T) {
 		WaterPrevious:       200,
 		WaterCurrent:        220, // normal water usage 20, not a recovery
 	}
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading)
+	recon := &RecoveryReconciliation{Electricity: i64ptr(800)} // source-bill rate
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 1000, 1800, reading, recon)
 
 	if len(snap.LineItems) != 4 {
 		t.Fatalf("line count = %d, want 4 (rent, elec, water, refund)", len(snap.LineItems))
@@ -45,8 +51,9 @@ func TestComputeMonthlyBillSnapshot_AutoRefundOnOverRecord(t *testing.T) {
 	if refund == nil {
 		t.Fatal("no refund ADJUSTMENT line emitted")
 	}
+	// Priced at the SOURCE rate (800), not the current rate (1000).
 	if refund.Amount != -(300*800) || refund.Quantity != 300 || refund.UnitPrice != 800 {
-		t.Errorf("refund = %+v, want amount %d / qty 300 / unit_price 800", refund, -(300 * 800))
+		t.Errorf("refund = %+v, want amount %d / qty 300 / unit_price 800 (source rate)", refund, -(300 * 800))
 	}
 	if refund.Description != "จดไว้ 1500 → จริง 1200" {
 		t.Errorf("refund description = %q", refund.Description)
@@ -82,7 +89,30 @@ func TestComputeMonthlyBillSnapshot_AutoRefundOnOverRecord(t *testing.T) {
 	}
 }
 
-// A zero-rate over-record was never charged → nothing to refund → NO line.
+// S0 gate (ontology lock 2026-07-08): an over-record whose SOURCE month was never
+// billed produces a nil recon → NO refund line, even though recorded > current.
+// This is the phantom-refund fix at the pure-function boundary.
+func TestComputeMonthlyBillSnapshot_S0_NilRecon_NoRefund(t *testing.T) {
+	recorded := 1500
+	anchor := meterreading.AnchorReasonReadingRecovery
+	reading := &meterreading.MeterReading{
+		ID:                  uuid.New(),
+		AnchorReason:        &anchor,
+		ElectricityPrevious: 1200,
+		ElectricityCurrent:  1200,
+		ElectricityRecorded: &recorded, // a real over-record...
+	}
+	// ...but recon is nil (source never billed) → no forward credit.
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil)
+	for _, li := range snap.LineItems {
+		if li.Type == LineItemAdjustment {
+			t.Errorf("S0 (unbilled source) must emit NO refund line, got %+v", li)
+		}
+	}
+}
+
+// A zero-rate over-record was never charged → nothing to refund → NO line, even
+// with F applicable (recon present at rate 0).
 func TestComputeMonthlyBillSnapshot_ZeroRateOverRecord_NoLine(t *testing.T) {
 	recorded := 1500
 	anchor := meterreading.AnchorReasonReadingRecovery
@@ -93,7 +123,8 @@ func TestComputeMonthlyBillSnapshot_ZeroRateOverRecord_NoLine(t *testing.T) {
 		ElectricityCurrent:  1200,
 		ElectricityRecorded: &recorded,
 	}
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 0, 0, reading) // rate 0
+	recon := &RecoveryReconciliation{Electricity: i64ptr(0)} // source billed at rate 0
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, recon)
 	for _, li := range snap.LineItems {
 		if li.Type == LineItemAdjustment {
 			t.Errorf("zero-rate over-record must emit NO refund line, got %+v", li)
@@ -110,7 +141,7 @@ func TestComputeMonthlyBillSnapshot_NormalReading_NoRefund(t *testing.T) {
 		WaterPrevious:       200,
 		WaterCurrent:        220,
 	}
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading)
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil)
 	if len(snap.LineItems) != 3 {
 		t.Errorf("normal reading line count = %d, want 3 (rent+elec+water, no refund)", len(snap.LineItems))
 	}

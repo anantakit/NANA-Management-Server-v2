@@ -25,6 +25,7 @@ func ComputeMonthlyBillSnapshot(
 	billingMonth string,
 	monthlyRent, elecRate, waterRate int64,
 	reading *meterreading.MeterReading,
+	recon *RecoveryReconciliation,
 ) ComputedSnapshot {
 	nextMonth := advanceMonth(billingMonth)
 	elecUnits := reading.ElectricityUsed()
@@ -61,19 +62,21 @@ func ComputeMonthlyBillSnapshot(
 		},
 	}
 
-	// Q1.6 — auto-emit a refund ADJUSTMENT line per over-recorded utility. When
-	// the reading is a READING_RECOVERY with recorded > current, the tenant was
-	// over-charged (recorded−current) units; the refund is deterministic. The
-	// AUTO lines above are already re-baselined to 0 (a recovery reading has
+	// Q1.6 — auto-emit a refund ADJUSTMENT line per over-recorded utility (ontology
+	// lock 2026-07-08). F fires ONLY when `recon` supplies a rate for the utility:
+	// the caller resolved that the source month produced a real bill (S0 gate) and
+	// carries the SOURCE bill's line unit_price (the historical rate the tenant was
+	// actually charged) — never the current contract rate. A nil rate → no refund
+	// (source-less / not over-recorded / source never billed → P-only re-anchor).
+	// The AUTO lines above are already re-baselined to 0 (a recovery reading has
 	// prev==current → usage 0), so the refund is a separate line, not an offset.
-	// A zero-rate over-record yields Amount 0 → no line (nothing was charged).
 	sortOrder := 3
 	for _, u := range []AdjustmentUtility{AdjustmentUtilityElectricity, AdjustmentUtilityWater} {
-		rate := elecRate
-		if u == AdjustmentUtilityWater {
-			rate = waterRate
+		rate := recon.rateFor(u)
+		if rate == nil {
+			continue // F does not apply for this utility
 		}
-		res, _, err := ResolveCorrection(reading, u, rate)
+		res, _, err := ResolveCorrection(reading, u, *rate)
 		if err != nil || res.Amount == 0 {
 			continue // not an over-record, or zero-rate (nothing to refund)
 		}

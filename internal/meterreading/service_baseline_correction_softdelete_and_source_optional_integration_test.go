@@ -41,7 +41,7 @@ func buildRecoveryServices(t *testing.T, db *gorm.DB) (meterreading.MeterReading
 // seedSourceReading inserts the prior MONTHLY reading whose CURRENT is the
 // wrong-high value the operator later corrects — Q1.6 derives the over-record
 // from source.current, so this row is the evidence of how much was mis-recorded.
-func seedSourceReading(t *testing.T, db *gorm.DB, roomID uuid.UUID, elecCur, waterCur int) *meterreading.MeterReading {
+func seedSourceReading(t *testing.T, db *gorm.DB, contractID, roomID uuid.UUID, elecCur, waterCur int) *meterreading.MeterReading {
 	t.Helper()
 	srcMonth := time.Now().AddDate(0, -1, 0).Format("2006-01")
 	src := &meterreading.MeterReading{
@@ -55,6 +55,20 @@ func seedSourceReading(t *testing.T, db *gorm.DB, roomID uuid.UUID, elecCur, wat
 	}
 	if err := db.Create(src).Error; err != nil {
 		t.Fatalf("seed source reading: %v", err)
+	}
+	// The source month was billed (ontology lock 2026-07-08): a FINALIZED bill so
+	// the over-record maps to real money → the forward credit + freshness gate
+	// engage. Electricity charged at 800/unit (the historical rate).
+	sb := &billing.Bill{ContractID: contractID, BillingMonth: srcMonth, BillType: billing.BillTypeMonthly, Status: billing.BillStatusFinalized}
+	if err := db.Create(sb).Error; err != nil {
+		t.Fatalf("seed source bill: %v", err)
+	}
+	sbLines := []billing.BillLineItem{
+		{BillID: sb.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า", Amount: 200 * 800, Quantity: 200, UnitPrice: 800, SortOrder: 2},
+		{BillID: sb.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ", Amount: 0, Quantity: 0, UnitPrice: 1800, SortOrder: 3},
+	}
+	if err := db.Create(&sbLines).Error; err != nil {
+		t.Fatalf("seed source bill lines: %v", err)
 	}
 	return src
 }
@@ -85,7 +99,7 @@ func TestRecovery_SoftDeleteClearsFreshnessGate(t *testing.T) {
 	// Source: last month recorded electricity 600 (wrong) and water 80. The
 	// operator's physical reading now is elec 450 (over-record 150) / water 80
 	// (not an over-record).
-	src := seedSourceReading(t, db, rm.ID, 600, 80)
+	src := seedSourceReading(t, db, con.ID, rm.ID, 600, 80)
 	rec, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    &src.ID,
 		ElectricityCurrent: 450,
@@ -277,12 +291,12 @@ func TestRecovery_SourcedCorrectionProducesRefund(t *testing.T) {
 	apt := fixtures.SeedApartment(t, db)
 	rm := fixtures.SeedRoom(t, db, apt.ID.String(), "P3-103")
 	tn := fixtures.SeedTenant(t, db)
-	fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 6)
+	con := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 6)
 
 	meterSvc, _ := buildRecoveryServices(t, db)
 	meterRepo := meterreading.NewMeterReadingRepository(db)
 
-	src := seedSourceReading(t, db, rm.ID, 600, 80) // recorded electricity 600
+	src := seedSourceReading(t, db, con.ID, rm.ID, 600, 80) // recorded electricity 600
 	rec, err := meterSvc.CreateBaselineCorrection(ctx, meterreading.CreateBaselineCorrectionInput{
 		SourceReadingID:    &src.ID,
 		ElectricityCurrent: 450, // physical → over-record 150
@@ -297,9 +311,13 @@ func TestRecovery_SourcedCorrectionProducesRefund(t *testing.T) {
 		t.Fatalf("reload recovery: %v", err)
 	}
 
-	// Generation-side: the recovery reading emits a refund per the derived recorded.
+	// Generation-side: the recovery reading emits a refund per the derived recorded,
+	// priced at the source-bill rate the caller resolves (ontology lock 2026-07-08).
+	// Here F is applicable at rate 800 (the source month was billed).
 	month := time.Now().Format("2006-01")
-	snap := billing.ComputeMonthlyBillSnapshot(month, 300000, 800, 1800, got)
+	srcRate := int64(800)
+	snap := billing.ComputeMonthlyBillSnapshot(month, 300000, 800, 1800, got,
+		&billing.RecoveryReconciliation{Electricity: &srcRate})
 
 	var refund, elec *billing.ComputedLineItem
 	for i := range snap.LineItems {
