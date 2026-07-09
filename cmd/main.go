@@ -266,6 +266,12 @@ func main() {
 			}
 			return c.JSON(fiber.Map{"status": "success", "message": "recovery smoke fixture reset"})
 		})
+		dev.Post("/smoke/recovery-stale-setup", func(c fiber.Ctx) error {
+			if err := seed.SetupRecoveryStale(db); err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "message": "stale recovery draft ready"})
+		})
 		dev.Get("/smoke/fixtures", func(c fiber.Ctx) error {
 			fixtures, err := seed.ListSmokeFixtures(db)
 			if err != nil {

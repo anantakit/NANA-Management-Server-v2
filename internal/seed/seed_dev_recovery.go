@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"nana/internal/apartment"
+	"nana/internal/billing"
 	"nana/internal/contract"
 	"nana/internal/meterreading"
 	"nana/internal/room"
@@ -105,7 +106,118 @@ func seedDevRecoveryFixture(db *gorm.DB) error {
 		return fmt.Errorf("create recovery meter history: %w", err)
 	}
 
+	// The source month must be FINALIZED for the Q1.6 forward credit to fire
+	// (S0 gate). Seed it here so the "clean start" already reflects a billed past.
+	if err := ensureRecoverySourceBill(db, &c); err != nil {
+		return err
+	}
+
 	slog.Info("seeded recovery smoke fixture (Q1.6 clean start)", "room", recoveryRoomNumber, "source_month", lastMonth)
+	return nil
+}
+
+// ensureRecoverySourceBill creates the FINALIZED source-month (lastMonth) monthly
+// bill that the Q1.6 forward-credit S0 gate requires: a refund fires only when the
+// over-record's SOURCE month carries a FINALIZED/PAID bill, priced at that bill's
+// electricity line unit_price (ontology lock 2026-07-08). Without it the recovery
+// re-anchors the meter but emits NO refund (that is the phantom-refund fix). The
+// source electricity line bills the same 300 units (1500 − 1200) the mis-read
+// produced, at นานาคอร์ท's rate, so next cycle the whole phantom charge is
+// refundable. Idempotent: replaces any existing bill for (contract, lastMonth).
+func ensureRecoverySourceBill(db *gorm.DB, c *contract.Contract) error {
+	lastMonth := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC).
+		AddDate(0, -1, 0).Format("2006-01")
+
+	// FK-safe replace of any prior source-month bill (audit + deliveries RESTRICT).
+	idQ := `SELECT id FROM bills WHERE contract_id = ? AND billing_month = ?`
+	for _, stmt := range []string{
+		`DELETE FROM bill_audit_log WHERE bill_id IN (` + idQ + `)`,
+		`DELETE FROM bill_deliveries WHERE bill_id IN (` + idQ + `)`,
+		`DELETE FROM bills WHERE contract_id = ? AND billing_month = ?`,
+	} {
+		if err := db.Exec(stmt, c.ID, lastMonth).Error; err != nil {
+			return fmt.Errorf("source bill cleanup: %w", err)
+		}
+	}
+
+	const elecUnits, elecRate = 300, 800  // 1500−1200 phantom units @ นานาคอร์ท rate
+	const waterUnits, waterRate = 20, 1800 // 220−200 clean water @ rate
+	elecAmount := int64(elecUnits) * int64(elecRate)
+	waterAmount := int64(waterUnits) * int64(waterRate)
+	finalizedAt := time.Now().UTC()
+	bill := billing.Bill{
+		ContractID: c.ID, BillingMonth: lastMonth, BillType: billing.BillTypeMonthly,
+		Status: billing.BillStatusFinalized, TotalAmount: c.MonthlyRent + elecAmount + waterAmount,
+		FinalizedAt: &finalizedAt,
+	}
+	if err := db.Create(&bill).Error; err != nil {
+		return fmt.Errorf("create source bill: %w", err)
+	}
+	lines := []billing.BillLineItem{
+		{BillID: bill.ID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: c.MonthlyRent, SortOrder: 1},
+		{BillID: bill.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า", Amount: elecAmount, Quantity: elecUnits, UnitPrice: elecRate, SortOrder: 2},
+		{BillID: bill.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ", Amount: waterAmount, Quantity: waterUnits, UnitPrice: waterRate, SortOrder: 3},
+	}
+	if err := db.Create(&lines).Error; err != nil {
+		return fmt.Errorf("create source bill lines: %w", err)
+	}
+	return nil
+}
+
+// SetupRecoveryStale creates the "bill existed BEFORE the recovery" precondition
+// for the stale-draft smoke leg: a DRAFT monthly bill for A211's contract at the
+// current month with ordinary AUTO lines and NO refund. When the smoke then
+// records a recovery, this bill becomes stale (the freshness gate blocks
+// finalize) — exactly the state the operator must resolve by regenerating.
+// Idempotent: replaces any existing bills for the contract first.
+func SetupRecoveryStale(db *gorm.DB) error {
+	var apt apartment.Apartment
+	if err := db.Where("name = ?", "นานาคอร์ท").First(&apt).Error; err != nil {
+		return fmt.Errorf("find apartment: %w", err)
+	}
+	var rm room.Room
+	if err := db.Where("apartment_id = ? AND number = ?", apt.ID, recoveryRoomNumber).First(&rm).Error; err != nil {
+		return nil
+	}
+	var c contract.Contract
+	if err := db.Where("room_id = ? AND status = ?", rm.ID, contract.ContractStatusActive).First(&c).Error; err != nil {
+		return nil
+	}
+	// Clean any prior bills for a deterministic starting point (FK-safe).
+	billIDs := `SELECT id FROM bills WHERE contract_id = ?`
+	for _, stmt := range []string{
+		`DELETE FROM bill_audit_log WHERE bill_id IN (` + billIDs + `)`,
+		`DELETE FROM bill_deliveries WHERE bill_id IN (` + billIDs + `)`,
+		`DELETE FROM bills WHERE contract_id = ?`,
+	} {
+		if err := db.Exec(stmt, c.ID).Error; err != nil {
+			return fmt.Errorf("stale setup cleanup: %w", err)
+		}
+	}
+
+	// The all-bills cleanup above also removed the FINALIZED source-month bill;
+	// recreate it so the recovery the smoke records next is S0-satisfied (a stale
+	// draft with NO source bill would re-anchor but never carry a refund, testing
+	// nothing). This is the settled-shape precondition for the regenerate leg.
+	if err := ensureRecoverySourceBill(db, &c); err != nil {
+		return err
+	}
+
+	month := time.Now().UTC().Format("2006-01")
+	bill := billing.Bill{
+		ContractID: c.ID, BillingMonth: month, BillType: billing.BillTypeMonthly, Status: billing.BillStatusDraft,
+	}
+	if err := db.Create(&bill).Error; err != nil {
+		return fmt.Errorf("stale setup create bill: %w", err)
+	}
+	lines := []billing.BillLineItem{
+		{BillID: bill.ID, LineType: billing.LineItemRoomRent, Source: billing.LineItemSourceAuto, Description: "ค่าเช่า", Amount: c.MonthlyRent, SortOrder: 1},
+		{BillID: bill.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto, Description: "ค่าไฟฟ้า", Amount: 40000, Quantity: 50, UnitPrice: 800, SortOrder: 2},
+		{BillID: bill.ID, LineType: billing.LineItemWater, Source: billing.LineItemSourceAuto, Description: "ค่าน้ำ", Amount: 18000, Quantity: 10, UnitPrice: 1800, SortOrder: 3},
+	}
+	if err := db.Create(&lines).Error; err != nil {
+		return fmt.Errorf("stale setup create lines: %w", err)
+	}
 	return nil
 }
 
@@ -161,6 +273,12 @@ func ResetRecoverySmoke(db *gorm.DB) error {
 		WHERE room_id = ? AND reading_type = ? AND billing_month = ? AND anchor_reason IS NULL`,
 		rm.ID, meterreading.ReadingTypeMonthly, lastMonth).Error; err != nil {
 		return fmt.Errorf("reset: restore wrong-high last reading: %w", err)
+	}
+
+	// Restore the FINALIZED source-month bill removed by the all-bills cleanup
+	// above so the clean start is S0-satisfied (see ensureRecoverySourceBill).
+	if err := ensureRecoverySourceBill(db, &c); err != nil {
+		return err
 	}
 	return nil
 }
