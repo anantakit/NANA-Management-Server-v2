@@ -92,7 +92,9 @@ async function selectApartment(page, name) {
 // Review (suspect source auto-binds from room history, meter-facts only — ZERO
 // money), confirm. No drawer, no correction_* inputs. When opts.assertReview is
 // set (LEG A only), also assert the affordance/auto-bind/no-money invariants.
-async function doCorrection(page, opts = {}) {
+// Enter Focus (จดมิเตอร์เร็ว) and jump to A211 via the ⌘P palette, leaving the
+// electricity input focused and ready. Shared by doCorrection + the GUARD leg.
+async function focusOnRoom(page) {
   await page.goto(`${FRONTEND}/meter-readings`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(700)
   await selectApartment(page, 'นานาคอร์ท')
@@ -105,6 +107,10 @@ async function doCorrection(page, opts = {}) {
   const item = page.locator('[role="dialog"]', { hasText: ROOM }).locator('button, [role="option"]', { hasText: ROOM }).first()
   if (await item.count()) await item.click(); else await page.keyboard.press('Enter')
   await page.waitForTimeout(600)
+}
+
+async function doCorrection(page, opts = {}) {
+  await focusOnRoom(page)
 
   if (opts.assertReview) {
     const roomShown = await page.locator('p.text-5xl').first().innerText().catch(() => '?')
@@ -162,7 +168,10 @@ async function rowAction(page) {
   const month = new Date().toISOString().slice(0, 7)
   console.log('🧪 reading-recovery Q1.6 smoke — room', ROOM)
 
-  const browser = await chromium.launch({ headless: process.env.SMOKE_HEADLESS === '1' })
+  const browser = await chromium.launch({
+    headless: process.env.SMOKE_HEADLESS === '1',
+    slowMo: Number(process.env.SMOKE_SLOWMO || 0), // ms per action — watch-mode aid
+  })
   const page = await browser.newPage()
 
   // Network guard: the FE must never hit the deleted pending endpoint nor send
@@ -177,6 +186,24 @@ async function rowAction(page) {
 
   try {
     await login(page)
+
+    // ══ GUARD — recovery requires BOTH meters (regression lock) ═════════════
+    // The recovery row IS the cycle reading (Lock E); committing with the other
+    // utility blank once silently anchored it at prev=curr (usage 0) → under-bill.
+    // Recovery now enforces the same "both meters" guard as a normal save.
+    console.log('\n── GUARD: blank second meter blocks the recovery commit ──')
+    await dev('reset-recovery')
+    await focusOnRoom(page)
+    await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().fill('1200') // elec breakage
+    // water LEFT BLANK on purpose
+    await page.locator('button', { hasText: 'แก้ค่าไฟที่จดผิด' }).first().click()
+    await page.getByText('คุณกำลังแก้ค่าไฟฟ้าที่จดผิด').first().waitFor({ state: 'visible', timeout: 5000 })
+    await page.getByRole('button', { name: 'ยืนยัน', exact: true }).first().click()
+    await page.waitForTimeout(800)
+    check('blank water blocks recovery (validation error shown)',
+      (await page.getByText(/กรุณากรอกค่าน้ำ/).count()) > 0)
+    check('recovery NOT committed while water blank (no success toast)',
+      (await page.getByText('บันทึกค่ามิเตอร์ที่แก้แล้ว').count()) === 0)
 
     // ══ LEG A — fresh generation → refund ═══════════════════════════════════
     console.log('\n── LEG A: fresh correction → generate → refund ──')
