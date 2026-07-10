@@ -99,6 +99,14 @@ type BillingRepository interface {
 	// blocks — §0b). This is the sole finalization gate since P3-B.
 	HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
 
+	// FindUnreflectedOverRecordsByContractID is the ROW twin of the freshness
+	// gate — the same predicate, returning the (recovery, utility) pairs instead
+	// of a bool. HasUnreflectedOverRecordByContractID is defined as
+	// `len(this) > 0`, so the finalize detector and the settlement resolver
+	// share ONE predicate and can never drift (Epic B INV-1). Pure predicate
+	// provider: identity only, no pricing.
+	FindUnreflectedOverRecordsByContractID(ctx context.Context, contractID uuid.UUID) ([]UnreflectedOverRecord, error)
+
 	// FindRecoverySourceRefundRates is the Q1.6 forward-credit S0 gate + rate
 	// lookup (ontology lock 2026-07-08). Given a recovery reading's
 	// source_reading_id, it resolves the source month's FINALIZED/PAID MONTHLY
@@ -812,62 +820,82 @@ func (r *billingRepository) HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx c
 // Utilities with recorded IS NULL or recorded <= current never enter the set
 // (not an over-record — §0b).
 func (r *billingRepository) HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error) {
-	var exists bool
+	// INV-1 (Epic B): the gate is a thin wrapper over the row-returning
+	// discovery, so the finalize detector and the settlement resolver evaluate
+	// exactly ONE predicate and can never drift into two look-alike queries.
+	rows, err := r.FindUnreflectedOverRecordsByContractID(ctx, contractID)
+	if err != nil {
+		return false, err
+	}
+	return len(rows) > 0, nil
+}
+
+// FindUnreflectedOverRecordsByContractID is the ROW twin of the freshness gate:
+// it returns every (recovery reading, utility) pair that is AFFECTED (recorded >
+// current) + source-billed (the source month has a FINALIZED/PAID MONTHLY bill,
+// the S0 gate) + UNREFLECTED (no non-VOID ADJUSTMENT line references that pair).
+// The bool gate above is defined as `len(this) > 0`, so detector and resolver
+// share one predicate (Epic B INV-1). This is a pure predicate provider — it
+// returns identity only (recovery_id, utility); refund pricing stays in the
+// canonical FindRecoverySourceRefundRates so this never becomes a second rate
+// query (owner constraint #2). A pair with a VOID-only ADJUSTMENT stays in the
+// set (only non-VOID lines reflect); recorded IS NULL / recorded <= current
+// never enter the set (§0b).
+func (r *billingRepository) FindUnreflectedOverRecordsByContractID(ctx context.Context, contractID uuid.UUID) ([]UnreflectedOverRecord, error) {
+	var rows []UnreflectedOverRecord
 	err := database.DB(ctx, r.db).
-		Raw(`SELECT EXISTS (
-			SELECT 1 FROM (
-				SELECT mr.id AS recovery_id, ? AS utility
-				FROM meter_readings mr
-				JOIN contracts c ON c.room_id = mr.room_id
-				JOIN meter_readings src ON src.id = mr.recovery_source_reading_id
-				  AND src.deleted_at IS NULL
-				JOIN bills sb ON sb.contract_id = c.id
-				  AND sb.billing_month = src.billing_month
-				  AND sb.bill_type = ?
-				  AND (sb.status = ? OR sb.status = ?)
-				  AND sb.deleted_at IS NULL
-				WHERE c.id = ?
-				  AND mr.anchor_reason = ?
-				  AND mr.deleted_at IS NULL
-				  AND mr.electricity_recorded IS NOT NULL
-				  AND mr.electricity_recorded > mr.electricity_current
-				UNION ALL
-				SELECT mr.id AS recovery_id, ? AS utility
-				FROM meter_readings mr
-				JOIN contracts c ON c.room_id = mr.room_id
-				JOIN meter_readings src ON src.id = mr.recovery_source_reading_id
-				  AND src.deleted_at IS NULL
-				JOIN bills sb ON sb.contract_id = c.id
-				  AND sb.billing_month = src.billing_month
-				  AND sb.bill_type = ?
-				  AND (sb.status = ? OR sb.status = ?)
-				  AND sb.deleted_at IS NULL
-				WHERE c.id = ?
-				  AND mr.anchor_reason = ?
-				  AND mr.deleted_at IS NULL
-				  AND mr.water_recorded IS NOT NULL
-				  AND mr.water_recorded > mr.water_current
-			) affected
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM bill_line_items bli
-				JOIN bills b ON b.id = bli.bill_id
-				WHERE bli.adjustment_recovery_reading_id = affected.recovery_id
-				  AND bli.adjustment_utility = affected.utility
-				  AND b.status <> ?
-				  AND b.deleted_at IS NULL
-			)
+		Raw(`SELECT affected.recovery_id, affected.utility FROM (
+			SELECT mr.id AS recovery_id, ? AS utility
+			FROM meter_readings mr
+			JOIN contracts c ON c.room_id = mr.room_id
+			JOIN meter_readings src ON src.id = mr.recovery_source_reading_id
+			  AND src.deleted_at IS NULL
+			JOIN bills sb ON sb.contract_id = c.id
+			  AND sb.billing_month = src.billing_month
+			  AND sb.bill_type = ?
+			  AND (sb.status = ? OR sb.status = ?)
+			  AND sb.deleted_at IS NULL
+			WHERE c.id = ?
+			  AND mr.anchor_reason = ?
+			  AND mr.deleted_at IS NULL
+			  AND mr.electricity_recorded IS NOT NULL
+			  AND mr.electricity_recorded > mr.electricity_current
+			UNION ALL
+			SELECT mr.id AS recovery_id, ? AS utility
+			FROM meter_readings mr
+			JOIN contracts c ON c.room_id = mr.room_id
+			JOIN meter_readings src ON src.id = mr.recovery_source_reading_id
+			  AND src.deleted_at IS NULL
+			JOIN bills sb ON sb.contract_id = c.id
+			  AND sb.billing_month = src.billing_month
+			  AND sb.bill_type = ?
+			  AND (sb.status = ? OR sb.status = ?)
+			  AND sb.deleted_at IS NULL
+			WHERE c.id = ?
+			  AND mr.anchor_reason = ?
+			  AND mr.deleted_at IS NULL
+			  AND mr.water_recorded IS NOT NULL
+			  AND mr.water_recorded > mr.water_current
+		) affected
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM bill_line_items bli
+			JOIN bills b ON b.id = bli.bill_id
+			WHERE bli.adjustment_recovery_reading_id = affected.recovery_id
+			  AND bli.adjustment_utility = affected.utility
+			  AND b.status <> ?
+			  AND b.deleted_at IS NULL
 		)`,
 			AdjustmentUtilityElectricity, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
 			contractID, meterreading.AnchorReasonReadingRecovery,
 			AdjustmentUtilityWater, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
 			contractID, meterreading.AnchorReasonReadingRecovery,
 			BillStatusVoid).
-		Scan(&exists).Error
+		Scan(&rows).Error
 	if err != nil {
-		return false, fmt.Errorf("check unresolved over-record by contract: %w", err)
+		return nil, fmt.Errorf("find unreflected over-records by contract: %w", err)
 	}
-	return exists, nil
+	return rows, nil
 }
 
 // FindRecoverySourceRefundRates resolves the Q1.6 forward-credit S0 gate + rate

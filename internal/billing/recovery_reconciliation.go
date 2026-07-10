@@ -31,6 +31,19 @@ type SourceRefundRates struct {
 	Water       int64
 }
 
+// UnreflectedOverRecord is one (recovery reading, utility) pair that the Q1.6
+// freshness predicate flags as an AFFECTED (recorded > current) + source-billed
+// (S0-satisfied) over-record whose refund is NOT yet reflected on any live bill.
+// It is the ROW twin of the HasUnreflectedOverRecordByContractID bool gate: the
+// gate is defined as `len(FindUnreflectedOverRecordsByContractID) > 0`, so the
+// detector and the settlement resolver share ONE predicate (Epic B INV-1) and
+// can never drift. It carries identity only — pricing stays in the canonical
+// FindRecoverySourceRefundRates so this never becomes a second rate query.
+type UnreflectedOverRecord struct {
+	RecoveryID uuid.UUID         `gorm:"column:recovery_id"`
+	Utility    AdjustmentUtility `gorm:"column:utility"`
+}
+
 // SourceRefundRateFinder resolves the S0 gate + refund rate in one lookup: given
 // a recovery reading's source_reading_id and the current contract that owns it,
 // it joins to the source month's FINALIZED/PAID MONTHLY bill and returns that

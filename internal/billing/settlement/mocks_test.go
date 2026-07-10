@@ -41,6 +41,7 @@ type mockBillStore struct {
 	lockBillForCorrectionFn        func(ctx context.Context, id uuid.UUID) (*billing.Bill, error)
 	hasNonVoidAdjustmentFn         func(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 	hasPendingRecoveryFn           func(ctx context.Context, contractID uuid.UUID) (bool, error)
+	findUnreflectedFn              func() ([]billing.UnreflectedOverRecord, error)
 
 	updateErrByBillID map[uuid.UUID]error
 
@@ -207,6 +208,13 @@ func (m *mockBillStore) HasUnreflectedOverRecordByContractID(ctx context.Context
 		return m.hasPendingRecoveryFn(ctx, contractID)
 	}
 	return false, nil
+}
+
+func (m *mockBillStore) FindUnreflectedOverRecordsByContractID(_ context.Context, _ uuid.UUID) ([]billing.UnreflectedOverRecord, error) {
+	if m.findUnreflectedFn != nil {
+		return m.findUnreflectedFn()
+	}
+	return nil, nil
 }
 
 func (m *mockBillStore) ZeroAutoLineUsage(_ context.Context, billID uuid.UUID, lineType billing.LineItemType) error {

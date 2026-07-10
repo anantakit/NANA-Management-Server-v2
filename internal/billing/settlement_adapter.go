@@ -145,6 +145,13 @@ func (a *SettlementAdapter) HasUnreflectedOverRecordByContractID(ctx context.Con
 	return a.repo.HasUnreflectedOverRecordByContractID(ctx, contractID)
 }
 
+// FindUnreflectedOverRecordsByContractID exposes the row twin of the freshness
+// gate to settlement so the resolver emits exactly the pairs the gate detects
+// (Epic B INV-1). Thin delegation — shares the billing repo's single predicate.
+func (a *SettlementAdapter) FindUnreflectedOverRecordsByContractID(ctx context.Context, contractID uuid.UUID) ([]UnreflectedOverRecord, error) {
+	return a.repo.FindUnreflectedOverRecordsByContractID(ctx, contractID)
+}
+
 func (a *SettlementAdapter) ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType LineItemType) error {
 	return a.repo.ZeroAutoLineUsage(ctx, billID, lineType)
 }

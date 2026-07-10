@@ -276,6 +276,10 @@ func (m *mockBillingRepo) HasUnreflectedOverRecordByContractID(ctx context.Conte
 	return false, nil
 }
 
+func (m *mockBillingRepo) FindUnreflectedOverRecordsByContractID(_ context.Context, _ uuid.UUID) ([]UnreflectedOverRecord, error) {
+	return nil, nil
+}
+
 func (m *mockBillingRepo) CountPendingBaselineCorrectionsByRoomIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]int, error) {
 	return map[uuid.UUID]int{}, nil
 }

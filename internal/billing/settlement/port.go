@@ -159,6 +159,11 @@ type BillStore interface {
 	// re-baselines an affected AUTO line to usage 0 / amount 0 (§3.6).
 	HasNonVoidAdjustmentLineByRecoveryIDAndUtility(ctx context.Context, recoveryReadingID uuid.UUID, utility billing.AdjustmentUtility) (bool, error)
 	HasUnreflectedOverRecordByContractID(ctx context.Context, contractID uuid.UUID) (bool, error)
+	// FindUnreflectedOverRecordsByContractID is the row twin of the freshness
+	// gate — the same predicate returning the (recovery, utility) pairs the
+	// settlement resolver must emit, so detector and resolver never drift
+	// (Epic B INV-1). The gate above is `len(this) > 0`.
+	FindUnreflectedOverRecordsByContractID(ctx context.Context, contractID uuid.UUID) ([]billing.UnreflectedOverRecord, error)
 	ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType billing.LineItemType) error
 }
 
