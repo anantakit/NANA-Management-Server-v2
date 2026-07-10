@@ -179,7 +179,7 @@ func settlementSetup(c *contract.Contract, moveOutDate time.Time, unpaidBills []
 	svc := newSvcWithMocks(
 		bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
 	)
@@ -200,7 +200,7 @@ func previewSetup(c *contract.Contract, moveOutDate time.Time, unpaidBills []bil
 	svc := newSvcWithMocks(
 		bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{notice: notice},
 	)

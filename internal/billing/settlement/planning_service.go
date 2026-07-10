@@ -32,12 +32,12 @@ var feeDescriptions = map[billingconfig.FeeType]string{
 // settlementPlan holds computed settlement data before persistence.
 // Used by both preview (read-only) and create (commit) paths.
 type settlementPlan struct {
-	Bill              billing.Bill                  // DRAFT bill to create (line items + total computed)
-	Deposit           DepositSettlementState        // deposit breakdown
-	BillsToVoid       []*billing.Bill               // monthly bills to void (REPLACED_BY_SETTLEMENT)
-	BillsToAbsorb     []*billing.Bill               // unpaid bills to mark ABSORBED_BY_SETTLEMENT
-	MinMonths         int                           // contract minimum stay (for preview display)
-	DepositReturnable bool                          // whether deposit qualifies for return
+	Bill              billing.Bill           // DRAFT bill to create (line items + total computed)
+	Deposit           DepositSettlementState // deposit breakdown
+	BillsToVoid       []*billing.Bill        // monthly bills to void (REPLACED_BY_SETTLEMENT)
+	BillsToAbsorb     []*billing.Bill        // unpaid bills to mark ABSORBED_BY_SETTLEMENT
+	MinMonths         int                    // contract minimum stay (for preview display)
+	DepositReturnable bool                   // whether deposit qualifies for return
 }
 
 // prepareSettlementPlan computes the full settlement without writing anything.
@@ -51,15 +51,16 @@ func (s *Service) prepareSettlementPlan(ctx context.Context, contractID uuid.UUI
 		return nil, fmt.Errorf("find contract: %w", err)
 	}
 
-	exitReading, err := s.meters.FindLatestByRoomID(ctx, c.RoomID)
+	// Fetch the exit reading BY TYPE (not "latest"): an Epic B recovery row that
+	// coexists with this move-out can out-rank the exit reading temporally, so a
+	// latest-lookup would return the recovery and spuriously report a missing
+	// exit reading.
+	exitReading, err := s.meters.FindExitByRoomID(ctx, c.RoomID)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return nil, ErrExitReadingMissing
 		}
 		return nil, fmt.Errorf("find exit reading: %w", err)
-	}
-	if !exitReading.IsExit() {
-		return nil, ErrExitReadingMissing
 	}
 
 	billingMonth := billing.ToMonth(moveOutDate)
@@ -113,25 +114,17 @@ func (s *Service) prepareSettlementPlan(ctx context.Context, contractID uuid.UUI
 	items = append(items, elecLine)
 	order++
 
-	// Q1.6 — if the EXIT reading is itself an over-record recovery, auto-emit the
-	// refund line per affected utility (deterministic). A normal EXIT reading has
-	// no recorded value → ResolveCorrection returns not-affected and is skipped.
-	// BillID is Nil here; CreateBill's GORM cascade sets it (like the lines above).
-	for _, u := range []billing.AdjustmentUtility{billing.AdjustmentUtilityElectricity, billing.AdjustmentUtilityWater} {
-		rate := c.ElectricityRatePerUnit
-		if u == billing.AdjustmentUtilityWater {
-			rate = c.WaterRatePerUnit
-		}
-		res, _, err := billing.ResolveCorrection(exitReading, u, rate)
-		if err != nil || res.Amount == 0 {
-			continue
-		}
-		refundLine, err := billing.BuildRecoveryAdjustmentLine(uuid.Nil, res, order)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, refundLine)
-		order++
+	// Q1.6 settlement recovery reconciliation (Epic B). Settlement OWNS the
+	// move-out forward credit (DQ0): it discovers the contract's unreflected
+	// over-records and emits one refund ADJUSTMENT line per (recovery, utility),
+	// priced at the SOURCE bill's unit_price (HC6). This is the SINGLE recovery
+	// emission path (INV-3) — the old EXIT-reading branch is gone; Regenerate /
+	// Correct reflect only by re-running this builder. Discovery shares ONE
+	// predicate with the finalize gate (INV-1), so exactly the pairs the gate
+	// would block on are the pairs emitted here — resolving the D1 deadlock.
+	items, order, err = s.addRecoveryRefunds(ctx, items, order, contractID)
+	if err != nil {
+		return nil, err
 	}
 
 	items, order, err = s.addConfigFees(ctx, items, order, apartmentID)
@@ -306,6 +299,81 @@ func (s *Service) findProrateRate(ctx context.Context, apartmentID uuid.UUID) (r
 		return cfg.DefaultAmount, true, nil
 	}
 	return 0, false, nil
+}
+
+// addRecoveryRefunds appends one refund ADJUSTMENT line per unreflected
+// (recovery, utility) over-record for the contract — the Epic B settlement
+// recovery resolver (DQ0: settlement owns the move-out forward credit). It is
+// the SINGLE settlement recovery emission path (INV-3); Regenerate/Correct
+// reflect only by re-running prepareSettlementPlan, never by emitting lines
+// themselves.
+//
+// Discovery shares ONE predicate with the finalize gate (INV-1), so exactly the
+// pairs the gate would block on are emitted here — this is what clears the D1
+// deadlock. Pricing reuses the monthly source-rate lookup
+// (FindRecoverySourceRefundRates → SOURCE bill unit_price, HC6): settlement
+// never re-prices at the current contract rate. Emission is surgical per-pair
+// (only the discovered utilities), so a utility already reflected elsewhere is
+// not re-credited. The lines are Source=MANUAL/LineType=ADJUSTMENT, so the
+// Regenerate/Correct carry-over (EditableManualItems) excludes them and they are
+// re-derived fresh each rebuild → idempotent, no double-count. DQ4: the domain
+// keeps one line per (recovery, utility); the presentation layer aggregates.
+func (s *Service) addRecoveryRefunds(ctx context.Context, items []billing.BillLineItem, order int, contractID uuid.UUID) ([]billing.BillLineItem, int, error) {
+	pairs, err := s.bills.FindUnreflectedOverRecordsByContractID(ctx, contractID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("find unreflected over-records: %w", err)
+	}
+	if len(pairs) == 0 {
+		return items, order, nil
+	}
+
+	// Group utilities by recovery so the reading + source rates load once per
+	// recovery, in a stable order (map iteration order is non-deterministic).
+	utilsByRecovery := map[uuid.UUID][]billing.AdjustmentUtility{}
+	var recoveryOrder []uuid.UUID
+	for _, p := range pairs {
+		if _, seen := utilsByRecovery[p.RecoveryID]; !seen {
+			recoveryOrder = append(recoveryOrder, p.RecoveryID)
+		}
+		utilsByRecovery[p.RecoveryID] = append(utilsByRecovery[p.RecoveryID], p.Utility)
+	}
+
+	for _, recoveryID := range recoveryOrder {
+		reading, err := s.meters.FindByIDSimple(ctx, recoveryID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("load recovery reading %s: %w", recoveryID, err)
+		}
+		// The gate predicate guarantees a source-billed recovery, but guard the
+		// two derived facts anyway so a race that soft-deletes the source between
+		// discovery and load degrades to "no refund" instead of a nil deref.
+		if reading.RecoverySourceReadingID == nil {
+			continue
+		}
+		rates, err := s.bills.FindRecoverySourceRefundRates(ctx, *reading.RecoverySourceReadingID, contractID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("find source refund rates for recovery %s: %w", recoveryID, err)
+		}
+		if rates == nil {
+			continue // source month no longer billed (S0) — nothing to refund
+		}
+		for _, u := range utilsByRecovery[recoveryID] {
+			rate := rates.Electricity
+			if u == billing.AdjustmentUtilityWater {
+				rate = rates.Water
+			}
+			res, _, err := billing.ResolveCorrection(reading, u, rate)
+			if err != nil || res.Amount == 0 {
+				continue
+			}
+			refundLine, err := billing.BuildRecoveryAdjustmentLine(uuid.Nil, res, order)
+			if err != nil {
+				return nil, 0, err
+			}
+			items = append(items, refundLine)
+			order++
+		}
+	}
+	return items, order, nil
 }
 
 // addConfigFees adds configurable flat fees (CLEANING_FEE, KEY_SERVICE)

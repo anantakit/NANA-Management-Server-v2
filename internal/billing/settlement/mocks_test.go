@@ -42,6 +42,7 @@ type mockBillStore struct {
 	hasNonVoidAdjustmentFn         func(ctx context.Context, recoveryReadingID uuid.UUID) (bool, error)
 	hasPendingRecoveryFn           func(ctx context.Context, contractID uuid.UUID) (bool, error)
 	findUnreflectedFn              func() ([]billing.UnreflectedOverRecord, error)
+	sourceRefundRatesFn            func() (*billing.SourceRefundRates, error)
 
 	updateErrByBillID map[uuid.UUID]error
 
@@ -217,6 +218,13 @@ func (m *mockBillStore) FindUnreflectedOverRecordsByContractID(_ context.Context
 	return nil, nil
 }
 
+func (m *mockBillStore) FindRecoverySourceRefundRates(_ context.Context, _, _ uuid.UUID) (*billing.SourceRefundRates, error) {
+	if m.sourceRefundRatesFn != nil {
+		return m.sourceRefundRatesFn()
+	}
+	return nil, nil
+}
+
 func (m *mockBillStore) ZeroAutoLineUsage(_ context.Context, billID uuid.UUID, lineType billing.LineItemType) error {
 	m.zeroedAutoLines = append(m.zeroedAutoLines, struct {
 		BillID   uuid.UUID
@@ -262,13 +270,13 @@ func (m *mockContractSource) FindByIDSimple(ctx context.Context, id uuid.UUID) (
 }
 
 type mockMeterReadingSource struct {
-	findLatestFn func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
-	findByIDFn   func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
+	findExitFn func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
+	findByIDFn func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
 }
 
-func (m *mockMeterReadingSource) FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error) {
-	if m.findLatestFn != nil {
-		return m.findLatestFn(ctx, roomID)
+func (m *mockMeterReadingSource) FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error) {
+	if m.findExitFn != nil {
+		return m.findExitFn(ctx, roomID)
 	}
 	return nil, gorm.ErrRecordNotFound
 }

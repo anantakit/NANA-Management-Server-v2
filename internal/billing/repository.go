@@ -843,6 +843,15 @@ func (r *billingRepository) HasUnreflectedOverRecordByContractID(ctx context.Con
 // never enter the set (§0b).
 func (r *billingRepository) FindUnreflectedOverRecordsByContractID(ctx context.Context, contractID uuid.UUID) ([]UnreflectedOverRecord, error) {
 	var rows []UnreflectedOverRecord
+	// The source-bill JOIN requires the FINALIZED/PAID monthly bill to carry a
+	// line for the over-recorded utility with unit_price > 0 — i.e. the source
+	// month actually CHARGED for that utility. This is the ontology's S0 gate at
+	// per-utility granularity: F (forward credit) exists IFF real money moved. A
+	// zero-charge (or absent) source line means nothing was billed for that
+	// utility → nothing to refund → P-only re-anchor, NOT a gate block. Keeping
+	// this in the shared predicate is what prevents a zero-rate over-record from
+	// being flagged as stale while emission (which skips a 0 refund) writes no
+	// reflecting line — a divergence that would deadlock finalize forever.
 	err := database.DB(ctx, r.db).
 		Raw(`SELECT affected.recovery_id, affected.utility FROM (
 			SELECT mr.id AS recovery_id, ? AS utility
@@ -855,6 +864,9 @@ func (r *billingRepository) FindUnreflectedOverRecordsByContractID(ctx context.C
 			  AND sb.bill_type = ?
 			  AND (sb.status = ? OR sb.status = ?)
 			  AND sb.deleted_at IS NULL
+			JOIN bill_line_items sbli ON sbli.bill_id = sb.id
+			  AND sbli.line_type = ?
+			  AND sbli.unit_price > 0
 			WHERE c.id = ?
 			  AND mr.anchor_reason = ?
 			  AND mr.deleted_at IS NULL
@@ -871,6 +883,9 @@ func (r *billingRepository) FindUnreflectedOverRecordsByContractID(ctx context.C
 			  AND sb.bill_type = ?
 			  AND (sb.status = ? OR sb.status = ?)
 			  AND sb.deleted_at IS NULL
+			JOIN bill_line_items sbli ON sbli.bill_id = sb.id
+			  AND sbli.line_type = ?
+			  AND sbli.unit_price > 0
 			WHERE c.id = ?
 			  AND mr.anchor_reason = ?
 			  AND mr.deleted_at IS NULL
@@ -886,9 +901,9 @@ func (r *billingRepository) FindUnreflectedOverRecordsByContractID(ctx context.C
 			  AND b.status <> ?
 			  AND b.deleted_at IS NULL
 		)`,
-			AdjustmentUtilityElectricity, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
+			AdjustmentUtilityElectricity, BillTypeMonthly, BillStatusFinalized, BillStatusPaid, LineItemElectricity,
 			contractID, meterreading.AnchorReasonReadingRecovery,
-			AdjustmentUtilityWater, BillTypeMonthly, BillStatusFinalized, BillStatusPaid,
+			AdjustmentUtilityWater, BillTypeMonthly, BillStatusFinalized, BillStatusPaid, LineItemWater,
 			contractID, meterreading.AnchorReasonReadingRecovery,
 			BillStatusVoid).
 		Scan(&rows).Error

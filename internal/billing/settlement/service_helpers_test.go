@@ -94,7 +94,7 @@ func runSettlement(t *testing.T, opts ...func(*settlementOpts)) *billing.Bill {
 
 	svc := newSvcWithMocks(o.bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return o.contract, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		o.configs,
 		&mockMoveOutSource{notice: notice},
 	)
@@ -165,7 +165,7 @@ func TestSettlement_DetectRentCoverage(t *testing.T) {
 			notice := completedNotice(o.contract.ID, o.moveOut)
 			svc := newSvcWithMocks(o.bills,
 				&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return o.contract, nil }},
-				&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+				&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 				o.configs,
 				&mockMoveOutSource{notice: notice},
 			)
@@ -311,7 +311,7 @@ func TestSettlement_VoidMonthlyBills(t *testing.T) {
 			notice := completedNotice(o.contract.ID, o.moveOut)
 			svc := newSvcWithMocks(o.bills,
 				&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return o.contract, nil }},
-				&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+				&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 				o.configs,
 				&mockMoveOutSource{notice: notice},
 			)
@@ -501,7 +501,7 @@ func TestSettlement_UsesActualMoveOutDate(t *testing.T) {
 
 			svc := newSvcWithMocks(o.bills,
 				&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return o.contract, nil }},
-				&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+				&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 				o.configs,
 				&mockMoveOutSource{notice: notice},
 			)
@@ -667,14 +667,18 @@ func TestSettlement_Errors(t *testing.T) {
 			ErrMoveOutNotFound,
 		},
 		{
-			"latest_reading_is_monthly_not_exit",
+			// Settlement fetches the exit reading by TYPE (FindExitByRoomID). When
+			// the room has no EXIT reading (only monthly/recovery rows), the finder
+			// returns NotFound → ErrExitReadingMissing. Type filtering lives in the
+			// repo now, so the service no longer receives a non-exit row to reject.
+			"no_exit_reading_present",
 			func() *Service {
 				c := testContract()
 				moveOut := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 				return newSvcWithMocks(&mockBillStore{},
 					&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-					&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
-						return testMonthlyReading(c.RoomID, "2026-03"), nil
+					&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
+						return nil, gorm.ErrRecordNotFound
 					}},
 					&mockBillingConfigSource{},
 					&mockMoveOutSource{notice: completedNotice(c.ID, moveOut)})
@@ -694,7 +698,7 @@ func TestSettlement_Errors(t *testing.T) {
 						return nil, gorm.ErrRecordNotFound
 					}},
 					&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-					&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
+					&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) {
 						return testExitReading(c.RoomID, moveOut), nil
 					}},
 					&mockBillingConfigSource{},

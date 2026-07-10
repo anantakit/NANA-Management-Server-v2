@@ -152,6 +152,13 @@ func (a *SettlementAdapter) FindUnreflectedOverRecordsByContractID(ctx context.C
 	return a.repo.FindUnreflectedOverRecordsByContractID(ctx, contractID)
 }
 
+// FindRecoverySourceRefundRates delegates the S0 gate + source-rate lookup to
+// the billing repo so settlement prices recovery refunds at the exact same
+// source-bill unit_price the monthly path uses (HC6, no rate drift).
+func (a *SettlementAdapter) FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*SourceRefundRates, error) {
+	return a.repo.FindRecoverySourceRefundRates(ctx, sourceReadingID, contractID)
+}
+
 func (a *SettlementAdapter) ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType LineItemType) error {
 	return a.repo.ZeroAutoLineUsage(ctx, billID, lineType)
 }

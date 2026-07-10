@@ -463,7 +463,7 @@ func TestSettlement_GenerateVoidGenerateIdempotent(t *testing.T) {
 	}
 	svc := newSvcWithMocks(bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
 	)
@@ -593,7 +593,7 @@ func TestGenerateSettlement_ReturnsErrorOnCreateFailure(t *testing.T) {
 	}
 	svc := newSvcWithMocks(bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
 	)
@@ -620,7 +620,7 @@ func prepareWithMode(t *testing.T, c *contract.Contract, moveOut time.Time, unpa
 	}
 	svc := newSvcWithMocks(bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
 	)
@@ -684,7 +684,7 @@ func TestRentMode_FullMonthRentPaidNoCharge(t *testing.T) {
 	}
 	svc := newSvcWithMocks(bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
 	)
@@ -795,7 +795,7 @@ func TestRegenerateSettlement_PreservesRentMode(t *testing.T) {
 	}
 	svc := newSvcWithMocks(bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{},
 		&mockMoveOutSource{},
 	)
@@ -872,7 +872,7 @@ func TestRegenerateSettlement_IsIdempotent(t *testing.T) {
 	}
 	svc := newSvcWithMocks(bills,
 		&mockContractSource{findByIDFn: func(_ context.Context, _ uuid.UUID) (*contract.Contract, error) { return c, nil }},
-		&mockMeterReadingSource{findLatestFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
+		&mockMeterReadingSource{findExitFn: func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error) { return exitReading, nil }},
 		&mockBillingConfigSource{configs: configs},
 		&mockMoveOutSource{},
 	)

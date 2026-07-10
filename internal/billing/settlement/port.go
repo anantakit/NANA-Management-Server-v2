@@ -164,6 +164,12 @@ type BillStore interface {
 	// settlement resolver must emit, so detector and resolver never drift
 	// (Epic B INV-1). The gate above is `len(this) > 0`.
 	FindUnreflectedOverRecordsByContractID(ctx context.Context, contractID uuid.UUID) ([]billing.UnreflectedOverRecord, error)
+	// FindRecoverySourceRefundRates resolves the S0 gate + per-utility refund
+	// rate for a discovered recovery — the source month's FINALIZED/PAID bill
+	// line unit_price (HC6: system prices at the historical source rate, never
+	// the current contract rate). Shared with the monthly path so the refund
+	// basis never drifts. (nil, nil) when the source month was never billed.
+	FindRecoverySourceRefundRates(ctx context.Context, sourceReadingID, contractID uuid.UUID) (*billing.SourceRefundRates, error)
 	ZeroAutoLineUsage(ctx context.Context, billID uuid.UUID, lineType billing.LineItemType) error
 }
 
@@ -192,12 +198,17 @@ type ContractSource interface {
 }
 
 // MeterReadingSource is settlement's consumer-defined port onto
-// meterreading. FindLatestByRoomID powers settlement planning; FindByIDSimple
+// meterreading. FindExitByRoomID powers settlement planning; FindByIDSimple
 // loads a specific recovery meter row when resolving a pending recovery into
-// the settlement draft (Q1) — to confirm anchor identity + read the source
-// billing month for the tenant-visible description.
+// the settlement draft — to confirm anchor identity + read the source billing
+// month for the tenant-visible description.
+//
+// Settlement fetches the exit reading BY TYPE, not by "latest": once Epic B lets
+// a READING_RECOVERY row coexist with a move-out, that recovery (a MONTHLY row
+// ranked by end-of-its-billing-month) can out-rank the exit reading's actual
+// date, so a "latest" lookup would return the recovery and miss the exit.
 type MeterReadingSource interface {
-	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error)
+	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
 }
 

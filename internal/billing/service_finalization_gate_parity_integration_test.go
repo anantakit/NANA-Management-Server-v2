@@ -82,9 +82,10 @@ func TestFindUnreflectedOverRecords_ParityWithGate(t *testing.T) {
 	assertParity("empty")
 
 	// seedSource creates a source MONTHLY reading for `month`; if billed, also a
-	// FINALIZED monthly bill for that month (the S0 gate only requires the bill to
-	// exist, not its lines).
-	seedSource := func(month string, billed bool) *meterreading.MeterReading {
+	// FINALIZED monthly bill with elec+water lines at the given unit_prices. A
+	// pair is F-applicable only when its utility's source line has unit_price > 0
+	// (real money was charged), so a zero-rate line lets us prove exclusion.
+	seedSource := func(month string, billed bool, elecRate, waterRate int64) *meterreading.MeterReading {
 		src := &meterreading.MeterReading{
 			RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &month,
 			ElectricityPrevious: 100, ElectricityCurrent: 300,
@@ -97,6 +98,13 @@ func TestFindUnreflectedOverRecords_ParityWithGate(t *testing.T) {
 			sb := &Bill{ContractID: c.ID, BillingMonth: month, BillType: BillTypeMonthly, Status: BillStatusFinalized}
 			if err := db.Create(sb).Error; err != nil {
 				t.Fatalf("seed source bill %s: %v", month, err)
+			}
+			lines := []BillLineItem{
+				{BillID: sb.ID, LineType: LineItemElectricity, Source: LineItemSourceAuto, Description: "ค่าไฟฟ้า", Amount: 100 * elecRate, Quantity: 100, UnitPrice: elecRate, SortOrder: 2},
+				{BillID: sb.ID, LineType: LineItemWater, Source: LineItemSourceAuto, Description: "ค่าน้ำ", Amount: 40 * waterRate, Quantity: 40, UnitPrice: waterRate, SortOrder: 3},
+			}
+			if err := db.Create(&lines).Error; err != nil {
+				t.Fatalf("seed source bill lines %s: %v", month, err)
 			}
 		}
 		return src
@@ -152,8 +160,9 @@ func TestFindUnreflectedOverRecords_ParityWithGate(t *testing.T) {
 
 	over := func(v int) *int { return &v }
 
-	billedSrc := seedSource("2025-10", true)
-	unbilledSrc := seedSource("2025-11", false)
+	billedSrc := seedSource("2025-10", true, 800, 1800)
+	unbilledSrc := seedSource("2025-11", false, 0, 0)
+	zeroRateSrc := seedSource("2025-09", true, 0, 1800) // elec CHARGED at rate 0 (free that month)
 
 	recEdge := seedRecovery("2026-01", billedSrc, over(300), nil, false)       // elec over-record, billed source → in set
 	seedRecovery("2026-02", nil, over(300), nil, false)                        // source-less → excluded
@@ -162,6 +171,7 @@ func TestFindUnreflectedOverRecords_ParityWithGate(t *testing.T) {
 	recMulti := seedRecovery("2026-05", billedSrc, over(300), over(90), false) // elec+water → two pairs
 	recReflected := seedRecovery("2026-06", billedSrc, over(300), nil, false)  // reflected on non-VOID → excluded
 	recVoidOnly := seedRecovery("2026-07", billedSrc, over(300), nil, false)   // reflected only on VOID → in set
+	seedRecovery("2026-08", zeroRateSrc, over(300), nil, false)                // zero-rate source elec → NOT F-applicable → excluded (finding #1)
 
 	draftBill := seedBill("2026-06", BillStatusDraft)
 	voidBill := seedBill("2026-07", BillStatusVoid)
