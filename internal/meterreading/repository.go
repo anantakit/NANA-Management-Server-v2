@@ -36,7 +36,7 @@ type MeterReadingRepository interface {
 	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
 	FindLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
-	HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
+	HasConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
 	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
 	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
@@ -302,13 +302,23 @@ func (r *meterReadingRepository) FindRecentByRoomIDs(ctx context.Context, roomID
 	return result, nil
 }
 
-// HasMonthlyByRoomAndMonth checks if a MONTHLY reading already exists for this room and month.
-// Used to prevent creating EXIT readings when a MONTHLY for the same period already exists.
-func (r *meterReadingRepository) HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error) {
+// HasConsumptionMonthlyByRoomAndMonth checks if a CONSUMPTION MONTHLY reading
+// already exists for this room and month. Used to prevent creating an EXIT
+// reading when a monthly consumption reading for the same cycle already exists
+// (both are consumption readings — having both double-counts the cycle).
+//
+// It excludes READING_RECOVERY anchor rows (`anchor_reason IS NULL`): a recovery
+// is a re-anchor EVENT, not a consumption reading (prev=curr, usage 0), so it
+// does not conflict with the exit. This matches the DB uniqueness doctrine locked
+// in migration 00041 (the consumption-uniqueness index also excludes anchors);
+// the guard and the index now own the same predicate. A recovery may therefore
+// coexist with the exit in the same cycle, while a genuine consumption monthly
+// still blocks it.
+func (r *meterReadingRepository) HasConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error) {
 	var count int64
 	err := database.DB(ctx, r.db).
 		Model(&MeterReading{}).
-		Where("room_id = ? AND reading_type = 'MONTHLY' AND billing_month = ? AND deleted_at IS NULL", roomID, month).
+		Where("room_id = ? AND reading_type = 'MONTHLY' AND billing_month = ? AND anchor_reason IS NULL AND deleted_at IS NULL", roomID, month).
 		Count(&count).Error
 	return count > 0, err
 }

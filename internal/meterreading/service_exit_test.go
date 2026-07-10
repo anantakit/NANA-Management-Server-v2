@@ -61,7 +61,7 @@ func (m *mockMeterRepo) FindLatestByRoomIDBeforeDate(_ context.Context, _ uuid.U
 func (m *mockMeterRepo) FindRecentByRoomIDs(_ context.Context, _ []uuid.UUID, _ int) (map[uuid.UUID][]MeterReading, error) {
 	return map[uuid.UUID][]MeterReading{}, nil
 }
-func (m *mockMeterRepo) HasMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error) {
+func (m *mockMeterRepo) HasConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error) {
 	if m.hasMonthlyByRoomAndMonthFn != nil {
 		return m.hasMonthlyByRoomAndMonthFn(ctx, roomID, month)
 	}

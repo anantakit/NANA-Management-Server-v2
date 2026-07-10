@@ -136,9 +136,11 @@ func (m *mockRoomCommander) MarkVacant(ctx context.Context, id uuid.UUID) error 
 type mockMeterCommander struct {
 	deletedRoomID    uuid.UUID
 	calls            int
-	createExitCalls  int
-	createExitRoomID uuid.UUID
-	createExitFn     func(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int) error
+	createExitCalls        int
+	createExitRoomID       uuid.UUID
+	createExitElecReplaced bool
+	createExitElecRollover bool
+	createExitFn           func(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int) error
 
 	updateExitCalls  int
 	updateExitRoomID uuid.UUID
@@ -147,9 +149,12 @@ type mockMeterCommander struct {
 
 var _ MeterReadingCommander = (*mockMeterCommander)(nil)
 
-func (m *mockMeterCommander) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int) error {
+func (m *mockMeterCommander) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int,
+	elecReplaced, waterReplaced, elecRollover, waterRollover bool) error {
 	m.createExitCalls++
 	m.createExitRoomID = roomID
+	m.createExitElecReplaced = elecReplaced
+	m.createExitElecRollover = elecRollover
 	if m.createExitFn != nil {
 		return m.createExitFn(ctx, roomID, date, elec, water)
 	}

@@ -32,8 +32,11 @@ type RoomCommander interface {
 // Implemented by meterreading.MeterReadingService; injected via main.go.
 type MeterReadingCommander interface {
 	// CreateExitForMoveOut creates an EXIT meter reading for the given room.
+	// Meter-hardware flags (rollover/replaced) are plain bool — create always
+	// supplies them (unlike UpdateExitForMoveOut's *bool "keep existing").
 	// Must be called within the caller's transaction context.
-	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error
+	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int,
+		elecReplaced, waterReplaced, elecRollover, waterRollover bool) error
 
 	// UpdateExitForMoveOut updates an existing EXIT reading in-place.
 	// Flags use *bool: nil = keep existing value.

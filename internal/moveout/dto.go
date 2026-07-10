@@ -38,6 +38,15 @@ type RecordExitMeterRequest struct {
 	ActualMoveOutDate  string `json:"actual_move_out_date" validate:"required,datetime=2006-01-02"`
 	ElectricityCurrent int    `json:"electricity_current" validate:"min=0"`
 	WaterCurrent       int    `json:"water_current" validate:"min=0"`
+	// Meter-hardware flags — parity with monthly entry (F1). A physical meter can
+	// roll over or be replaced at move-out just as in a monthly cycle; without
+	// these the exit-create path can't express a legitimate current<previous.
+	// Rollover + replaced are mutually exclusive per utility (enforced downstream
+	// by NewExitReading).
+	IsElectricityMeterReplaced bool `json:"is_electricity_meter_replaced"`
+	IsWaterMeterReplaced       bool `json:"is_water_meter_replaced"`
+	IsElectricityMeterRollover bool `json:"is_electricity_meter_rollover"`
+	IsWaterMeterRollover       bool `json:"is_water_meter_rollover"`
 }
 
 // UpdateExitMeterRequest holds the body for POST /:id/update-exit-meter.

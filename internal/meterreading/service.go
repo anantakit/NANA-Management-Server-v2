@@ -59,8 +59,10 @@ type MeterReadingService interface {
 	// --- Move-out workflow ports ---
 
 	// CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.
+	// Meter-hardware flags (rollover/replaced) are plain bool — create always supplies them.
 	// Must be called within the caller's transaction context.
-	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error
+	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int,
+		elecReplaced, waterReplaced, elecRollover, waterRollover bool) error
 
 	// UpdateExitForMoveOut updates an existing EXIT reading in-place.
 	// Must be called within the caller's transaction context.
@@ -191,9 +193,11 @@ func (s *meterReadingService) CreateExitReading(ctx context.Context, apartmentID
 		return nil, respond.ErrConflict.WithMessage("ห้องนี้มีข้อมูลมิเตอร์ย้ายออกแล้ว")
 	}
 
-	// Reject if MONTHLY reading exists for the same month as the EXIT date
+	// Reject if a CONSUMPTION monthly reading exists for the same cycle as the
+	// EXIT date (a recovery anchor row does NOT count — it is a re-anchor event,
+	// not a consumption reading; see HasConsumptionMonthlyByRoomAndMonth + 00041).
 	exitMonth := toMonth(readingDate)
-	hasMonthly, err := s.repo.HasMonthlyByRoomAndMonth(ctx, roomID, exitMonth)
+	hasMonthly, err := s.repo.HasConsumptionMonthlyByRoomAndMonth(ctx, roomID, exitMonth)
 	if err != nil {
 		return nil, fmt.Errorf("check monthly reading: %w", err)
 	}
@@ -451,16 +455,18 @@ func (s *meterReadingService) DeleteExitByRoomID(ctx context.Context, roomID uui
 // CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.
 // Skips apartment-room ownership validation (caller already verified).
 // Rejects duplicate EXIT and same-month MONTHLY, same as the public endpoint.
-func (s *meterReadingService) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int) error {
+func (s *meterReadingService) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int,
+	elecReplaced, waterReplaced, elecRollover, waterRollover bool) error {
 	// Reject if EXIT reading already exists
 	latest := s.findLatestOrNil(ctx, roomID)
 	if latest != nil && latest.IsExit() {
 		return respond.ErrConflict.WithMessage("ห้องนี้มีข้อมูลมิเตอร์ย้ายออกแล้ว")
 	}
 
-	// Reject if MONTHLY exists for the same month
+	// Reject if a CONSUMPTION monthly exists for the same cycle (recovery anchor
+	// rows don't count — see HasConsumptionMonthlyByRoomAndMonth + migration 00041).
 	exitMonth := toMonth(readingDate)
-	hasMonthly, err := s.repo.HasMonthlyByRoomAndMonth(ctx, roomID, exitMonth)
+	hasMonthly, err := s.repo.HasConsumptionMonthlyByRoomAndMonth(ctx, roomID, exitMonth)
 	if err != nil {
 		return fmt.Errorf("check monthly reading: %w", err)
 	}
@@ -468,7 +474,9 @@ func (s *meterReadingService) CreateExitForMoveOut(ctx context.Context, roomID u
 		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์รายเดือนของห้องนี้ในเดือนเดียวกันแล้ว")
 	}
 
-	reading, err := NewExitReading(roomID, readingDate, elecCurrent, waterCurrent, latest, MeterReplacedFlags{}, MeterRolloverFlags{})
+	reading, err := NewExitReading(roomID, readingDate, elecCurrent, waterCurrent, latest,
+		MeterReplacedFlags{Electricity: elecReplaced, Water: waterReplaced},
+		MeterRolloverFlags{Electricity: elecRollover, Water: waterRollover})
 	if err != nil {
 		return respond.ErrBadRequest.WithMessage(err.Error())
 	}

@@ -14,37 +14,22 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestExitTriggeredOverRead_Reachability is a forensic reachability audit (Epic B
-// loose thread): the settlement MATH for an over-read is proven correct
-// elsewhere, but can an operator actually reach that end-state through the real
-// meter/move-out entry methods when the over-read is discovered AT move-out (same
-// month)? This drives the real service methods — no seeding of the terminal state
-// the settlement math tests used.
-//
-// Verdict (see the three subtests): the same-month exit-triggered over-read is
-// UNREACHABLE — both operator orderings hit a proven invariant collision. The
-// only reachable path is a recovery caught in an EARLIER cycle, then a move-out
-// in a LATER month (which is exactly what the Epic B resolver handles).
-
-func exitCount(t *testing.T, db *gorm.DB, roomID string) int64 {
-	t.Helper()
-	var n int64
-	if err := db.Model(&meterreading.MeterReading{}).
-		Where("room_id = ? AND reading_type = ? AND deleted_at IS NULL", roomID, meterreading.ReadingTypeExit).
-		Count(&n).Error; err != nil {
-		t.Fatalf("count exit: %v", err)
-	}
-	return n
-}
-
+// TestExitTriggeredOverRead_Reachability tracks the exit-triggered over-read
+// reachability across the F2 fix. The original audit proved the same-month
+// Recovery+Exit collision; F2 narrowed the exit-uniqueness guard to CONSUMPTION
+// rows (HasConsumptionMonthlyByRoomAndMonth, aligned with migration 00041), so a
+// recovery anchor no longer blocks a same-month exit. This test now pins the
+// POST-F2 behavior:
+//   - exit-first (no flags) is still rejected — forward breakage; you must
+//     re-anchor first (unchanged by F2; a legitimate rollover/replacement flag is
+//     F1's concern and does not model an over-read anyway);
+//   - recovery-first → exit in the SAME month now COEXISTS (F2);
+//   - the cross-cycle path (recovery earlier, move-out later) remains reachable.
 func TestExitTriggeredOverRead_Reachability(t *testing.T) {
-	// PATH A — operator enters the low physical reading directly as the EXIT.
-	// current < previous is NOT inherently invalid (rollover/replacement make it
-	// legitimate, and NewExitReading supports both) — but the move-out exit-CREATE
-	// path passes no flags (RecordExitMeterRequest has none; CreateExitForMoveOut
-	// hardcodes empty), so validate()'s default current>=previous applies and
-	// rejects it. (No flag models an over-read anyway — that needs a recovery,
-	// PATH B. This path is a capability gap, not a domain rule.) Blocked.
+	// PATH A — operator enters the low physical reading directly as the EXIT with
+	// no meter-hardware flag. current < previous → the default validation rejects
+	// it. The operator must re-anchor (recovery) first. (F1 adds rollover/replaced
+	// capability, but neither models a mis-record — that is a recovery.)
 	t.Run("SameMonth_ExitFirst_ForwardBreakageRejected", func(t *testing.T) {
 		db := testdb.Open(t)
 		testdb.TruncateAll(t, db)
@@ -54,12 +39,10 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		rm := fixtures.SeedRoom(t, db, apt.ID.String(), "REACH-A")
 		tn := fixtures.SeedTenant(t, db)
 		_ = seedActiveContract(t, db, tn.ID, rm.ID, 6)
-		// Latest reading = the mis-read high value (elec 300 / water 80).
 		seedSourceMonthly(t, db, rm.ID, time.Now().AddDate(0, -1, 0).Format("2006-01"))
 
 		svc := buildMeterSvc(t, db)
-		// Operator reads the true (lower) physical at move-out: 250 < 300.
-		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70)
+		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70, false, false, false, false)
 		if err == nil {
 			t.Fatal("expected forward-breakage rejection recording exit 250 under previous 300, got nil")
 		}
@@ -68,12 +51,12 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		}
 	})
 
-	// PATH B — operator first fixes the reading via a Reading Recovery (re-anchor
-	// to physical), then records the exit. The recovery is a MONTHLY row with
-	// billing_month = now (Lock E), and CreateExitForMoveOut rejects when a
-	// MONTHLY row already exists for the exit's month (HasMonthlyByRoomAndMonth
-	// counts anchor rows). Same month → collision. Blocked.
-	t.Run("SameMonth_RecoveryFirst_HasMonthlyCollision", func(t *testing.T) {
+	// PATH B (POST-F2) — operator re-anchors via a Reading Recovery (MONTHLY
+	// anchor, billing_month = now), then records the exit in the same month. The
+	// exit-uniqueness guard now counts CONSUMPTION rows only, so the recovery
+	// anchor no longer collides — the exit COEXISTS with it, chaining off the
+	// corrected baseline.
+	t.Run("SameMonth_RecoveryFirst_NowCoexists", func(t *testing.T) {
 		db := testdb.Open(t)
 		testdb.TruncateAll(t, db)
 		ctx := context.Background()
@@ -85,25 +68,20 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		source := seedSourceMonthly(t, db, rm.ID, time.Now().AddDate(0, -1, 0).Format("2006-01"))
 
 		svc := buildMeterSvc(t, db)
-		// Re-anchor to physical (250) — recovery lands as MONTHLY, billing_month = now.
 		if _, err := svc.CreateBaselineCorrection(ctx, recoveryInput(source.ID)); err != nil {
 			t.Fatalf("CreateBaselineCorrection (re-anchor): %v", err)
 		}
-		// Now record the exit in the same month → HasMonthly collision.
-		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70)
-		if err == nil {
-			t.Fatal("expected same-month HasMonthly collision after recovery, got nil")
+		// Exit re-anchors to physical (250 == recovery current) → usage 0, valid.
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70, false, false, false, false); err != nil {
+			t.Fatalf("same-month exit after recovery should now coexist (F2), got: %v", err)
 		}
-		if exitCount(t, db, rm.ID.String()) != 0 {
-			t.Fatal("no EXIT reading should have been created")
+		if exitCount(t, db, rm.ID.String()) != 1 {
+			t.Fatal("EXIT reading should have been created alongside the recovery anchor")
 		}
 	})
 
-	// REACHABLE CONTRAST — the over-read was caught in an EARLIER cycle (recovery
-	// row for a prior month), and the move-out happens in a LATER month. The exit
-	// month is after the recovery's month, so HasMonthly does not collide and the
-	// exit chains off the corrected baseline. This is the path Epic B's resolver
-	// refunds at settlement.
+	// CROSS-CYCLE — recovery caught in an earlier cycle, move-out in a later month.
+	// Always reachable; unchanged by F2.
 	t.Run("PriorCycleRecovery_ExitLater_Reachable", func(t *testing.T) {
 		db := testdb.Open(t)
 		testdb.TruncateAll(t, db)
@@ -114,9 +92,6 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		tn := fixtures.SeedTenant(t, db)
 		_ = seedActiveContract(t, db, tn.ID, rm.ID, 6)
 
-		// A recovery caught in the PRIOR cycle: re-anchored to physical 250,
-		// records the mis-read 300. (Seeded directly to model a past cycle — Lock E
-		// forces a live recovery's billing_month to now.)
 		priorMonth := time.Now().AddDate(0, -1, 0).Format("2006-01")
 		reason := meterreading.AnchorReasonReadingRecovery
 		note := "recovery caught last cycle"
@@ -131,12 +106,22 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		}
 
 		svc := buildMeterSvc(t, db)
-		// Move-out this month: exit 260 chains off the re-anchor (250) → valid.
-		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 260, 80); err != nil {
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 260, 80, false, false, false, false); err != nil {
 			t.Fatalf("exit in a later month should be reachable, got: %v", err)
 		}
 		if exitCount(t, db, rm.ID.String()) != 1 {
 			t.Fatal("EXIT reading should have been created")
 		}
 	})
+}
+
+func exitCount(t *testing.T, db *gorm.DB, roomID string) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Model(&meterreading.MeterReading{}).
+		Where("room_id = ? AND reading_type = ? AND deleted_at IS NULL", roomID, meterreading.ReadingTypeExit).
+		Count(&n).Error; err != nil {
+		t.Fatalf("count exit: %v", err)
+	}
+	return n
 }
