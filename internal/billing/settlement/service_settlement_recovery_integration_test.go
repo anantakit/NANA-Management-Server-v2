@@ -323,6 +323,251 @@ func TestSettlementRecovery_IdempotentRegenerate(t *testing.T) {
 	}
 }
 
+// TestSettlementRecovery_OverReadNoDoubleCount proves the MONEY for the
+// exit-triggered over-read the owner raised, and that the exit-usage line and the
+// recovery refund do NOT double-count.
+//
+// Numbers (satang; rate ฿8 = 800):
+//   - meter physically: 12,000 → 12,500 = 500 real units over the whole period.
+//   - the source month MIS-READ it as 12,000 → 13,500 and BILLED (+PAID) 1,500
+//     units = ฿12,000.
+//   - the recovery re-anchors physical truth to 12,500 (prev=curr, usage 0) and
+//     records the over-read (recorded 13,500).
+//   - the exit reading chains off the corrected baseline: prev=12,500, curr=12,500
+//     → usage 0 (the domain rejects current<previous, so the exit can NEVER carry
+//     the mis-read 13,500 as its previous — no phantom usage is possible).
+//
+// Correct settlement: elec USAGE line = 0 (nothing new consumed after the
+// re-anchor) + a source-priced refund of (13,500-12,500)×8 = ฿8,000. The tenant
+// paid ฿12,000, gets ฿8,000 back → net ฿4,000 = the 500 real units. The exit line
+// and the refund cover disjoint facts (new consumption vs the source over-charge),
+// so there is no double count.
+func TestSettlementRecovery_OverReadNoDoubleCount(t *testing.T) {
+	db := testdb.Open(t)
+	testdb.TruncateAll(t, db)
+	ctx := context.Background()
+
+	apt := fixtures.SeedApartment(t, db)
+	rm := fixtures.SeedRoom(t, db, apt.ID.String(), "OR-101")
+	tn := fixtures.SeedTenant(t, db)
+	c := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 8)
+	fixtures.SeedProrateConfig(t, db, apt.ID.String(), 10000)
+
+	const rate = int64(800)
+	now := time.Now().UTC()
+	cycleStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	sourceMonth := cycleStart.AddDate(0, -2, 0).Format("2006-01")
+	recoveryMonth := cycleStart.Format("2006-01")
+	moveOutDate := now.AddDate(0, 0, -3)
+
+	// Source reading: mis-read 12,000 → 13,500.
+	src := &meterreading.MeterReading{
+		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &sourceMonth,
+		ElectricityPrevious: 12000, ElectricityCurrent: 13500,
+		WaterPrevious: 100, WaterCurrent: 100,
+	}
+	if err := db.Create(src).Error; err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	// PAID source bill charged the mis-read 1,500 units at rate (so it is NOT
+	// absorbed by the settlement, and carries the S0 + refund rate basis).
+	finalizedAt := now
+	sb := &billing.Bill{
+		ContractID: c.ID, BillingMonth: sourceMonth, BillType: billing.BillTypeMonthly,
+		Status: billing.BillStatusPaid, TotalAmount: c.MonthlyRent + 1500*rate, FinalizedAt: &finalizedAt,
+	}
+	if err := db.Create(sb).Error; err != nil {
+		t.Fatalf("seed source bill: %v", err)
+	}
+	if err := db.Create(&billing.BillLineItem{
+		BillID: sb.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto,
+		Description: "ค่าไฟฟ้า", Amount: 1500 * rate, Quantity: 1500, UnitPrice: rate, SortOrder: 2,
+	}).Error; err != nil {
+		t.Fatalf("seed source line: %v", err)
+	}
+
+	// Recovery re-anchors to physical 12,500 (prev=curr, usage 0), records 13,500.
+	reason := meterreading.AnchorReasonReadingRecovery
+	note := "จดค่าไฟเดือนก่อนเกินจริง"
+	recorded := 13500
+	rec := &meterreading.MeterReading{
+		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &recoveryMonth,
+		RecoverySourceReadingID: &src.ID,
+		ElectricityPrevious:     12500, ElectricityCurrent: 12500,
+		WaterPrevious: 100, WaterCurrent: 100,
+		ElectricityRecorded: &recorded,
+		AnchorReason:        &reason, AnchorNote: &note,
+	}
+	if err := db.Create(rec).Error; err != nil {
+		t.Fatalf("seed recovery: %v", err)
+	}
+
+	// Exit reading chains off the corrected baseline: 12,500 → 12,500 → usage 0.
+	exit := &meterreading.MeterReading{
+		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeExit, ReadingDateActual: &moveOutDate,
+		ElectricityPrevious: 12500, ElectricityCurrent: 12500,
+		WaterPrevious: 100, WaterCurrent: 100,
+	}
+	if err := db.Create(exit).Error; err != nil {
+		t.Fatalf("seed exit: %v", err)
+	}
+	notice := fixtures.SeedMoveOutNotice(t, db, c.ID.String(), moveOutDate)
+
+	billSvc := buildRealSettlementServiceWithAudit(t, db, nil)
+	moveOutSvc := buildRealMoveOutService(t, db, billSvc)
+	if _, err := moveOutSvc.GenerateSettlement(ctx, notice.ID, moveout.RentModeFullMonthKeepDeposit); err != nil {
+		t.Fatalf("GenerateSettlement: %v", err)
+	}
+
+	var reloaded moveout.MoveOutNotice
+	if err := db.Where("id = ?", notice.ID).First(&reloaded).Error; err != nil || reloaded.SettlementBillID == nil {
+		t.Fatalf("no settlement bill: %v", err)
+	}
+	var bill billing.Bill
+	if err := db.Preload("LineItems").Where("id = ?", *reloaded.SettlementBillID).First(&bill).Error; err != nil {
+		t.Fatalf("load settlement: %v", err)
+	}
+
+	var usageLines, refundLines []billing.BillLineItem
+	for _, li := range bill.LineItems {
+		switch {
+		case li.LineType == billing.LineItemElectricity:
+			usageLines = append(usageLines, li)
+		case li.LineType == billing.LineItemAdjustment && li.AdjustmentRecoveryReadingID != nil:
+			refundLines = append(refundLines, li)
+		}
+	}
+
+	// Exit-usage line: exactly one, and ZERO (no phantom usage, no double count).
+	if len(usageLines) != 1 {
+		t.Fatalf("want 1 electricity usage line, got %d", len(usageLines))
+	}
+	if usageLines[0].Quantity != 0 || usageLines[0].Amount != 0 {
+		t.Errorf("exit elec usage = %d units / %d satang, want 0/0 (usage is anchored to the re-anchor, not the mis-read)", usageLines[0].Quantity, usageLines[0].Amount)
+	}
+	// Refund: exactly one, (13,500-12,500)*800 = 800,000 satang = ฿8,000, at source rate.
+	if len(refundLines) != 1 {
+		t.Fatalf("want 1 recovery refund line, got %d", len(refundLines))
+	}
+	if got := refundLines[0].Amount; got != -800000 {
+		t.Errorf("refund = %d satang, want -800000 (฿-8,000 = 1000 over-units × source ฿8)", got)
+	}
+	if refundLines[0].UnitPrice != rate || refundLines[0].Quantity != 1000 {
+		t.Errorf("refund = %d units × %d, want 1000 × 800 (source rate)", refundLines[0].Quantity, refundLines[0].UnitPrice)
+	}
+	// Net electricity impact at settlement = usage(0) + refund(-8,000) = -฿8,000.
+	// Combined with the ฿12,000 already paid on the source bill, the tenant's true
+	// utility cost is ฿4,000 — the 500 real units. No unit is counted twice.
+	if net := usageLines[0].Amount + refundLines[0].Amount; net != -800000 {
+		t.Errorf("net elec at settlement = %d satang, want -800000 (no double count)", net)
+	}
+}
+
+// TestSettlementRecovery_OverReadWithNewUsage is the stronger no-double-count
+// proof: the tenant keeps consuming AFTER the re-anchor (physical 12,500 →
+// 13,000 = 500 genuinely new units). The exit line owns those 500 NEW units; the
+// refund owns the 1,000 PAST phantom units from the source over-charge. The two
+// ranges are disjoint physical facts, so both appear in full with no overlap —
+// confirming the exit row (not the recovery) owns the post-re-anchor meter calc,
+// exactly as Monthly would bill the next cycle's real usage on top of the refund.
+func TestSettlementRecovery_OverReadWithNewUsage(t *testing.T) {
+	db := testdb.Open(t)
+	testdb.TruncateAll(t, db)
+	ctx := context.Background()
+
+	apt := fixtures.SeedApartment(t, db)
+	rm := fixtures.SeedRoom(t, db, apt.ID.String(), "OR-201")
+	tn := fixtures.SeedTenant(t, db)
+	c := fixtures.SeedContract(t, db, tn.ID.String(), rm.ID.String(), 8)
+	fixtures.SeedProrateConfig(t, db, apt.ID.String(), 10000)
+
+	const rate = int64(800)
+	now := time.Now().UTC()
+	cycleStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	sourceMonth := cycleStart.AddDate(0, -2, 0).Format("2006-01")
+	recoveryMonth := cycleStart.Format("2006-01")
+	moveOutDate := now.AddDate(0, 0, -3)
+
+	src := &meterreading.MeterReading{
+		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &sourceMonth,
+		ElectricityPrevious: 12000, ElectricityCurrent: 13500, WaterPrevious: 100, WaterCurrent: 100,
+	}
+	if err := db.Create(src).Error; err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	finalizedAt := now
+	sb := &billing.Bill{
+		ContractID: c.ID, BillingMonth: sourceMonth, BillType: billing.BillTypeMonthly,
+		Status: billing.BillStatusPaid, TotalAmount: c.MonthlyRent + 1500*rate, FinalizedAt: &finalizedAt,
+	}
+	if err := db.Create(sb).Error; err != nil {
+		t.Fatalf("seed source bill: %v", err)
+	}
+	if err := db.Create(&billing.BillLineItem{
+		BillID: sb.ID, LineType: billing.LineItemElectricity, Source: billing.LineItemSourceAuto,
+		Description: "ค่าไฟฟ้า", Amount: 1500 * rate, Quantity: 1500, UnitPrice: rate, SortOrder: 2,
+	}).Error; err != nil {
+		t.Fatalf("seed source line: %v", err)
+	}
+	reason := meterreading.AnchorReasonReadingRecovery
+	note := "จดค่าไฟเดือนก่อนเกินจริง"
+	recorded := 13500
+	rec := &meterreading.MeterReading{
+		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &recoveryMonth,
+		RecoverySourceReadingID: &src.ID,
+		ElectricityPrevious:     12500, ElectricityCurrent: 12500, WaterPrevious: 100, WaterCurrent: 100,
+		ElectricityRecorded: &recorded, AnchorReason: &reason, AnchorNote: &note,
+	}
+	if err := db.Create(rec).Error; err != nil {
+		t.Fatalf("seed recovery: %v", err)
+	}
+	// Exit chains off the re-anchor and adds 500 NEW real units: 12,500 → 13,000.
+	exit := &meterreading.MeterReading{
+		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeExit, ReadingDateActual: &moveOutDate,
+		ElectricityPrevious: 12500, ElectricityCurrent: 13000, WaterPrevious: 100, WaterCurrent: 100,
+	}
+	if err := db.Create(exit).Error; err != nil {
+		t.Fatalf("seed exit: %v", err)
+	}
+	notice := fixtures.SeedMoveOutNotice(t, db, c.ID.String(), moveOutDate)
+
+	billSvc := buildRealSettlementServiceWithAudit(t, db, nil)
+	moveOutSvc := buildRealMoveOutService(t, db, billSvc)
+	if _, err := moveOutSvc.GenerateSettlement(ctx, notice.ID, moveout.RentModeFullMonthKeepDeposit); err != nil {
+		t.Fatalf("GenerateSettlement: %v", err)
+	}
+	var reloaded moveout.MoveOutNotice
+	if err := db.Where("id = ?", notice.ID).First(&reloaded).Error; err != nil || reloaded.SettlementBillID == nil {
+		t.Fatalf("no settlement bill: %v", err)
+	}
+	var bill billing.Bill
+	if err := db.Preload("LineItems").Where("id = ?", *reloaded.SettlementBillID).First(&bill).Error; err != nil {
+		t.Fatalf("load settlement: %v", err)
+	}
+
+	var usage, refund *billing.BillLineItem
+	for i := range bill.LineItems {
+		li := &bill.LineItems[i]
+		if li.LineType == billing.LineItemElectricity {
+			usage = li
+		}
+		if li.LineType == billing.LineItemAdjustment && li.AdjustmentRecoveryReadingID != nil {
+			refund = li
+		}
+	}
+	if usage == nil || refund == nil {
+		t.Fatalf("want both a usage line and a refund line; usage=%v refund=%v", usage, refund)
+	}
+	// Exit line owns the 500 NEW units (priced at the contract rate).
+	if usage.Quantity != 500 {
+		t.Errorf("exit elec usage = %d units, want 500 (new consumption after re-anchor)", usage.Quantity)
+	}
+	// Refund owns the 1,000 PAST phantom units at the source rate — disjoint.
+	if refund.Quantity != 1000 || refund.Amount != -800000 {
+		t.Errorf("refund = %d units / %d satang, want 1000 / -800000 (source over-charge)", refund.Quantity, refund.Amount)
+	}
+}
+
 // TestSettlementRecovery_ZeroRateSource_NoBlockNoEmission locks review finding
 // #1: a recovery whose SOURCE month charged rate 0 for the utility earned no
 // money, so it is NOT F-applicable — the gate must NOT block finalize and no
