@@ -279,6 +279,13 @@ func main() {
 			}
 			return c.JSON(fiber.Map{"status": "success", "data": fx})
 		})
+		dev.Post("/smoke/moveout-overread-setup", func(c fiber.Ctx) error {
+			fx, err := seed.SetupMoveOutOverReadSmoke(db)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "data": fx})
+		})
 		dev.Get("/smoke/fixtures", func(c fiber.Ctx) error {
 			fixtures, err := seed.ListSmokeFixtures(db)
 			if err != nil {

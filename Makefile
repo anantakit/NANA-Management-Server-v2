@@ -64,6 +64,11 @@ smoke-settlement-preview:
 smoke-settlement-recovery:
 	cd devtools/smoke && node smoke-settlement-recovery-http.js
 
+# Operator end-to-end (F1+F2) — HTTP smoke: recovery → exit (same month) →
+# settlement, all via real endpoints, no seeded terminal state.
+smoke-operator-overread:
+	cd devtools/smoke && node smoke-operator-moveout-overread-http.js
+
 smoke-settlement-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js
 
