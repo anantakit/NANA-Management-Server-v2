@@ -11,10 +11,10 @@ import (
 
 	"nana/internal/apartment"
 	"nana/internal/auth"
+	"nana/internal/billdelivery"
 	"nana/internal/billing"
 	"nana/internal/billing/monthly"
 	"nana/internal/billing/settlement"
-	"nana/internal/billdelivery"
 	"nana/internal/billingconfig"
 	"nana/internal/billingreconciliation"
 	"nana/internal/contract"
@@ -23,12 +23,12 @@ import (
 	"nana/internal/payment"
 	"nana/internal/room"
 	"nana/internal/seed"
-	"nana/internal/tenant"
 	"nana/internal/shared/config"
 	"nana/internal/shared/database"
 	"nana/internal/shared/logger"
 	"nana/internal/shared/middleware"
 	"nana/internal/shared/role"
+	"nana/internal/tenant"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/recover"
@@ -271,6 +271,13 @@ func main() {
 				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
 			}
 			return c.JSON(fiber.Map{"status": "success", "message": "stale recovery draft ready"})
+		})
+		dev.Post("/smoke/settlement-recovery-setup", func(c fiber.Ctx) error {
+			fx, err := seed.SetupSettlementRecoverySmoke(db)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "data": fx})
 		})
 		dev.Get("/smoke/fixtures", func(c fiber.Ctx) error {
 			fixtures, err := seed.ListSmokeFixtures(db)

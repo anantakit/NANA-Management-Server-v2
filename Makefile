@@ -59,6 +59,11 @@ smoke-settlement:
 smoke-settlement-preview:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js
 
+# Epic B settlement recovery — HTTP smoke (no browser; drives move-out settlement
+# endpoints directly to prove the D1 fix through the real handler chain).
+smoke-settlement-recovery:
+	cd devtools/smoke && node smoke-settlement-recovery-http.js
+
 smoke-settlement-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js
 
