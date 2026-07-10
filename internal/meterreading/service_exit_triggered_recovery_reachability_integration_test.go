@@ -39,8 +39,12 @@ func exitCount(t *testing.T, db *gorm.DB, roomID string) int64 {
 
 func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 	// PATH A — operator enters the low physical reading directly as the EXIT.
-	// The last recorded reading is the mis-read high value, so current < previous
-	// → the domain rejects it (forward breakage). Blocked.
+	// current < previous is NOT inherently invalid (rollover/replacement make it
+	// legitimate, and NewExitReading supports both) — but the move-out exit-CREATE
+	// path passes no flags (RecordExitMeterRequest has none; CreateExitForMoveOut
+	// hardcodes empty), so validate()'s default current>=previous applies and
+	// rejects it. (No flag models an over-read anyway — that needs a recovery,
+	// PATH B. This path is a capability gap, not a domain rule.) Blocked.
 	t.Run("SameMonth_ExitFirst_ForwardBreakageRejected", func(t *testing.T) {
 		db := testdb.Open(t)
 		testdb.TruncateAll(t, db)
