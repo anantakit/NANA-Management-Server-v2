@@ -286,6 +286,13 @@ func main() {
 			}
 			return c.JSON(fiber.Map{"status": "success", "data": fx})
 		})
+		dev.Post("/smoke/exit-meter-flags-setup", func(c fiber.Ctx) error {
+			fx, err := seed.SetupExitMeterFlagsSmoke(db)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
+			}
+			return c.JSON(fiber.Map{"status": "success", "data": fx})
+		})
 		dev.Get("/smoke/fixtures", func(c fiber.Ctx) error {
 			fixtures, err := seed.ListSmokeFixtures(db)
 			if err != nil {

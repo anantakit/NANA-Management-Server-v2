@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-operator-overread smoke-exit-meter-flags smoke-all smoke-install
 
 # Development
 dev:
@@ -68,6 +68,12 @@ smoke-settlement-recovery:
 # settlement, all via real endpoints, no seeded terminal state.
 smoke-operator-overread:
 	cd devtools/smoke && node smoke-operator-moveout-overread-http.js
+
+# F1 exit-meter rollover/replacement — full operator-to-bill HTTP smoke: record
+# EXIT with the hardware flag → generate settlement → assert the real bill's meter
+# line (usage/unit_price/amount/meter_previous) + total + finalize.
+smoke-exit-meter-flags:
+	cd devtools/smoke && node smoke-exit-meter-flags-http.js
 
 smoke-settlement-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js
