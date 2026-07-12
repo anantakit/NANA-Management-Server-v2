@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
 
 # Development
 dev:
@@ -88,6 +88,13 @@ smoke-exit-meter-flags-ui:
 # NOT cover). Needs `make dev` (frontend on :3001) + `make smoke-install` once.
 smoke-settlement-exit-meter-edit:
 	cd devtools/smoke && node playwright-test-settlement-exit-meter-edit-smoke.js
+
+# Full move-out lifecycle e2e (browser) WITH rollover + replacement flags:
+# Queue → MeterStep record(+flag) → settlement → finalize → payment → close,
+# cross-checking the flagged usage in the persisted settlement bill. Needs
+# `make dev` (frontend :3001) + `make smoke-install` once.
+smoke-moveout-exit-meter-e2e:
+	cd devtools/smoke && node playwright-test-moveout-exit-meter-e2e-smoke.js
 
 smoke-settlement-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js
