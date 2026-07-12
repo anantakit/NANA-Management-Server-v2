@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-all smoke-install
 
 # Development
 dev:
@@ -82,6 +82,13 @@ smoke-exit-meter-flags:
 smoke-exit-meter-flags-ui:
 	cd devtools/smoke && node playwright-test-exit-meter-flags-smoke.js
 
+# F2 Slice 2A — Settlement exit-meter EDIT path (browser): SettlementPage →
+# "แก้ไข" pencil → ExitMeterDrawer → updateExitMeter → settlement re-init.
+# Regression gate for the live edit surface (what the MeterStep UI smoke does
+# NOT cover). Needs `make dev` (frontend on :3001) + `make smoke-install` once.
+smoke-settlement-exit-meter-edit:
+	cd devtools/smoke && node playwright-test-settlement-exit-meter-edit-smoke.js
+
 smoke-settlement-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js
 
@@ -110,7 +117,7 @@ smoke-meter-focus-local-first:
 	cd devtools/smoke && node playwright-test-meter-focus-local-first-smoke.js
 
 smoke-all:
-	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-draft-settlement-smoke.js && node playwright-test-draft-numeric-smoke.js && node playwright-test-moveout-step23-smoke.js && node playwright-test-moveout-step4-smoke.js && node playwright-test-moveout-detail-smoke.js && node playwright-test-bills-list-smoke.js && node playwright-test-bill-edit-smoke.js && node playwright-test-delivery-mode-smoke.js && node playwright-test-meter-focus-local-first-smoke.js
+	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-draft-settlement-smoke.js && node playwright-test-draft-numeric-smoke.js && node playwright-test-moveout-step23-smoke.js && node playwright-test-moveout-step4-smoke.js && node playwright-test-moveout-detail-smoke.js && node playwright-test-bills-list-smoke.js && node playwright-test-bill-edit-smoke.js && node playwright-test-delivery-mode-smoke.js && node playwright-test-meter-focus-local-first-smoke.js && node playwright-test-settlement-exit-meter-edit-smoke.js
 
 # Clean
 clean:
