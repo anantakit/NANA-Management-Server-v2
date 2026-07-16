@@ -59,10 +59,10 @@ type MeterReadingService interface {
 	// --- Move-out workflow ports ---
 
 	// CreateExitForMoveOut creates an EXIT reading as part of the move-out workflow.
-	// Meter-hardware flags (rollover/replaced) are plain bool — create always supplies them.
-	// Must be called within the caller's transaction context.
+	// Meter-hardware flags (rollover/replaced) + Model B over-record flags are plain
+	// bool — create always supplies them. Must be called within the caller's tx.
 	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int,
-		elecReplaced, waterReplaced, elecRollover, waterRollover bool) error
+		elecReplaced, waterReplaced, elecRollover, waterRollover, elecOverRecord, waterOverRecord bool) error
 
 	// UpdateExitForMoveOut updates an existing EXIT reading in-place.
 	// Must be called within the caller's transaction context.
@@ -456,7 +456,7 @@ func (s *meterReadingService) DeleteExitByRoomID(ctx context.Context, roomID uui
 // Skips apartment-room ownership validation (caller already verified).
 // Rejects duplicate EXIT and same-month MONTHLY, same as the public endpoint.
 func (s *meterReadingService) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int,
-	elecReplaced, waterReplaced, elecRollover, waterRollover bool) error {
+	elecReplaced, waterReplaced, elecRollover, waterRollover, elecOverRecord, waterOverRecord bool) error {
 	// Reject if EXIT reading already exists
 	latest := s.findLatestOrNil(ctx, roomID)
 	if latest != nil && latest.IsExit() {
@@ -474,14 +474,65 @@ func (s *meterReadingService) CreateExitForMoveOut(ctx context.Context, roomID u
 		return respond.ErrConflict.WithMessage("มีข้อมูลมิเตอร์รายเดือนของห้องนี้ในเดือนเดียวกันแล้ว")
 	}
 
-	reading, err := NewExitReading(roomID, readingDate, elecCurrent, waterCurrent, latest,
-		MeterReplacedFlags{Electricity: elecReplaced, Water: waterReplaced},
-		MeterRolloverFlags{Electricity: elecRollover, Water: waterRollover})
+	replaced := MeterReplacedFlags{Electricity: elecReplaced, Water: waterReplaced}
+	rollover := MeterRolloverFlags{Electricity: elecRollover, Water: waterRollover}
+	over := MeterOverRecordFlags{Electricity: elecOverRecord, Water: waterOverRecord}
+
+	// Epic B Model B ("เดือนก่อนจดเกิน"): when a utility was over-recorded last
+	// cycle, the single move-out observation feeds two events (§0.1). Create the
+	// READING_RECOVERY re-anchor from that observation FIRST so the EXIT reading
+	// below picks up previous = re-anchored current → 0 usage on the corrected
+	// utility (§0.2 ordering). Runs in the caller's tx (moveout.RecordExitMeter)
+	// so anchor + exit are atomic. The refund is emitted by the UNCHANGED
+	// settlement resolver/gate (recorded − now); nothing here touches money.
+	exitLatest := latest
+	if over.Electricity || over.Water {
+		if err := validateOverRecord(latest, elecCurrent, waterCurrent, over, replaced, rollover); err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		anchor, err := NewMoveOutOverRecordAnchor(roomID, latest, elecCurrent, waterCurrent, over, exitMonth,
+			"ตั้งฐานใหม่จากค่ามิเตอร์ตอนย้ายออก (เดือนก่อนจดเกิน)")
+		if err != nil {
+			return respond.ErrBadRequest.WithMessage(err.Error())
+		}
+		if err := s.repo.Create(ctx, anchor); err != nil {
+			return s.mapCreateError(err)
+		}
+		exitLatest = anchor
+	}
+
+	reading, err := NewExitReading(roomID, readingDate, elecCurrent, waterCurrent, exitLatest,
+		replaced, rollover)
 	if err != nil {
 		return respond.ErrBadRequest.WithMessage(err.Error())
 	}
 	if err := s.repo.Create(ctx, reading); err != nil {
 		return s.mapCreateError(err)
+	}
+	return nil
+}
+
+// validateOverRecord enforces the Epic B Model B over-record rules: per-utility
+// mutual exclusion with rollover/replaced, and "below previous" — a flag is only
+// meaningful when today's reading is lower than the latest recorded value (a
+// meter cannot run backwards, so below-previous without a hardware flag is a
+// prior over-record). Flag off → the ordinary current<previous block stands.
+func validateOverRecord(latest *MeterReading, elecCurrent, waterCurrent int, over MeterOverRecordFlags, replaced MeterReplacedFlags, rollover MeterRolloverFlags) error {
+	if over.Electricity {
+		if replaced.Electricity || rollover.Electricity {
+			return ErrOverRecordConflictsWithHardware
+		}
+		if latest == nil || elecCurrent >= latest.ElectricityCurrent {
+			return ErrOverRecordNotBelowPrevious
+		}
+	}
+	if over.Water {
+		if replaced.Water || rollover.Water {
+			return ErrOverRecordConflictsWithHardware
+		}
+		if latest == nil || waterCurrent >= latest.WaterCurrent {
+			return ErrOverRecordNotBelowPrevious
+		}
 	}
 	return nil
 }

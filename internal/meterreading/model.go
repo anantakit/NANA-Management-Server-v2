@@ -45,6 +45,10 @@ var (
 	ErrRolloverAndReplacedConflict     = errors.New("ครบรอบมิเตอร์กับเปลี่ยนมิเตอร์ไม่สามารถเลือกพร้อมกันได้")
 	ErrRolloverWithZeroPrevious        = errors.New("ไม่สามารถระบุครบรอบมิเตอร์ได้เมื่อค่าก่อนหน้าเป็น 0")
 
+	// Epic B Model B — move-out over-record ("เดือนก่อนจดเกิน").
+	ErrOverRecordConflictsWithHardware = errors.New("ตัวเลือกเดือนก่อนจดเกินใช้พร้อมกับครบรอบ/เปลี่ยนมิเตอร์ไม่ได้")
+	ErrOverRecordNotBelowPrevious      = errors.New("ตัวเลือกเดือนก่อนจดเกินใช้ได้เฉพาะเมื่อค่ามิเตอร์วันนี้ต่ำกว่าค่าที่จดครั้งก่อน")
+
 	// Reading Recovery anchor errors (Phase 1 — ValidateAnchor).
 	// ErrRecoverySourceRequired removed 2026-07-01 (source-optional relaxation):
 	// source is now optional narrative metadata, no longer a validation gate.
@@ -282,6 +286,67 @@ type MeterReplacedFlags struct {
 type MeterRolloverFlags struct {
 	Water       bool
 	Electricity bool
+}
+
+// MeterOverRecordFlags marks, per utility, that the prior reading was recorded
+// too high ("เดือนก่อนจดเกิน") and today's move-out reading is the true current.
+// Epic B Model B: mutually exclusive with rollover/replaced per utility; valid
+// only when the exit value is below the latest reading's current.
+type MeterOverRecordFlags struct {
+	Water       bool
+	Electricity bool
+}
+
+// NewMoveOutOverRecordAnchor builds a READING_RECOVERY re-anchor for a move-out
+// over-record (Epic B Model B). ONE physical observation — the exit reading —
+// feeds TWO events (§0.1): this re-anchor and the EXIT reading. For each flagged
+// utility the anchor re-anchors to the observed exit value (so exit usage = 0)
+// and records the prior over-recorded value (recorded > current → source-priced
+// refund at settlement, via the unchanged resolver). The non-flagged utility
+// carries its prior baseline so its exit usage bills normally.
+//
+// The anchor MUST be persisted BEFORE the EXIT reading so the exit picks up
+// previous = the re-anchored current (proven by Test A/B in
+// EPIC_B_SETTLEMENT_RECOVERY_MODELB_ONTOLOGY_SCOPE.md §0.2). `latest` is the
+// over-recorded prior reading and becomes the recovery's source; the caller
+// guarantees each flagged utility is below its latest current.
+func NewMoveOutOverRecordAnchor(roomID uuid.UUID, latest *MeterReading, exitElec, exitWater int, over MeterOverRecordFlags, month, note string) (*MeterReading, error) {
+	if latest == nil {
+		return nil, ErrOverRecordNotBelowPrevious
+	}
+	anchorElec, anchorWater := latest.ElectricityCurrent, latest.WaterCurrent
+	var recordedElec, recordedWater *int
+	if over.Electricity {
+		anchorElec = exitElec
+		v := latest.ElectricityCurrent
+		recordedElec = &v
+	}
+	if over.Water {
+		anchorWater = exitWater
+		v := latest.WaterCurrent
+		recordedWater = &v
+	}
+	reason := AnchorReasonReadingRecovery
+	bm := month
+	src := latest.ID
+	m := &MeterReading{
+		RoomID:                  roomID,
+		ReadingType:             ReadingTypeMonthly,
+		BillingMonth:            &bm,
+		ElectricityPrevious:     anchorElec,
+		ElectricityCurrent:      anchorElec,
+		WaterPrevious:           anchorWater,
+		WaterCurrent:            anchorWater,
+		AnchorReason:            &reason,
+		AnchorNote:              &note,
+		RecoverySourceReadingID: &src,
+		ElectricityRecorded:     recordedElec,
+		WaterRecorded:           recordedWater,
+	}
+	if err := m.ValidateAnchor(); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // --- Month helpers (billing_month = "YYYY-MM") ---

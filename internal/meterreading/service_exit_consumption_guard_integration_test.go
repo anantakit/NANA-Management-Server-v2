@@ -68,7 +68,7 @@ func TestExitGuard_ConsumptionVsAnchor(t *testing.T) {
 		svc := buildMeterSvc(t, db)
 		// latest = the anchor (current 100) → exit 100 = usage 0, valid; guard sees
 		// no CONSUMPTION monthly → allowed.
-		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 100, 50, false, false, false, false); err != nil {
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 100, 50, false, false, false, false, false, false); err != nil {
 			t.Fatalf("exit should be allowed to coexist with a recovery anchor, got: %v", err)
 		}
 	})
@@ -85,7 +85,7 @@ func TestExitGuard_ConsumptionVsAnchor(t *testing.T) {
 		seedConsumption(t, db, rm.ID)
 
 		svc := buildMeterSvc(t, db)
-		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 120, 60, false, false, false, false)
+		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 120, 60, false, false, false, false, false, false)
 		if err == nil {
 			t.Fatal("exit must still be rejected when a consumption monthly exists for the cycle")
 		}
@@ -104,7 +104,7 @@ func TestExitGuard_ConsumptionVsAnchor(t *testing.T) {
 		seedRecoveryAnchor(t, db, rm.ID) // + recovery anchor (same cycle, allowed by 00041 indexes)
 
 		svc := buildMeterSvc(t, db)
-		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 120, 60, false, false, false, false)
+		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 120, 60, false, false, false, false, false, false)
 		if err == nil {
 			t.Fatal("recovery anchor must NOT hide the consumption monthly — exit must still be rejected")
 		}

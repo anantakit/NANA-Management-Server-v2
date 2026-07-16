@@ -32,11 +32,13 @@ type RoomCommander interface {
 // Implemented by meterreading.MeterReadingService; injected via main.go.
 type MeterReadingCommander interface {
 	// CreateExitForMoveOut creates an EXIT meter reading for the given room.
-	// Meter-hardware flags (rollover/replaced) are plain bool — create always
-	// supplies them (unlike UpdateExitForMoveOut's *bool "keep existing").
-	// Must be called within the caller's transaction context.
+	// Meter-hardware flags (rollover/replaced) + Model B over-record flags
+	// ("เดือนก่อนจดเกิน") are plain bool — create always supplies them (unlike
+	// UpdateExitForMoveOut's *bool "keep existing"). When an over-record flag is
+	// set the command also creates the READING_RECOVERY re-anchor before the exit
+	// reading (Epic B Model B). Must be called within the caller's transaction.
 	CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, readingDate time.Time, elecCurrent, waterCurrent int,
-		elecReplaced, waterReplaced, elecRollover, waterRollover bool) error
+		elecReplaced, waterReplaced, elecRollover, waterRollover, elecOverRecord, waterOverRecord bool) error
 
 	// UpdateExitForMoveOut updates an existing EXIT reading in-place.
 	// Flags use *bool: nil = keep existing value.

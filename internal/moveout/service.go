@@ -262,9 +262,12 @@ func (s *moveOutService) RecordExitMeter(ctx context.Context, id uuid.UUID, req 
 			return respond.ErrBadRequest.WithMessage(err.Error())
 		}
 
-		// 2. Create EXIT meter reading (with meter-hardware flags — F1 parity)
+		// 2. Create EXIT meter reading (meter-hardware flags — F1 parity; Model B
+		//    over-record flags — the over-record re-anchor is created here, before
+		//    the exit reading, when set).
 		if err := s.meterCmd.CreateExitForMoveOut(txCtx, c.RoomID, actualDate, req.ElectricityCurrent, req.WaterCurrent,
-			req.IsElectricityMeterReplaced, req.IsWaterMeterReplaced, req.IsElectricityMeterRollover, req.IsWaterMeterRollover); err != nil {
+			req.IsElectricityMeterReplaced, req.IsWaterMeterReplaced, req.IsElectricityMeterRollover, req.IsWaterMeterRollover,
+			req.IsElectricityOverRecord, req.IsWaterOverRecord); err != nil {
 			if _, ok := respond.Is(err); ok {
 				return err
 			}

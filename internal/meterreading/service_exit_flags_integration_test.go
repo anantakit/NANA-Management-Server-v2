@@ -56,7 +56,7 @@ func TestExitCreate_MeterHardwareFlags(t *testing.T) {
 		seedHighPrior(t, db, rm.ID, 99000, 100)
 
 		svc := buildMeterSvc(t, db)
-		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 500, 150, false, false, true, false); err != nil {
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 500, 150, false, false, true, false, false, false); err != nil {
 			t.Fatalf("rollover exit (current < previous) should be accepted, got: %v", err)
 		}
 		exit := loadExit(t, db, rm.ID)
@@ -78,7 +78,7 @@ func TestExitCreate_MeterHardwareFlags(t *testing.T) {
 		seedHighPrior(t, db, rm.ID, 5000, 100)
 
 		svc := buildMeterSvc(t, db)
-		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 30, 150, true, false, false, false); err != nil {
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 30, 150, true, false, false, false, false, false); err != nil {
 			t.Fatalf("replaced exit should be accepted with previous zeroed, got: %v", err)
 		}
 		exit := loadExit(t, db, rm.ID)
@@ -103,7 +103,7 @@ func TestExitCreate_MeterHardwareFlags(t *testing.T) {
 		seedHighPrior(t, db, rm.ID, 5000, 100)
 
 		svc := buildMeterSvc(t, db)
-		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 30, 150, true, false, true, false)
+		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 30, 150, true, false, true, false, false, false)
 		if err == nil {
 			t.Fatal("rollover + replaced on the same meter must be rejected")
 		}

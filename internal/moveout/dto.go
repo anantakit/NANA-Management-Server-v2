@@ -47,6 +47,13 @@ type RecordExitMeterRequest struct {
 	IsWaterMeterReplaced       bool `json:"is_water_meter_replaced"`
 	IsElectricityMeterRollover bool `json:"is_electricity_meter_rollover"`
 	IsWaterMeterRollover       bool `json:"is_water_meter_rollover"`
+	// Epic B Model B over-record flags ("เดือนก่อนจดเกิน"). Per-utility; mutually
+	// exclusive with rollover/replaced of the same utility; valid only when the
+	// exit reading is below the latest recorded value. When set, the move-out flow
+	// re-anchors the meter to today's observed value and the settlement refunds the
+	// over-charge (recorded − now) — the operator NEVER enters a past "true" value.
+	IsElectricityOverRecord bool `json:"is_electricity_over_record"`
+	IsWaterOverRecord       bool `json:"is_water_over_record"`
 }
 
 // UpdateExitMeterRequest holds the body for POST /:id/update-exit-meter.

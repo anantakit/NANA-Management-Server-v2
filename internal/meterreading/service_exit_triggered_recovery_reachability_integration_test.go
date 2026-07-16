@@ -42,7 +42,7 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		seedSourceMonthly(t, db, rm.ID, time.Now().AddDate(0, -1, 0).Format("2006-01"))
 
 		svc := buildMeterSvc(t, db)
-		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70, false, false, false, false)
+		err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70, false, false, false, false, false, false)
 		if err == nil {
 			t.Fatal("expected forward-breakage rejection recording exit 250 under previous 300, got nil")
 		}
@@ -72,7 +72,7 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 			t.Fatalf("CreateBaselineCorrection (re-anchor): %v", err)
 		}
 		// Exit re-anchors to physical (250 == recovery current) → usage 0, valid.
-		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70, false, false, false, false); err != nil {
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 250, 70, false, false, false, false, false, false); err != nil {
 			t.Fatalf("same-month exit after recovery should now coexist (F2), got: %v", err)
 		}
 		if exitCount(t, db, rm.ID.String()) != 1 {
@@ -106,7 +106,7 @@ func TestExitTriggeredOverRead_Reachability(t *testing.T) {
 		}
 
 		svc := buildMeterSvc(t, db)
-		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 260, 80, false, false, false, false); err != nil {
+		if err := svc.CreateExitForMoveOut(ctx, rm.ID, time.Now().UTC(), 260, 80, false, false, false, false, false, false); err != nil {
 			t.Fatalf("exit in a later month should be reachable, got: %v", err)
 		}
 		if exitCount(t, db, rm.ID.String()) != 1 {

@@ -150,7 +150,7 @@ type mockMeterCommander struct {
 var _ MeterReadingCommander = (*mockMeterCommander)(nil)
 
 func (m *mockMeterCommander) CreateExitForMoveOut(ctx context.Context, roomID uuid.UUID, date time.Time, elec, water int,
-	elecReplaced, waterReplaced, elecRollover, waterRollover bool) error {
+	elecReplaced, waterReplaced, elecRollover, waterRollover, elecOverRecord, waterOverRecord bool) error {
 	m.createExitCalls++
 	m.createExitRoomID = roomID
 	m.createExitElecReplaced = elecReplaced

@@ -26,12 +26,16 @@ type SettlementRecoverySmokeFixture struct {
 	ApartmentID     string `json:"apartment_id"`
 	RoomID          string `json:"room_id"`
 	ContractID      string `json:"contract_id"`
-	NoticeID        string `json:"notice_id"`
+	NoticeID        string `json:"notice_id"` // PENDING_METER — awaiting the move-out reading
 	SourceReadingID string `json:"source_reading_id"`
-	PhysicalElec    int    `json:"physical_electricity"` // the true reading the operator enters
-	PhysicalWater   int    `json:"physical_water"`
-	SourceRate      int64  `json:"source_electricity_rate"` // satang/unit the source bill charged
-	ExpectedRefund  int64  `json:"expected_refund"`         // negative satang the resolver must emit
+	// Epic B Model B: the operator observes the meter ONCE at move-out and records
+	// it via record-exit-meter with the over-record flag ("เดือนก่อนจดเกิน"). The
+	// source month recorded a wrong-high value; the refund = recorded − observed.
+	SourceRecordedElec   int   `json:"source_recorded_electricity"`  // 1500 — the mis-record on the source bill
+	ExitObservationElec  int   `json:"exit_observation_electricity"` // 1240 — true current observed at move-out
+	ExitObservationWater int   `json:"exit_observation_water"`       // 228  — water (not over-recorded)
+	SourceRate           int64 `json:"source_electricity_rate"`      // satang/unit the source bill charged
+	ExpectedRefund       int64 `json:"expected_refund"`              // -(recorded − observed) × rate the resolver must emit
 }
 
 // SetupSettlementRecoverySmoke (re)creates a clean move-out fixture for the Epic B
@@ -159,21 +163,20 @@ func SetupSettlementRecoverySmoke(db *gorm.DB) (*SettlementRecoverySmokeFixture,
 		return nil, fmt.Errorf("create source bill lines: %w", err)
 	}
 
-	// EXIT reading for the move-out (the settlement bills this, independent of the refund).
+	// Epic B Model B: NO pre-recorded exit reading. The notice sits in
+	// PENDING_METER; the smoke drives record-exit-meter with the over-record flag,
+	// which re-anchors from the single move-out observation and lets the settlement
+	// refund (recorded − observed). exitObs = the true current at move-out (1240):
+	// below the wrong source current (1500 → over-record), above the source
+	// previous (1200 → 40 units of real usage from the true baseline).
+	exitObsElec := physicalElec + 40 // 1240
+	exitObsWater := waterReading + 8  // 228 (water not over-recorded)
 	moveOutDate := now.AddDate(0, 0, -3)
-	exit := meterreading.MeterReading{
-		RoomID: rm.ID, ReadingType: meterreading.ReadingTypeExit, ReadingDateActual: &moveOutDate,
-		ElectricityPrevious: physicalElec, ElectricityCurrent: physicalElec + 40,
-		WaterPrevious: waterReading, WaterCurrent: waterReading + 8,
-	}
-	if err := db.Create(&exit).Error; err != nil {
-		return nil, fmt.Errorf("create exit reading: %w", err)
-	}
 
 	notice := moveout.MoveOutNotice{
 		ContractID: c.ID, NoticeDate: moveOutDate.AddDate(0, 0, -7),
-		ScheduledMoveOutDate: moveOutDate, ActualMoveOutDate: &moveOutDate,
-		Status: moveout.MoveOutStatusPendingSettlement,
+		ScheduledMoveOutDate: moveOutDate,
+		Status:               moveout.MoveOutStatusPendingMeter,
 	}
 	if err := db.Create(&notice).Error; err != nil {
 		return nil, fmt.Errorf("create notice: %w", err)
@@ -181,7 +184,8 @@ func SetupSettlementRecoverySmoke(db *gorm.DB) (*SettlementRecoverySmokeFixture,
 
 	return &SettlementRecoverySmokeFixture{
 		ApartmentID: apt.ID.String(), RoomID: rm.ID.String(), ContractID: c.ID.String(), NoticeID: notice.ID.String(),
-		SourceReadingID: src.ID.String(), PhysicalElec: physicalElec, PhysicalWater: waterReading,
-		SourceRate: sourceRate, ExpectedRefund: -int64(wrongElec-physicalElec) * sourceRate,
+		SourceReadingID:    src.ID.String(),
+		SourceRecordedElec: wrongElec, ExitObservationElec: exitObsElec, ExitObservationWater: exitObsWater,
+		SourceRate: sourceRate, ExpectedRefund: -int64(wrongElec-exitObsElec) * sourceRate,
 	}, nil
 }

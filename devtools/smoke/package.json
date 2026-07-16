@@ -25,7 +25,8 @@
     "postinstall": "npx playwright install chromium",
     "smoke:exit-meter-flags": "node playwright-test-exit-meter-flags-smoke.js",
     "smoke:settlement-exit-meter-edit": "node playwright-test-settlement-exit-meter-edit-smoke.js",
-    "smoke:moveout-exit-meter-e2e": "node playwright-test-moveout-exit-meter-e2e-smoke.js"
+    "smoke:moveout-exit-meter-e2e": "node playwright-test-moveout-exit-meter-e2e-smoke.js",
+    "smoke:settlement-recovery-presentation": "node playwright-test-settlement-recovery-presentation-smoke.js"
   },
   "dependencies": {
     "playwright": "^1.52.0"
