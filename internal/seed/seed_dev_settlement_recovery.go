@@ -106,13 +106,18 @@ func SetupSettlementRecoverySmoke(db *gorm.DB) (*SettlementRecoverySmokeFixture,
 	}
 
 	// Reset the room's mutable artifacts (FK-safe: notices reference bills via
-	// settlement_bill_id, so they go first; audit + deliveries RESTRICT before
-	// bills; bills cascade line items + payments; readings last).
+	// settlement_bill_id, so they go first; audit + deliveries + batch-item FKs
+	// RESTRICT before bills; bills cascade line items + payments; readings last).
+	// batch_items appear when the Model B flow generates a monthly for the
+	// recovery month (recovery-survives-cancel smoke) — null their bill_id and
+	// drop the contract's items so the bill delete below doesn't FK-fault.
 	billIDs := `SELECT id FROM bills WHERE contract_id = ?`
 	if err := db.Exec(`DELETE FROM move_out_notices WHERE contract_id = ?`, c.ID).Error; err != nil {
 		return nil, fmt.Errorf("reset notices: %w", err)
 	}
 	for _, stmt := range []string{
+		`UPDATE bill_generation_batch_items SET bill_id = NULL WHERE bill_id IN (` + billIDs + `)`,
+		`DELETE FROM bill_generation_batch_items WHERE contract_id = ?`,
 		`DELETE FROM bill_audit_log WHERE bill_id IN (` + billIDs + `)`,
 		`DELETE FROM bill_deliveries WHERE bill_id IN (` + billIDs + `)`,
 		`DELETE FROM bills WHERE contract_id = ?`,

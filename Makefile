@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-settlement-recovery-presentation smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-settlement-recovery-presentation smoke-recovery-survives-cancel smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
 
 # Development
 dev:
@@ -70,6 +70,13 @@ smoke-settlement-recovery:
 # smoke-install` once. (SMOKE_HEADED=1 to watch.)
 smoke-settlement-recovery-presentation:
 	cd devtools/smoke && node playwright-test-settlement-recovery-presentation-smoke.js
+
+# Epic B — "Recovery survives Move-out cancel" capability smoke (browser; self-seeding).
+# over-record via UI -> settlement Model B -> cancel -> monthly refunds the
+# over-charge exactly once -> no duplicate recovery. Needs `make dev` (frontend
+# :3001) + `make smoke-install` once. (SMOKE_HEADED=1 to watch.)
+smoke-recovery-survives-cancel:
+	cd devtools/smoke && node playwright-test-recovery-survives-cancel-smoke.js
 
 # Operator end-to-end (F1+F2) — HTTP smoke: recovery → exit (same month) →
 # settlement, all via real endpoints, no seeded terminal state.

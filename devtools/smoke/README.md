@@ -31,6 +31,7 @@ make dev   # postgres + backend + frontend ต้องพร้อมทั้�
 | `make smoke-moveout-step4` | Scenarios A–D Phase 2 close-with-unsettled + back-fill (~30 assertions) |
 | `make smoke-moveout-detail` | T1–T8 MoveOutDetailPage per-state behavior (CTA / cancel / reopen / restart / direct URL / queue regression) |
 | `make smoke-settlement-recovery-presentation` | Epic B — settlement recovery FE presentation (self-seeding browser): `/bills/:id` renders `คืนค่าไฟฟ้า` + evidence + provenance link → RoomHistoryDrawer, move-out BreakdownPanel parity, mobile. Grouping (DQ4a) itself is unit-covered |
+| `make smoke-recovery-survives-cancel` | Epic B — "Recovery survives Move-out cancel" capability (self-seeding browser): over-record via UI → settlement Model B → cancel move-out → monthly refunds the over-charge exactly once → no duplicate recovery. Locks the owner invariant that cancel doesn't erase meter truth |
 
 หรือรันตรงจาก `backend/devtools/smoke/`:
 
@@ -43,6 +44,7 @@ npm run smoke:moveout-step23
 npm run smoke:moveout-step4
 npm run smoke:moveout-detail
 npm run smoke:settlement-recovery-presentation   # SMOKE_HEADED=1 to watch
+npm run smoke:recovery-survives-cancel           # SMOKE_HEADED=1 to watch
 ```
 
 ## Test Suites
