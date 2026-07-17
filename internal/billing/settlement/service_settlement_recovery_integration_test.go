@@ -627,3 +627,154 @@ func TestSettlementRecovery_CorrectAfterFinalized(t *testing.T) {
 		t.Errorf("line total = %d, want base(%d) + refund(%d)", newSum, baseSum, wantRefund)
 	}
 }
+
+// --- Cancel preserves recovery (owner-locked invariant, 2026-07-16) ---
+//
+// A Move-out cancellation cancels the WORKFLOW only. It does NOT invalidate the
+// fact that a previous month's meter was over-recorded. So cancel removes the
+// EXIT reading and VOIDs the settlement bill, but the READING_RECOVERY anchor —
+// which represents meter truth, not the move-out — MUST survive, unmutated
+// (append-only). After cancel the recovery is unreflected again, so the
+// over-charge is refunded exactly once on the next cycle (a re-issued settlement
+// or the next monthly bill, via the same shared resolver). This is an owner
+// decision, not accidental: do NOT delete the anchor on cancel.
+//
+// Owner scenarios A/B/C (2026-07-16):
+//   C (append-only)        — TestSettlementRecovery_CancelPreservesRecovery below.
+//   A (cancel → monthly)   — the STRUCTURAL half (EXIT removed, settlement VOID,
+//                            recovery survives + unreflected) is asserted below;
+//                            the "monthly refund exactly once" half then follows
+//                            from the UNCHANGED shared resolver — the surviving
+//                            recovery is byte-identical to the one already proven
+//                            by billing.TestCreateMonthlyBill_OverRecord_PersistsRefund
+//                            (which seeds exactly this {recovery + billed source,
+//                            unreflected} state and refunds once).
+//   B (cancel → re-move-out) — TestSettlementRecovery_CancelThenReMoveOut_NoDuplicateRecovery.
+
+func TestSettlementRecovery_CancelPreservesRecovery(t *testing.T) {
+	env := newRecoveryEnv(t)
+	if _, err := env.moveOutSvc.GenerateSettlement(env.ctx, env.noticeID, moveout.RentModeProrated); err != nil {
+		t.Fatalf("GenerateSettlement: %v", err)
+	}
+	const sourceRate int64 = 800
+	rec := env.seedElecRecovery(t, "2026-07", "2025-11", 1200, 1500, sourceRate)
+	// Reflect the recovery on the settlement so we can prove cancel VOIDs it.
+	if _, err := env.moveOutSvc.RegenerateSettlement(env.ctx, env.noticeID, ""); err != nil {
+		t.Fatalf("RegenerateSettlement: %v", err)
+	}
+	if n := len(recoveryAdjustmentLines(env.currentSettlementLines(t))); n != 1 {
+		t.Fatalf("precondition: settlement should carry the recovery refund before cancel, got %d", n)
+	}
+	var before meterreading.MeterReading
+	if err := env.db.Where("id = ?", rec.ID).First(&before).Error; err != nil {
+		t.Fatalf("load recovery before cancel: %v", err)
+	}
+	var notice moveout.MoveOutNotice
+	if err := env.db.Where("id = ?", env.noticeID).First(&notice).Error; err != nil || notice.SettlementBillID == nil {
+		t.Fatalf("load notice / settlement id: %v", err)
+	}
+	settlementBillID := *notice.SettlementBillID
+
+	// --- CANCEL ---
+	if _, err := env.moveOutSvc.Cancel(env.ctx, env.noticeID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// 1. Recovery SURVIVES, not soft-deleted, not mutated (append-only, owner-locked).
+	var after meterreading.MeterReading
+	if err := env.db.Unscoped().Where("id = ?", rec.ID).First(&after).Error; err != nil {
+		t.Fatalf("recovery row must still exist after cancel: %v", err)
+	}
+	if after.DeletedAt.Valid {
+		t.Error("recovery must NOT be soft-deleted by cancel (append-only)")
+	}
+	if after.ElectricityCurrent != before.ElectricityCurrent ||
+		after.ElectricityRecorded == nil || *after.ElectricityRecorded != *before.ElectricityRecorded ||
+		after.AnchorReason == nil || *after.AnchorReason != meterreading.AnchorReasonReadingRecovery ||
+		after.RecoverySourceReadingID == nil || *after.RecoverySourceReadingID != *before.RecoverySourceReadingID {
+		t.Error("recovery must NOT be mutated by cancel (append-only)")
+	}
+
+	// 2. EXIT reading removed (the workflow artifact vanishes).
+	var activeExit int64
+	env.db.Model(&meterreading.MeterReading{}).
+		Where("room_id = ? AND reading_type = ? AND deleted_at IS NULL", env.roomID, meterreading.ReadingTypeExit).
+		Count(&activeExit)
+	if activeExit != 0 {
+		t.Errorf("EXIT reading must be removed by cancel, %d still active", activeExit)
+	}
+
+	// 3. Settlement bill VOID.
+	var sb billing.Bill
+	if err := env.db.Where("id = ?", settlementBillID).First(&sb).Error; err != nil {
+		t.Fatalf("load settlement bill: %v", err)
+	}
+	if sb.Status != billing.BillStatusVoid {
+		t.Errorf("settlement bill status = %s, want VOID", sb.Status)
+	}
+
+	// 4. Recovery is UNREFLECTED after cancel — no live (non-VOID) adjustment line
+	//    reflects it, so the over-charge refunds exactly once on the next cycle.
+	var reflected int64
+	env.db.Table("bill_line_items AS li").
+		Joins("JOIN bills b ON b.id = li.bill_id").
+		Where("li.adjustment_recovery_reading_id = ? AND b.status <> ? AND li.deleted_at IS NULL",
+			rec.ID, billing.BillStatusVoid).
+		Count(&reflected)
+	if reflected != 0 {
+		t.Errorf("recovery must be unreflected after cancel, found %d live reflection(s)", reflected)
+	}
+}
+
+func TestSettlementRecovery_CancelThenReMoveOut_NoDuplicateRecovery(t *testing.T) {
+	env := newRecoveryEnv(t)
+	if _, err := env.moveOutSvc.GenerateSettlement(env.ctx, env.noticeID, moveout.RentModeProrated); err != nil {
+		t.Fatalf("GenerateSettlement: %v", err)
+	}
+	const sourceRate int64 = 800
+	const wantRefund = int64(-(1500 - 1200)) * sourceRate
+	rec := env.seedElecRecovery(t, "2026-07", "2025-11", 1200, 1500, sourceRate)
+	if _, err := env.moveOutSvc.RegenerateSettlement(env.ctx, env.noticeID, ""); err != nil {
+		t.Fatalf("RegenerateSettlement: %v", err)
+	}
+	if _, err := env.moveOutSvc.Cancel(env.ctx, env.noticeID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// The tenant stays, then later moves out again. New notice + new exit for the
+	// now-ACTIVE contract; the meter reads above the recovery baseline (no new
+	// over-record), so NO new anchor is created.
+	reDate := env.moveOutDate.AddDate(0, 0, 3)
+	fixtures.SeedExitMeter(t, env.db, env.roomID.String(), reDate, 400, 40)
+	notice2 := fixtures.SeedMoveOutNotice(t, env.db, env.contractID.String(), reDate)
+	env.noticeID = notice2.ID
+
+	if _, err := env.moveOutSvc.GenerateSettlement(env.ctx, env.noticeID, moveout.RentModeProrated); err != nil {
+		t.Fatalf("re-move-out GenerateSettlement: %v", err)
+	}
+	if _, err := env.moveOutSvc.RegenerateSettlement(env.ctx, env.noticeID, ""); err != nil {
+		t.Fatalf("re-move-out RegenerateSettlement: %v", err)
+	}
+
+	// No duplicate recovery row for the room.
+	var recCount int64
+	env.db.Model(&meterreading.MeterReading{}).
+		Where("room_id = ? AND anchor_reason = ?", env.roomID, meterreading.AnchorReasonReadingRecovery).
+		Count(&recCount)
+	if recCount != 1 {
+		t.Errorf("expected exactly 1 recovery row (no duplicate from re-move-out), got %d", recCount)
+	}
+
+	// The re-issued settlement reflects the SAME recovery exactly once — refund
+	// not duplicated.
+	adj := recoveryAdjustmentLines(env.currentSettlementLines(t))
+	if len(adj) != 1 {
+		t.Fatalf("re-move-out settlement must reflect the existing recovery exactly once, got %d lines", len(adj))
+	}
+	if adj[0].AdjustmentRecoveryReadingID == nil || *adj[0].AdjustmentRecoveryReadingID != rec.ID {
+		t.Errorf("re-move-out settlement must reflect the SAME recovery %s, got %v", rec.ID, adj[0].AdjustmentRecoveryReadingID)
+	}
+	if adj[0].Amount != wantRefund {
+		t.Errorf("re-move-out refund = %d, want %d (not duplicated)", adj[0].Amount, wantRefund)
+	}
+}

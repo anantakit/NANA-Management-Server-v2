@@ -600,6 +600,14 @@ func (s *moveOutService) Cancel(ctx context.Context, id uuid.UUID) (*MoveOutWith
 		if err := s.repo.Update(txCtx, notice); err != nil {
 			return err
 		}
+		// Cancel undoes the WORKFLOW only: the EXIT reading + the settlement bill
+		// (voided above). It MUST NOT touch a READING_RECOVERY anchor — that
+		// represents meter truth (a prior month was over-recorded), not the
+		// move-out, so it survives cancellation (append-only, owner-locked
+		// 2026-07-16). The over-charge then refunds exactly once on the next
+		// cycle. DeleteExitByRoomID is scoped to reading_type=EXIT for this reason.
+		// Regression: billing/settlement TestSettlementRecovery_CancelPreservesRecovery
+		// (+ TestCreateMonthlyBill_OverRecord_PersistsRefund for the monthly refund).
 		if err := s.meterCmd.DeleteExitByRoomID(txCtx, c.RoomID); err != nil {
 			return err
 		}

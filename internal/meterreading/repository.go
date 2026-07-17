@@ -428,6 +428,11 @@ func (r *meterReadingRepository) FindLatestBaselineCorrectionByRoomID(ctx contex
 // DeleteExitByRoomID soft-deletes any active EXIT reading for a room.
 // Idempotent: no-op if none exist. Used by move-out cancel to revert exit-meter prep
 // so the workflow can be restarted cleanly (avoids unique-index collision on retry).
+//
+// Scoped to reading_type=EXIT ON PURPOSE (owner-locked 2026-07-16): a
+// READING_RECOVERY anchor created by an over-record at move-out is meter truth,
+// not a move-out artifact, so cancel MUST leave it intact (append-only). It then
+// refunds on the next cycle. Do NOT widen this to delete recovery anchors.
 func (r *meterReadingRepository) DeleteExitByRoomID(ctx context.Context, roomID uuid.UUID) error {
 	return database.DB(ctx, r.db).
 		Where("room_id = ? AND reading_type = ? AND deleted_at IS NULL", roomID, ReadingTypeExit).
