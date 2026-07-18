@@ -322,7 +322,8 @@ var errMockNotFound = gorm.ErrRecordNotFound
 // --- MeterReadingSource mock ---
 
 type mockMeterQuerier struct {
-	findMonthlyByRoomsAndMonthFn func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	findMonthlyByRoomsAndMonthFn            func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	findConsumptionMonthlyByRoomsAndMonthFn func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
 }
 
 var _ MeterReadingSource = (*mockMeterQuerier)(nil)
@@ -330,6 +331,13 @@ var _ MeterReadingSource = (*mockMeterQuerier)(nil)
 func (m *mockMeterQuerier) FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error) {
 	if m.findMonthlyByRoomsAndMonthFn != nil {
 		return m.findMonthlyByRoomsAndMonthFn(ctx, roomIDs, month)
+	}
+	return map[uuid.UUID]*meterreading.MeterReading{}, nil
+}
+
+func (m *mockMeterQuerier) FindConsumptionMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+	if m.findConsumptionMonthlyByRoomsAndMonthFn != nil {
+		return m.findConsumptionMonthlyByRoomsAndMonthFn(ctx, roomIDs, month)
 	}
 	return map[uuid.UUID]*meterreading.MeterReading{}, nil
 }

@@ -8,8 +8,11 @@
 //   1. Move-out → record exit meter BELOW previous → tick "เดือนก่อนจดเกิน" (UI)
 //   2. Generate settlement → Model B (0-usage electricity + refund recorded−now)
 //   3. Cancel move-out → EXIT removed, settlement VOID, contract back ACTIVE
+//   3b. Operator records the REAL current-cycle monthly reading (tenant stays)
 //   4. Generate the monthly (batch-monthly → commit) for the recovery's month
-//   5. Monthly carries the recovery refund EXACTLY ONCE, correct amount
+//   5. Monthly bills the REAL water usage (8 units / ฿144, utility-scoped overlay
+//      — the electricity recovery must not suppress it) AND carries the electricity
+//      recovery refund EXACTLY ONCE with electricity usage 0
 //   6. No duplicate recovery row
 //
 // The NEW capability (the over-record flag) is exercised through the real UI
@@ -133,15 +136,31 @@ async function main() {
     const settlementAfter = (await api('GET', `/bills/${sb.id}`, { token })).json.data
     check('settlement bill VOID after cancel', settlementAfter.status === 'VOID')
 
-    // 4 + 5 + 6. Monthly still refunds the over-record — exactly once — and the
-    // recovery is not duplicated.
+    // 3b. The tenant stays → the operator records the REAL current-cycle meter for
+    // the month (physical elec 1240, water 228). Its previous auto-populates from
+    // the re-anchored baseline (elec 1240, water 220), so water = 220→228 = 8 units
+    // of genuine usage that must NOT be suppressed by the electricity recovery.
+    console.log('\nSTEP 3b — operator records the real current monthly reading')
+    const realRead = await api('POST', `/apartments/${fx.apartment_id}/meter-readings/`, {
+      token,
+      body: {
+        room_id: fx.room_id,
+        billing_month: recoveryMonth,
+        electricity_current: fx.exit_observation_electricity, // 1240 (unchanged since re-anchor)
+        water_current: fx.exit_observation_water,             // 228 (8 units above the 220 baseline)
+      },
+    })
+    check('record real monthly meter (1240/228)', realRead.status === 200 || realRead.status === 201, `${realRead.status}`)
+
+    // 4 + 5 + 6. Monthly bills the real WATER usage (utility-scoped overlay), still
+    // refunds the electricity over-record exactly once, and no duplicate recovery.
     console.log('\nSTEP 4 — generate the monthly for the recovery month (batch → commit)')
     const batch = await api('POST', `/bills/batch-monthly`, { token, body: { apartment_id: fx.apartment_id, billing_month: recoveryMonth } })
     check('batch-monthly (classify)', batch.status === 200)
     const commit = await api('POST', `/bills/batches/${batch.json.data.batch_id}/commit`, { token })
     check('batch commit (persist drafts)', commit.status === 200)
 
-    console.log('\nSTEP 5 — monthly carries the recovery refund exactly once')
+    console.log('\nSTEP 5 — monthly bills real water usage + refunds electricity once')
     const monthly = await liveMonthly(token, fx.contract_id, recoveryMonth)
     check('monthly bill created for the recovery month', !!monthly, recoveryMonth)
     if (monthly) {
@@ -149,6 +168,13 @@ async function main() {
       const mRefund = recoveryLines(mBill)
       check('monthly has EXACTLY ONE recovery refund line', mRefund.length === 1, `got ${mRefund.length}`)
       check('monthly refund amount correct (recorded − now)', mRefund[0]?.amount === wantRefund, `฿${mRefund[0]?.amount} want ฿${wantRefund}`)
+      // Utility-scoped overlay (owner lock 2026-07-18): the electricity recovery
+      // must NOT suppress the real water usage. Water = 220→228 = 8 units / ฿144.
+      const water = (mBill.line_items || []).find((l) => l.line_type === 'WATER')
+      check('monthly bills real WATER = 8 units', water?.quantity === 8, `got qty ${water?.quantity}`)
+      check('monthly WATER amount = ฿144 (8 × ฿18)', water?.amount === 144, `got ฿${water?.amount}`)
+      const elec = (mBill.line_items || []).find((l) => l.line_type === 'ELECTRICITY')
+      check('electricity usage stays 0 (recovery-anchored)', elec?.quantity === 0, `got qty ${elec?.quantity}`)
     }
 
     console.log('\nSTEP 6 — no duplicate recovery')

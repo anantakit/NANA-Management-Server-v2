@@ -2,6 +2,7 @@ package meterreading
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,8 @@ type MeterReadingRepository interface {
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
 	HasConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
 	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
+	FindConsumptionMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
+	FindConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (*MeterReading, error)
 	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
@@ -356,6 +359,55 @@ func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context,
 		result[row.RoomID] = row
 	}
 	return result, nil
+}
+
+// FindConsumptionMonthlyByRoomsAndMonth bulk-fetches the REAL (non-anchor) MONTHLY
+// consumption rows for multiple rooms in one query — the companion to
+// FindMonthlyByRoomsAndMonth's recovery-preferred winner. It filters
+// `anchor_reason IS NULL` (same predicate as HasConsumptionMonthlyByRoomAndMonth
+// + the migration 00041 consumption-uniqueness index), so at most one row per
+// room. Used by the monthly billing layer to build a utility-scoped projection:
+// when a recovery anchor governs the month, the unaffected utility must still
+// bill its real usage from THIS row (owner lock 2026-07-18). Read-only; never
+// mutated.
+func (r *meterReadingRepository) FindConsumptionMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]*MeterReading{}, nil
+	}
+	var readings []MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id IN ? AND reading_type = ? AND billing_month = ? AND anchor_reason IS NULL AND deleted_at IS NULL",
+			roomIDs, ReadingTypeMonthly, month).
+		Find(&readings).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[uuid.UUID]*MeterReading, len(readings))
+	for i := range readings {
+		row := &readings[i]
+		result[row.RoomID] = row
+	}
+	return result, nil
+}
+
+// FindConsumptionMonthlyByRoomAndMonth returns the single REAL (non-anchor)
+// MONTHLY consumption row for one room+month, or (nil, nil) when none exists.
+// Singular sibling of FindConsumptionMonthlyByRoomsAndMonth for the single-bill
+// build path (buildMonthlyDraftBill), which re-fetches by ID and needs the
+// coexisting consumption row to project the recovery overlay per utility.
+func (r *meterReadingRepository) FindConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (*MeterReading, error) {
+	var m MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id = ? AND reading_type = ? AND billing_month = ? AND anchor_reason IS NULL AND deleted_at IS NULL",
+			roomID, ReadingTypeMonthly, month).
+		First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // FindExitByRoomID finds the active EXIT reading for a room.

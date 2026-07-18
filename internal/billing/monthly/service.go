@@ -204,7 +204,10 @@ func (s *service) buildBatchItems(
 			BillID:     cls.BillID,
 		}
 		if cls.ResultType == billing.ResultCreated {
-			reading := in.meterMap[c.RoomID]
+			// Utility-scoped recovery overlay: when the winner is a recovery anchor,
+			// the unaffected utility bills its real usage from the coexisting
+			// consumption row (owner lock 2026-07-18). No-op otherwise.
+			reading := billing.ProjectRecoveryUsageOverlay(in.meterMap[c.RoomID], in.consumptionMap[c.RoomID])
 			recon, rErr := billing.ResolveRecoveryReconciliation(ctx, reading, c.ContractID, s.bills)
 			if rErr != nil {
 				return nil, fmt.Errorf("resolve recovery reconciliation: %w", rErr)

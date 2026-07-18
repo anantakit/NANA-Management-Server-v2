@@ -144,6 +144,10 @@ type AuditStore interface {
 // surface. "Source" suffix per monthly's local intent naming convention.
 type MeterReadingSource interface {
 	FindMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	// FindConsumptionMonthlyByRoomsAndMonth returns the real (non-anchor) MONTHLY
+	// rows so the batch/replan snapshot can bill the unaffected utility's real
+	// usage when a recovery anchor governs the month (utility-scoped overlay).
+	FindConsumptionMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
 }
 
 // MoveOutSource is monthly's consumer-defined port onto moveout. "Source"
