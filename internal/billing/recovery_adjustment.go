@@ -110,7 +110,7 @@ func ResolveCorrection(
 // Utility names which metered utility this settles (electricity/water are
 // independent). Recorded/Physical/RatePerUnit carry the over-record EVIDENCE
 // onto the line so every surface (admin edit + tenant delivery) can explain the
-// refund: "จดไว้ {Recorded} → จริง {Physical}", "เกิน {Recorded−Physical} หน่วย ×
+// refund: "ค่าที่จด {Recorded} → ค่าที่อ่านได้ {Physical}", "เกิน {Recorded−Physical} หน่วย ×
 // {rate}". The refund amount is exactly (Recorded−Physical)×RatePerUnit.
 type RecoveryResolution struct {
 	RecoveryReadingID uuid.UUID

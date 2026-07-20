@@ -55,7 +55,7 @@ func TestComputeMonthlyBillSnapshot_AutoRefundOnOverRecord(t *testing.T) {
 	if refund.Amount != -(300*800) || refund.Quantity != 300 || refund.UnitPrice != 800 {
 		t.Errorf("refund = %+v, want amount %d / qty 300 / unit_price 800 (source rate)", refund, -(300 * 800))
 	}
-	if refund.Description != "จดไว้ 1500 → จริง 1200" {
+	if refund.Description != "ค่าที่จด 1500 → ค่าที่อ่านได้ 1200" {
 		t.Errorf("refund description = %q", refund.Description)
 	}
 	if refund.AdjustmentUtility == nil || *refund.AdjustmentUtility != AdjustmentUtilityElectricity {
