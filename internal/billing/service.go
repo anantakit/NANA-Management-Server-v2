@@ -302,27 +302,46 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 // caller persists inside its own TX (RegenerateDraft additionally voids the old
 // draft in that same TX for atomicity). The bill ID is pre-generated so the
 // caller's CREATE_DRAFT audit can reference it in the same TX as the insert.
-func (s *billingService) buildMonthlyDraftBill(ctx context.Context, c *contract.Contract, reading *meterreading.MeterReading, billingMonth string) (*Bill, error) {
-	// Utility-scoped recovery overlay (owner lock 2026-07-18). When `reading` is a
-	// recovery anchor, a real consumption row may coexist for the same room+month
-	// (the reconciliation-adapter path re-fetches the recovery-preferred winner by
-	// ID, so the projection MUST happen HERE, post-refetch, not at selection). The
-	// unaffected utility bills its real usage from that consumption row; the
-	// affected utility keeps the anchor's 0-usage + refund. No-op for a plain
-	// consumption reading. The projected reading keeps the recovery's identity, so
-	// the resolver + adjustment FK + lineage below are unchanged.
-	consumption, err := s.meters.FindConsumptionMonthlyByRoomAndMonth(ctx, c.RoomID, billingMonth)
+// resolveMonthlyBillingInput builds the canonical utility-scoped billing input
+// for (room, billing_month), INDEPENDENT of which reading a caller started from.
+// It discovers the recovery-preferred winner + the real (non-anchor) consumption
+// row and applies ProjectRecoveryUsageOverlay, so EVERY single-row monthly path
+// (generate / manual / regenerate / correct / reconciliation) shares one recovery
+// semantics: the over-recorded utility keeps 0-usage + source-priced refund
+// (identity/FK/lineage preserved), and every other utility bills its real usage
+// from the consumption row. It deliberately does NOT trust the passed-in reading
+// to be the anchor — a caller may hand it the consumption row (POST /bills/monthly
+// with the consumption meter_reading_id). `fallback` is used only when no MONTHLY
+// reading exists for the month (callers validate one exists; it is a safety net).
+// Batch/replan apply the same ProjectRecoveryUsageOverlay primitive over their
+// bulk maps — a per-row call here would reintroduce N+1.
+func (s *billingService) resolveMonthlyBillingInput(ctx context.Context, roomID uuid.UUID, billingMonth string, fallback *meterreading.MeterReading) (*meterreading.MeterReading, error) {
+	winners, err := s.meters.FindMonthlyByRoomsAndMonth(ctx, []uuid.UUID{roomID}, billingMonth)
+	if err != nil {
+		return nil, fmt.Errorf("find monthly winner: %w", err)
+	}
+	consumption, err := s.meters.FindConsumptionMonthlyByRoomAndMonth(ctx, roomID, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("find coexisting consumption reading: %w", err)
 	}
-	reading = ProjectRecoveryUsageOverlay(reading, consumption)
+	primary := winners[roomID]
+	if primary == nil {
+		primary = fallback
+	}
+	return ProjectRecoveryUsageOverlay(primary, consumption), nil
+}
 
-	recon, err := ResolveRecoveryReconciliation(ctx, reading, c.ID, s.repo)
+func (s *billingService) buildMonthlyDraftBill(ctx context.Context, c *contract.Contract, reading *meterreading.MeterReading, billingMonth string) (*Bill, error) {
+	input, err := s.resolveMonthlyBillingInput(ctx, c.RoomID, billingMonth, reading)
+	if err != nil {
+		return nil, err
+	}
+	recon, err := ResolveRecoveryReconciliation(ctx, input, c.ID, s.repo)
 	if err != nil {
 		return nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
 	}
 	snapshot := ComputeMonthlyBillSnapshot(billingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, input, recon)
 
 	// Payment destination is a read-only lookup; null when no rules configured.
 	aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)

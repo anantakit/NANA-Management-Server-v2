@@ -126,12 +126,19 @@ func (s *billingService) correctMonthlyBillInTx(
 		return uuid.Nil, ErrMeterNotFound
 	}
 
-	recon, err := ResolveRecoveryReconciliation(txCtx, reading, c.ID, s.repo)
+	// Utility-scoped recovery overlay (owner lock 2026-07-18) — the SAME canonical
+	// resolution every monthly path uses, so correcting a month that has a
+	// coexisting recovery does not suppress the unaffected utility's real usage.
+	input, err := s.resolveMonthlyBillingInput(txCtx, c.RoomID, old.BillingMonth, reading)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	recon, err := ResolveRecoveryReconciliation(txCtx, input, c.ID, s.repo)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
 	}
 	snapshot := ComputeMonthlyBillSnapshot(old.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, input, recon)
 
 	// Pre-generate the new bill's ID so both the SUPERSEDE link (set on
 	// old NOW) and the CREATE_FROM_CORRECTION audit can reference it.
