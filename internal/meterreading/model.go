@@ -68,6 +68,13 @@ var (
 	// recorded > current is the over-record that drives a refund.
 	ErrRecoveryElecRecordedBelowCurrent  = errors.New("READING_RECOVERY: electricity_recorded ต้องไม่น้อยกว่า electricity_current")
 	ErrRecoveryWaterRecordedBelowCurrent = errors.New("READING_RECOVERY: water_recorded ต้องไม่น้อยกว่า water_current")
+
+	// Replace Meter (PHYSICAL_REPLACEMENT event) validation.
+	ErrReplacementNoUtility             = errors.New("ต้องระบุการเปลี่ยนมิเตอร์อย่างน้อยหนึ่งชนิด (ไฟฟ้า/น้ำ)")
+	ErrReplacementNewInitialNegative    = errors.New("เลขเริ่มต้นมิเตอร์ใหม่ต้องไม่ติดลบ")
+	ErrReplacementNewInitialRequired    = errors.New("ต้องระบุเลขเริ่มต้นมิเตอร์ใหม่เมื่อเปลี่ยนมิเตอร์")
+	ErrReplacementOldFinalBelowPrevious = errors.New("เลขมิเตอร์เก่าตอนถอดต้องไม่น้อยกว่าเลขที่จดครั้งก่อน")
+	ErrReplacementOldBoundaryIncomplete = errors.New("ข้อมูลมิเตอร์เก่าต้องมีทั้งค่าก่อนหน้าและค่าสุดท้าย")
 )
 
 // --- Model ---
@@ -103,6 +110,30 @@ type MeterReading struct {
 	// Lock A is unaffected: previous/current still hold the physical value.
 	ElectricityRecorded *int `gorm:"column:electricity_recorded" json:"electricity_recorded,omitempty"`
 	WaterRecorded       *int `gorm:"column:water_recorded" json:"water_recorded,omitempty"`
+
+	// Replace Meter — which utility the operator physically replaced (declared
+	// truth of the event). True only on PHYSICAL_REPLACEMENT rows. Distinguishes a
+	// replaced-but-unreadable utility (old_final NULL) from an untouched one, and
+	// drives per-utility Recovery×Replacement collision detection.
+	ElectricityReplaced bool `gorm:"not null;default:false;column:electricity_replaced" json:"electricity_replaced,omitempty"`
+	WaterReplaced       bool `gorm:"not null;default:false;column:water_replaced" json:"water_replaced,omitempty"`
+
+	// Replace Meter (PHYSICAL_REPLACEMENT event) — the FROZEN old-meter closing
+	// boundary, per utility. Populated ONLY on PHYSICAL_REPLACEMENT anchors and
+	// ONLY for a replaced utility whose old meter was readable (nil = utility not
+	// replaced, or old meter unreadable → tail 0, the honest floor).
+	// tail(U) = {U}OldFinal − {U}OldPrevious, FROZEN at capture so a later lineage
+	// mutation (recovery retract, move-out cancel) can never move a closed segment
+	// (REPLACE_METER_PREBUILD_INVARIANT_CHALLENGE.md Q1). {U}Current holds the new
+	// meter's initial reading (forward baseline); old_previous is snapshotted from
+	// the predecessor reading, NOT re-derived from lineage.
+	ElectricityOldPrevious *int `gorm:"column:electricity_old_previous" json:"electricity_old_previous,omitempty"`
+	ElectricityOldFinal    *int `gorm:"column:electricity_old_final" json:"electricity_old_final,omitempty"`
+	WaterOldPrevious       *int `gorm:"column:water_old_previous" json:"water_old_previous,omitempty"`
+	WaterOldFinal          *int `gorm:"column:water_old_final" json:"water_old_final,omitempty"`
+	// Provenance ONLY (never calculation authority): the reading this replacement
+	// physically followed. ON DELETE SET NULL — must never block a cancel/retract.
+	PredecessorReadingID *uuid.UUID `gorm:"type:uuid;column:predecessor_reading_id" json:"predecessor_reading_id,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`
@@ -273,7 +304,218 @@ func (m *MeterReading) ValidateAnchor() error {
 			return ErrRecoveryWaterRecordedBelowCurrent
 		}
 	}
+	if *m.AnchorReason == AnchorReasonPhysicalReplacement {
+		// The frozen old-meter boundary is a both-or-neither pair per utility,
+		// and the old meter cannot run backwards (old_final >= old_previous;
+		// equal = stuck → tail 0). DB CHECKs (migration 00049) are the backstop.
+		if (m.ElectricityOldPrevious == nil) != (m.ElectricityOldFinal == nil) ||
+			(m.WaterOldPrevious == nil) != (m.WaterOldFinal == nil) {
+			return ErrReplacementOldBoundaryIncomplete
+		}
+		if m.ElectricityOldFinal != nil && *m.ElectricityOldFinal < *m.ElectricityOldPrevious {
+			return ErrReplacementOldFinalBelowPrevious
+		}
+		if m.WaterOldFinal != nil && *m.WaterOldFinal < *m.WaterOldPrevious {
+			return ErrReplacementOldFinalBelowPrevious
+		}
+	}
 	return nil
+}
+
+// IsPhysicalReplacement reports whether this row is a PHYSICAL_REPLACEMENT event.
+func (m *MeterReading) IsPhysicalReplacement() bool {
+	return m.AnchorReason != nil && *m.AnchorReason == AnchorReasonPhysicalReplacement
+}
+
+// ElectricityReplacementTail returns the FROZEN old-meter closing consumption for
+// electricity on a replacement event (old_final − old_previous), or 0 when this
+// utility was not replaced / the old meter was unreadable. Pure; reads only the
+// frozen columns, never lineage.
+func (m *MeterReading) ElectricityReplacementTail() int {
+	if m.ElectricityOldFinal == nil || m.ElectricityOldPrevious == nil {
+		return 0
+	}
+	return *m.ElectricityOldFinal - *m.ElectricityOldPrevious
+}
+
+// WaterReplacementTail returns the FROZEN old-meter closing consumption for water.
+func (m *MeterReading) WaterReplacementTail() int {
+	if m.WaterOldFinal == nil || m.WaterOldPrevious == nil {
+		return 0
+	}
+	return *m.WaterOldFinal - *m.WaterOldPrevious
+}
+
+// AffectedReplacementUtilities returns the utilities this event physically
+// replaced, as billing-side primitive strings. Empty when not a replacement.
+// Mirrors AffectedRecoveryUtilities so the billing layer can intersect the two
+// for per-utility Recovery×Replacement collision detection (R-b guard).
+func (m *MeterReading) AffectedReplacementUtilities() []string {
+	if !m.IsPhysicalReplacement() {
+		return nil
+	}
+	var out []string
+	if m.ElectricityReplaced {
+		out = append(out, "ELECTRICITY")
+	}
+	if m.WaterReplaced {
+		out = append(out, "WATER")
+	}
+	return out
+}
+
+// --- Replace Meter: canonical period usage (structured, single source of truth) ---
+
+// UsageSegmentKind classifies one physical consumption segment within a period.
+type UsageSegmentKind string
+
+const (
+	// UsageSegmentReading is the ordinary/new-meter segment (current − previous).
+	UsageSegmentReading UsageSegmentKind = "READING"
+	// UsageSegmentReplacementOldTail is the old meter's closing segment at a
+	// replacement (old_final − old_previous).
+	UsageSegmentReplacementOldTail UsageSegmentKind = "REPLACEMENT_OLD_TAIL"
+)
+
+// UsageSegment is one raw physical consumption segment. The bill's human-readable
+// breakdown is rendered from these SAME segments the total is summed from — the
+// presentation layer must never recompute usage (owner lock 2026-07-21: else BE
+// says 200 while UI explains 180). Carries no internal row IDs.
+type UsageSegment struct {
+	Kind     UsageSegmentKind `json:"kind"`
+	Previous int              `json:"previous"`
+	Current  int              `json:"current"` // new_current for READING; old_final for a tail
+	Usage    int              `json:"usage"`
+}
+
+// UtilityCanonicalUsage is one utility's period usage: the billable Total plus
+// the physical Segments that compose it (for the breakdown).
+type UtilityCanonicalUsage struct {
+	Total    int            `json:"total"`
+	Segments []UsageSegment `json:"segments"`
+}
+
+// CanonicalPeriodUsage computes the canonical per-utility period usage for a
+// billing reading (`consumption` — a MONTHLY consumption row or an EXIT reading)
+// plus any PHYSICAL_REPLACEMENT events that fall in the same billing window.
+//
+//	usage(U) = consumption.Used(U)             [new/normal segment]
+//	         + Σ replacement.tail(U)           [each FROZEN old-meter closing segment]
+//
+// Pure & order-independent: every tail is self-contained on its own frozen row
+// (R4.5 Q1/Q2). With no replacements it returns exactly consumption.Used(U) as a
+// single READING segment — byte-identical to the pre-Replace-Meter behaviour, so
+// ordinary bills are unaffected. Segments are ordered chronologically for a
+// natural "before → after" breakdown: caller passes `replacements` already sorted
+// oldest-first; each old tail precedes the final reading segment.
+func CanonicalPeriodUsage(consumption *MeterReading, replacements []*MeterReading) (elec, water UtilityCanonicalUsage) {
+	for _, r := range replacements {
+		if r == nil || !r.IsPhysicalReplacement() {
+			continue
+		}
+		if r.ElectricityOldFinal != nil {
+			t := r.ElectricityReplacementTail()
+			elec.Segments = append(elec.Segments, UsageSegment{
+				Kind: UsageSegmentReplacementOldTail, Previous: *r.ElectricityOldPrevious, Current: *r.ElectricityOldFinal, Usage: t,
+			})
+			elec.Total += t
+		}
+		if r.WaterOldFinal != nil {
+			t := r.WaterReplacementTail()
+			water.Segments = append(water.Segments, UsageSegment{
+				Kind: UsageSegmentReplacementOldTail, Previous: *r.WaterOldPrevious, Current: *r.WaterOldFinal, Usage: t,
+			})
+			water.Total += t
+		}
+	}
+	if consumption != nil {
+		eUsed, wUsed := consumption.ElectricityUsed(), consumption.WaterUsed()
+		elec.Segments = append(elec.Segments, UsageSegment{
+			Kind: UsageSegmentReading, Previous: consumption.ElectricityPrevious, Current: consumption.ElectricityCurrent, Usage: eUsed,
+		})
+		elec.Total += eUsed
+		water.Segments = append(water.Segments, UsageSegment{
+			Kind: UsageSegmentReading, Previous: consumption.WaterPrevious, Current: consumption.WaterCurrent, Usage: wUsed,
+		})
+		water.Total += wUsed
+	}
+	return elec, water
+}
+
+// --- Replace Meter: factory ---
+
+// ReplacementUtilityInput is the per-utility input for a physical replacement.
+// Replaced=false → this utility is untouched (baseline carried forward, no tail).
+// OldFinal is optional (nil = old meter unreadable → tail 0, the honest floor).
+type ReplacementUtilityInput struct {
+	Replaced   bool
+	OldFinal   *int
+	NewInitial int
+}
+
+// NewReplacementAnchor builds a PHYSICAL_REPLACEMENT anchor from the frozen
+// physical boundary observed at the swap. `latest` is the room's latest reading
+// at capture time; for a replaced utility its current is snapshotted as the FROZEN
+// old_previous (R4.5 Q1 — NOT re-derived later). A replaced utility re-anchors to
+// new_initial (previous=current=new_initial → forward baseline); a non-replaced
+// utility carries latest's current forward unchanged. `new_current` is NOT part of
+// the event — it arrives later as an ordinary reading.
+func NewReplacementAnchor(roomID uuid.UUID, latest *MeterReading, month, note string, elec, water ReplacementUtilityInput) (*MeterReading, error) {
+	if !elec.Replaced && !water.Replaced {
+		return nil, ErrReplacementNoUtility
+	}
+	if (elec.Replaced && elec.NewInitial < 0) || (water.Replaced && water.NewInitial < 0) {
+		return nil, ErrReplacementNewInitialNegative
+	}
+
+	// old_previous = the latest known value of the meter being removed (snapshot).
+	// No prior reading → inception baseline 0 (first-ever reading semantics).
+	var latestElec, latestWater int
+	if latest != nil {
+		latestElec, latestWater = latest.ElectricityCurrent, latest.WaterCurrent
+	}
+
+	reason := AnchorReasonPhysicalReplacement
+	bm := month
+	m := &MeterReading{
+		RoomID:              roomID,
+		ReadingType:         ReadingTypeMonthly,
+		BillingMonth:        &bm,
+		AnchorReason:        &reason,
+		AnchorNote:          &note,
+		ElectricityReplaced: elec.Replaced,
+		WaterReplaced:       water.Replaced,
+	}
+	if latest != nil {
+		m.PredecessorReadingID = &latest.ID
+	}
+
+	// Electricity
+	if elec.Replaced {
+		m.ElectricityPrevious, m.ElectricityCurrent = elec.NewInitial, elec.NewInitial
+		if elec.OldFinal != nil {
+			op := latestElec
+			m.ElectricityOldPrevious, m.ElectricityOldFinal = &op, elec.OldFinal
+		}
+	} else {
+		m.ElectricityPrevious, m.ElectricityCurrent = latestElec, latestElec
+	}
+
+	// Water
+	if water.Replaced {
+		m.WaterPrevious, m.WaterCurrent = water.NewInitial, water.NewInitial
+		if water.OldFinal != nil {
+			op := latestWater
+			m.WaterOldPrevious, m.WaterOldFinal = &op, water.OldFinal
+		}
+	} else {
+		m.WaterPrevious, m.WaterCurrent = latestWater, latestWater
+	}
+
+	if err := m.ValidateAnchor(); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // MeterReplacedFlags indicates which meters have been physically replaced.

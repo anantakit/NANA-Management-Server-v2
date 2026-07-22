@@ -72,6 +72,20 @@ Room response includes `active_contract`: contract_id, tenant_id, tenant_name, t
 | PUT | `/:contractId` | Update contract (ACTIVE only: rent, deposit, rates, min_months) |
 | DELETE | `/:contractId` | Soft delete contract (blocked if ACTIVE) |
 
+## Meter Readings (`/api/v1/apartments/:apartmentId/meter-readings`) — Admin only
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | List readings (paginated) |
+| GET | `/baselines` | Per-room anomaly baselines |
+| POST | `/` | Create MONTHLY reading (legacy `is_*_meter_replaced` flag still functional but deprecated; rejected 409 when a PHYSICAL_REPLACEMENT event exists for the same room+month to avoid double-count) |
+| POST | `/exit` | Create EXIT reading (move-out) |
+| POST | `/batch` | Batch create MONTHLY readings |
+| POST | `/replacements` | **Replace Meter** — record a physical meter replacement EVENT (PHYSICAL_REPLACEMENT anchor), decoupled from a reading. Body: `{room_id, replacement_date (YYYY-MM-DD), note, electricity:{replaced, old_final?, new_initial}, water:{...}}`. Freezes the old-meter boundary (`old_previous` snapshot + `old_final`) per utility; canonical period usage = old-meter tail + new-meter reading. Always recordable (physical truth); Recovery×Replacement same-utility/month is guarded at bill time, not here. |
+| POST | `/baseline-corrections` | Reading Recovery anchor (READING_RECOVERY) |
+| DELETE | `/rooms/:roomId/baseline-corrections/:correctionId` | Soft-delete pending recovery |
+| GET | `/rooms/:roomId/latest` · `/rooms/:roomId/history` · `/:readingId` | Latest / history / detail |
+| PUT | `/:readingId` | Update latest reading |
+
 ## Move-Out Notices (`/api/v1/move-out-notices`) — Admin only
 | Method | Path | Description |
 |--------|------|-------------|

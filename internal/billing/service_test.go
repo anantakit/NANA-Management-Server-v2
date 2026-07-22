@@ -302,9 +302,17 @@ type mockMeterQuerier struct {
 	findByIDSimpleFn                    func(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
 	findMonthlyByRoomsAndMonthFn        func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
 	findConsumptionMonthlyByRoomMonthFn func(ctx context.Context, roomID uuid.UUID, month string) (*meterreading.MeterReading, error)
+	findReplacementAnchorsFn            func(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error)
 }
 
 var _ MeterReadingQuerier = (*mockMeterQuerier)(nil)
+
+func (m *mockMeterQuerier) FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error) {
+	if m.findReplacementAnchorsFn != nil {
+		return m.findReplacementAnchorsFn(ctx, roomID, month)
+	}
+	return nil, nil
+}
 
 func (m *mockMeterQuerier) FindByIDSimple(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error) {
 	if m.findByIDSimpleFn != nil {

@@ -42,6 +42,12 @@ type MeterReadingRepository interface {
 	FindConsumptionMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*MeterReading, error)
 	FindConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (*MeterReading, error)
 	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+
+	// Replace Meter — PHYSICAL_REPLACEMENT events in a billing window. Returned
+	// oldest-first (created_at ASC) so CanonicalPeriodUsage emits tails in a
+	// natural before→after order. Singular + bulk (batch) variants.
+	FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*MeterReading, error)
+	FindReplacementAnchorsByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID][]*MeterReading, error)
 	Create(ctx context.Context, reading *MeterReading) error
 	Update(ctx context.Context, reading *MeterReading) error
 	Delete(ctx context.Context, id uuid.UUID) error
@@ -352,6 +358,12 @@ func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context,
 	result := make(map[uuid.UUID]*MeterReading, len(readings))
 	for i := range readings {
 		row := &readings[i]
+		// A PHYSICAL_REPLACEMENT anchor is ADDITIVE (its tail is aggregated by
+		// CanonicalPeriodUsage), NEVER the governing billing row. It must never win
+		// the primary slot — the consumption row (or a recovery) governs.
+		if row.IsPhysicalReplacement() {
+			continue
+		}
 		if existing := result[row.RoomID]; existing != nil &&
 			existing.AnchorReason != nil && *existing.AnchorReason == AnchorReasonReadingRecovery {
 			continue // recovery row already chosen — never downgrade to consumption
@@ -359,6 +371,47 @@ func (r *meterReadingRepository) FindMonthlyByRoomsAndMonth(ctx context.Context,
 		result[row.RoomID] = row
 	}
 	return result, nil
+}
+
+// FindReplacementAnchorsByRoomAndMonth returns the room's PHYSICAL_REPLACEMENT
+// events for a billing month, oldest-first (created_at ASC).
+func (r *meterReadingRepository) FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*MeterReading, error) {
+	var rows []MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id = ? AND reading_type = 'MONTHLY' AND billing_month = ? AND anchor_reason = ? AND deleted_at IS NULL",
+			roomID, month, AnchorReasonPhysicalReplacement).
+		Order("created_at ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*MeterReading, len(rows))
+	for i := range rows {
+		out[i] = &rows[i]
+	}
+	return out, nil
+}
+
+// FindReplacementAnchorsByRoomsAndMonth is the batch variant — one query, grouped
+// by room, each group oldest-first.
+func (r *meterReadingRepository) FindReplacementAnchorsByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID][]*MeterReading, error) {
+	out := make(map[uuid.UUID][]*MeterReading)
+	if len(roomIDs) == 0 {
+		return out, nil
+	}
+	var rows []MeterReading
+	err := database.DB(ctx, r.db).
+		Where("room_id IN ? AND reading_type = 'MONTHLY' AND billing_month = ? AND anchor_reason = ? AND deleted_at IS NULL",
+			roomIDs, month, AnchorReasonPhysicalReplacement).
+		Order("created_at ASC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		out[rows[i].RoomID] = append(out[rows[i].RoomID], &rows[i])
+	}
+	return out, nil
 }
 
 // FindConsumptionMonthlyByRoomsAndMonth bulk-fetches the REAL (non-anchor) MONTHLY

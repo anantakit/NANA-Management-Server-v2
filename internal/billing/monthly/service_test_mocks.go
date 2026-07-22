@@ -324,6 +324,7 @@ var errMockNotFound = gorm.ErrRecordNotFound
 type mockMeterQuerier struct {
 	findMonthlyByRoomsAndMonthFn            func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
 	findConsumptionMonthlyByRoomsAndMonthFn func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	findReplacementAnchorsByRoomsAndMonthFn func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID][]*meterreading.MeterReading, error)
 }
 
 var _ MeterReadingSource = (*mockMeterQuerier)(nil)
@@ -340,6 +341,13 @@ func (m *mockMeterQuerier) FindConsumptionMonthlyByRoomsAndMonth(ctx context.Con
 		return m.findConsumptionMonthlyByRoomsAndMonthFn(ctx, roomIDs, month)
 	}
 	return map[uuid.UUID]*meterreading.MeterReading{}, nil
+}
+
+func (m *mockMeterQuerier) FindReplacementAnchorsByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID][]*meterreading.MeterReading, error) {
+	if m.findReplacementAnchorsByRoomsAndMonthFn != nil {
+		return m.findReplacementAnchorsByRoomsAndMonthFn(ctx, roomIDs, month)
+	}
+	return map[uuid.UUID][]*meterreading.MeterReading{}, nil
 }
 
 // --- MoveOutSource mock ---

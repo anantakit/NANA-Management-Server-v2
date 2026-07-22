@@ -26,6 +26,7 @@ func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	router.Post("/", h.Create)
 	router.Post("/exit", h.CreateExitReading)
 	router.Post("/batch", h.BatchCreate)
+	router.Post("/replacements", h.CreateReplacement)
 	// Phase 7 baseline correction — meter-only commit (Adjustment
 	// Application moved to BillEditDrawer / UpdateMonthlyDraft).
 	// Static segments registered BEFORE "/:readingId" so Fiber v3's
@@ -92,6 +93,25 @@ func (h *MeterReadingHandler) Create(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 	return respond.Created(c, "บันทึกมิเตอร์แล้ว", ToMeterReadingResponse(*reading))
+}
+
+// CreateReplacement records a physical meter replacement event (admin op).
+func (h *MeterReadingHandler) CreateReplacement(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	var req CreateReplacementRequest
+	if err := bind.Body(c, &req); err != nil {
+		return err
+	}
+
+	reading, err := h.svc.CreateMeterReplacement(c.Context(), apartmentID, req)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+	return respond.Created(c, "บันทึกการเปลี่ยนมิเตอร์แล้ว", ToMeterReadingResponse(*reading))
 }
 
 func (h *MeterReadingHandler) CreateExitReading(c fiber.Ctx) error {

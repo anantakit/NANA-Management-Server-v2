@@ -129,7 +129,7 @@ func (s *billingService) correctMonthlyBillInTx(
 	// Utility-scoped recovery overlay (owner lock 2026-07-18) — the SAME canonical
 	// resolution every monthly path uses, so correcting a month that has a
 	// coexisting recovery does not suppress the unaffected utility's real usage.
-	input, err := s.resolveMonthlyBillingInput(txCtx, c.RoomID, old.BillingMonth, reading)
+	input, replacements, err := s.resolveMonthlyBillingInput(txCtx, c.RoomID, old.BillingMonth, reading)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -137,8 +137,10 @@ func (s *billingService) correctMonthlyBillInTx(
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
 	}
+	// Correction re-reads meter truth → a fresh breakdown; the voided old bill
+	// keeps its own frozen breakdown (bill immutability).
 	snapshot := ComputeMonthlyBillSnapshot(old.BillingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, input, recon)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, input, replacements, recon)
 
 	// Pre-generate the new bill's ID so both the SUPERSEDE link (set on
 	// old NOW) and the CREATE_FROM_CORRECTION audit can reference it.

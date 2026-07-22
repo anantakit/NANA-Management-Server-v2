@@ -30,6 +30,10 @@ type MeterReadingQuerier interface {
 	// consumption row coexisting with a recovery anchor, so buildMonthlyDraftBill
 	// can project the recovery overlay per utility after its ID-based re-fetch.
 	FindConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (*meterreading.MeterReading, error)
+	// FindReplacementAnchorsByRoomAndMonth returns the room's PHYSICAL_REPLACEMENT
+	// events for the month (oldest-first) so CanonicalPeriodUsage can aggregate
+	// their tails into the period usage. Replace Meter.
+	FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error)
 }
 
 // BillingConfigQuerier looks up configurable fees for settlement bills.

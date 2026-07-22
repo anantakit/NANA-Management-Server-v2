@@ -30,7 +30,7 @@ func TestComputeMonthlyBillSnapshot_AutoRefundOnOverRecord(t *testing.T) {
 		WaterCurrent:        220, // normal water usage 20, not a recovery
 	}
 	recon := &RecoveryReconciliation{Electricity: i64ptr(800)} // source-bill rate
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 1000, 1800, reading, recon)
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 1000, 1800, reading, nil, recon)
 
 	if len(snap.LineItems) != 4 {
 		t.Fatalf("line count = %d, want 4 (rent, elec, water, refund)", len(snap.LineItems))
@@ -103,7 +103,7 @@ func TestComputeMonthlyBillSnapshot_S0_NilRecon_NoRefund(t *testing.T) {
 		ElectricityRecorded: &recorded, // a real over-record...
 	}
 	// ...but recon is nil (source never billed) → no forward credit.
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil)
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil, nil)
 	for _, li := range snap.LineItems {
 		if li.Type == LineItemAdjustment {
 			t.Errorf("S0 (unbilled source) must emit NO refund line, got %+v", li)
@@ -124,7 +124,7 @@ func TestComputeMonthlyBillSnapshot_ZeroRateOverRecord_NoLine(t *testing.T) {
 		ElectricityRecorded: &recorded,
 	}
 	recon := &RecoveryReconciliation{Electricity: i64ptr(0)} // source billed at rate 0
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, recon)
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil, recon)
 	for _, li := range snap.LineItems {
 		if li.Type == LineItemAdjustment {
 			t.Errorf("zero-rate over-record must emit NO refund line, got %+v", li)
@@ -141,7 +141,7 @@ func TestComputeMonthlyBillSnapshot_NormalReading_NoRefund(t *testing.T) {
 		WaterPrevious:       200,
 		WaterCurrent:        220,
 	}
-	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil)
+	snap := ComputeMonthlyBillSnapshot("2026-07", 250000, 800, 1800, reading, nil, nil)
 	if len(snap.LineItems) != 3 {
 		t.Errorf("normal reading line count = %d, want 3 (rent+elec+water, no refund)", len(snap.LineItems))
 	}

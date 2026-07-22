@@ -31,6 +31,18 @@ var (
 		409,
 		"ห้องนี้ยังไม่มีบิลร่างของเดือนนี้ — ออกบิลรายเดือนก่อนแล้วจึงปรับยอด",
 	)
+
+	// Replace Meter — R-b collision guard (owner OD-R 2026-07-21). A billing
+	// period has BOTH a READING_RECOVERY and a PHYSICAL_REPLACEMENT on the SAME
+	// utility, a composition the current resolver does not support. TEMPORARY
+	// architecture limitation, NOT a business rule: the replacement event is
+	// always recordable; only this bill is refused so it can never silently
+	// under-bill. Distinct code so the FE can surface the actionable state.
+	ErrRecoveryReplacementCollision = respond.New(
+		"RECOVERY_REPLACEMENT_COLLISION",
+		409,
+		"เดือนนี้มีทั้งการแก้ค่ามิเตอร์ (recovery) และการเปลี่ยนมิเตอร์ในสาธารณูปโภคเดียวกัน — ระบบยังคำนวณรวมให้อัตโนมัติไม่ได้ กรุณาตรวจสอบด้วยตนเอง",
+	)
 )
 
 // Settlement-only sentinels (ErrMoveOutNotFound, ErrActualDateRequired,

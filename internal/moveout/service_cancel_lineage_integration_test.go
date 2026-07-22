@@ -204,6 +204,7 @@ func TestMoveOutCancel_RevertsExitSettlement_ThenMonthlyBillUsesCorrectPrevious(
 		c.WaterRatePerUnit,
 		&newReading.MeterReading,
 		nil,
+		nil,
 	)
 
 	var elecQty, waterQty int

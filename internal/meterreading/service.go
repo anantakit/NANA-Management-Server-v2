@@ -30,6 +30,10 @@ type MeterReadingService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*MeterReadingWithRoom, error)
 	Create(ctx context.Context, apartmentID uuid.UUID, req CreateRequest) (*MeterReadingWithRoom, error)
 	CreateExitReading(ctx context.Context, apartmentID uuid.UUID, req ExitCreateRequest) (*MeterReadingWithRoom, error)
+	// CreateMeterReplacement records a PHYSICAL_REPLACEMENT event (admin op),
+	// decoupled from a reading. The event is ALWAYS recordable (physical truth);
+	// the Recovery×Replacement billing collision is guarded at bill time, not here.
+	CreateMeterReplacement(ctx context.Context, apartmentID uuid.UUID, req CreateReplacementRequest) (*MeterReadingWithRoom, error)
 	BatchCreate(ctx context.Context, apartmentID uuid.UUID, req BatchCreateRequest) ([]MeterReadingWithRoom, error)
 	Update(ctx context.Context, id uuid.UUID, req UpdateRequest) (*MeterReadingWithRoom, error)
 	GetLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
@@ -136,6 +140,16 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้")
 	}
 
+	// Replace Meter backward-compat guard: the legacy `is_*_meter_replaced` flag
+	// (which zeroes previous) MUST NOT coexist with a first-class PHYSICAL_REPLACEMENT
+	// event for the same room+month — that would double-count (tail from the event +
+	// previous=0 on this reading). Direct the operator to the event instead.
+	if rf := req.ReplacedFlags(); rf.Electricity || rf.Water {
+		if anchors, aErr := s.repo.FindReplacementAnchorsByRoomAndMonth(ctx, roomID, req.BillingMonth); aErr == nil && len(anchors) > 0 {
+			return nil, respond.ErrConflict.WithMessage("ห้องนี้มีการบันทึกเปลี่ยนมิเตอร์ในเดือนนี้แล้ว ไม่ต้องติ๊กเปลี่ยนมิเตอร์ในการจดซ้ำ")
+		}
+	}
+
 	// Fetch latest for auto-populate
 	latest := s.findLatestOrNil(ctx, roomID)
 
@@ -157,6 +171,53 @@ func (s *meterReadingService) Create(ctx context.Context, apartmentID uuid.UUID,
 	}
 
 	return s.repo.FindByID(ctx, reading.ID)
+}
+
+func (s *meterReadingService) CreateMeterReplacement(ctx context.Context, apartmentID uuid.UUID, req CreateReplacementRequest) (*MeterReadingWithRoom, error) {
+	roomID, err := uuid.Parse(req.RoomID)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("รหัสห้องไม่ถูกต้อง")
+	}
+	date, err := time.Parse("2006-01-02", req.ReplacementDate)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage("รูปแบบวันที่ไม่ถูกต้อง (YYYY-MM-DD)")
+	}
+	month := date.Format("2006-01")
+
+	r, err := s.rooms.FindByID(ctx, roomID)
+	if err != nil {
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้อง")
+	}
+	if r.ApartmentID != apartmentID {
+		return nil, respond.ErrNotFound.WithMessage("ไม่พบห้องในอาคารนี้")
+	}
+
+	elecInput, err := req.Electricity.toInput()
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	waterInput, err := req.Water.toInput()
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+
+	// latest = the frozen predecessor whose per-utility current is snapshotted as
+	// old_previous (R4.5 Q1 — frozen at capture, never re-derived).
+	latest := s.findLatestOrNil(ctx, roomID)
+	anchor, err := NewReplacementAnchor(roomID, latest, month, req.Note, elecInput, waterInput)
+	if err != nil {
+		return nil, respond.ErrBadRequest.WithMessage(err.Error())
+	}
+	// Atomic capture: ALL physical facts (per-utility replaced flags + frozen
+	// old_previous/old_final + new_initial + note) live on ONE row persisted in a
+	// single insert — no partial physical truth is representable. Wrapped in a tx
+	// so a future meter-event audit write can join the same atomic boundary.
+	if err := s.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		return s.repo.Create(txCtx, anchor)
+	}); err != nil {
+		return nil, s.mapCreateError(err)
+	}
+	return s.repo.FindByID(ctx, anchor.ID)
 }
 
 func (s *meterReadingService) CreateExitReading(ctx context.Context, apartmentID uuid.UUID, req ExitCreateRequest) (*MeterReadingWithRoom, error) {

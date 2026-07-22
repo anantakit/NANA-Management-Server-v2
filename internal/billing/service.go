@@ -315,24 +315,33 @@ func (s *billingService) CreateMonthlyBill(ctx context.Context, req CreateMonthl
 // reading exists for the month (callers validate one exists; it is a safety net).
 // Batch/replan apply the same ProjectRecoveryUsageOverlay primitive over their
 // bulk maps — a per-row call here would reintroduce N+1.
-func (s *billingService) resolveMonthlyBillingInput(ctx context.Context, roomID uuid.UUID, billingMonth string, fallback *meterreading.MeterReading) (*meterreading.MeterReading, error) {
+func (s *billingService) resolveMonthlyBillingInput(ctx context.Context, roomID uuid.UUID, billingMonth string, fallback *meterreading.MeterReading) (*meterreading.MeterReading, []*meterreading.MeterReading, error) {
 	winners, err := s.meters.FindMonthlyByRoomsAndMonth(ctx, []uuid.UUID{roomID}, billingMonth)
 	if err != nil {
-		return nil, fmt.Errorf("find monthly winner: %w", err)
+		return nil, nil, fmt.Errorf("find monthly winner: %w", err)
 	}
 	consumption, err := s.meters.FindConsumptionMonthlyByRoomAndMonth(ctx, roomID, billingMonth)
 	if err != nil {
-		return nil, fmt.Errorf("find coexisting consumption reading: %w", err)
+		return nil, nil, fmt.Errorf("find coexisting consumption reading: %w", err)
+	}
+	replacements, err := s.meters.FindReplacementAnchorsByRoomAndMonth(ctx, roomID, billingMonth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("find replacement events: %w", err)
 	}
 	primary := winners[roomID]
 	if primary == nil {
 		primary = fallback
 	}
-	return ProjectRecoveryUsageOverlay(primary, consumption), nil
+	input := ProjectRecoveryUsageOverlay(primary, consumption)
+	// R-b guard: refuse (never silently under-bill) a same-utility Recovery×Replacement.
+	if err := DetectRecoveryReplacementCollision(input, replacements); err != nil {
+		return nil, nil, err
+	}
+	return input, replacements, nil
 }
 
 func (s *billingService) buildMonthlyDraftBill(ctx context.Context, c *contract.Contract, reading *meterreading.MeterReading, billingMonth string) (*Bill, error) {
-	input, err := s.resolveMonthlyBillingInput(ctx, c.RoomID, billingMonth, reading)
+	input, replacements, err := s.resolveMonthlyBillingInput(ctx, c.RoomID, billingMonth, reading)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +350,7 @@ func (s *billingService) buildMonthlyDraftBill(ctx context.Context, c *contract.
 		return nil, fmt.Errorf("resolve recovery reconciliation: %w", err)
 	}
 	snapshot := ComputeMonthlyBillSnapshot(billingMonth,
-		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, input, recon)
+		c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, input, replacements, recon)
 
 	// Payment destination is a read-only lookup; null when no rules configured.
 	aptID, roomNum, _ := s.repo.FindRoomApartmentInfo(ctx, c.RoomID)

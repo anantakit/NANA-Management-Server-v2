@@ -159,6 +159,7 @@ func TestRollover_NextMonthUsesNewLowValue(t *testing.T) {
 		c.WaterRatePerUnit,
 		&mn.MeterReading,
 		nil,
+		nil,
 	)
 	if snapN.TotalAmount != 364_400 {
 		t.Errorf("Month N (rollover) snapshot total = %d, want 364400 (rent + 49*800 + 14*1800)", snapN.TotalAmount)
@@ -238,6 +239,7 @@ func TestRollover_NextMonthUsesNewLowValue(t *testing.T) {
 		c.ElectricityRatePerUnit,
 		c.WaterRatePerUnit,
 		&mNext.MeterReading,
+		nil,
 		nil,
 	)
 	if snapNext.TotalAmount != 384_000 {

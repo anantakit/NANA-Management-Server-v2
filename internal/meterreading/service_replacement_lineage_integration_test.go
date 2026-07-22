@@ -20,6 +20,14 @@ import (
 	"nana/internal/testutil/testdb"
 )
 
+// NOTE (Replace Meter, 2026-07): this test now documents the DEPRECATED legacy
+// `is_*_meter_replaced` flag path, which is intentionally kept functional
+// (previous=0, backward compat) but is NOT the canonical replacement ontology.
+// The canonical, event-based two-segment replacement (old-meter tail + new-meter
+// reading → CanonicalPeriodUsage) is covered by
+// service_replacement_event_integration_test.go. Kept (not deleted) as the
+// legacy-path regression anchor per the owner's "revise, don't delete" lock.
+//
 // TestReplacement_NextMonthInheritsNewMeterStart locks the meter-replacement
 // lineage invariant:
 //
@@ -186,6 +194,7 @@ func TestReplacement_NextMonthInheritsNewMeterStart(t *testing.T) {
 		c.ElectricityRatePerUnit,
 		c.WaterRatePerUnit,
 		&mNext.MeterReading,
+		nil,
 		nil,
 	)
 	var elecQty, waterQty int

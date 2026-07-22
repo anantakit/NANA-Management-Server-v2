@@ -82,6 +82,9 @@ type batchInputs struct {
 	// to project the recovery overlay's UNAFFECTED utility usage. Separate from
 	// meterMap (the recovery-preferred winner) so classification stays unchanged.
 	consumptionMap map[uuid.UUID]*meterreading.MeterReading
+	// replacementMap holds PHYSICAL_REPLACEMENT events per room (oldest-first),
+	// aggregated into canonical period usage + used for the R-b collision guard.
+	replacementMap map[uuid.UUID][]*meterreading.MeterReading
 	existingMap    map[uuid.UUID]*billing.Bill
 }
 
@@ -101,6 +104,7 @@ func (s *service) loadBatchInputs(ctx context.Context, apartmentID uuid.UUID, bi
 			pendingMoveOuts: map[uuid.UUID]bool{},
 			meterMap:        map[uuid.UUID]*meterreading.MeterReading{},
 			consumptionMap:  map[uuid.UUID]*meterreading.MeterReading{},
+			replacementMap:  map[uuid.UUID][]*meterreading.MeterReading{},
 			existingMap:     map[uuid.UUID]*billing.Bill{},
 		}, nil
 	}
@@ -124,6 +128,10 @@ func (s *service) loadBatchInputs(ctx context.Context, apartmentID uuid.UUID, bi
 	if err != nil {
 		return nil, fmt.Errorf("find consumption meters: %w", err)
 	}
+	replacementMap, err := s.meters.FindReplacementAnchorsByRoomsAndMonth(ctx, roomIDs, billingMonth)
+	if err != nil {
+		return nil, fmt.Errorf("find replacement events: %w", err)
+	}
 	existingMap, err := s.bills.FindExistingByContractsAndMonth(ctx, contractIDs, billingMonth)
 	if err != nil {
 		return nil, fmt.Errorf("find existing bills: %w", err)
@@ -136,6 +144,7 @@ func (s *service) loadBatchInputs(ctx context.Context, apartmentID uuid.UUID, bi
 		pendingMoveOuts: pendingMoveOuts,
 		meterMap:        meterMap,
 		consumptionMap:  consumptionMap,
+		replacementMap:  replacementMap,
 		existingMap:     existingMap,
 	}, nil
 }

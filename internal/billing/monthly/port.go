@@ -148,6 +148,10 @@ type MeterReadingSource interface {
 	// rows so the batch/replan snapshot can bill the unaffected utility's real
 	// usage when a recovery anchor governs the month (utility-scoped overlay).
 	FindConsumptionMonthlyByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	// FindReplacementAnchorsByRoomsAndMonth bulk-fetches PHYSICAL_REPLACEMENT
+	// events per room (oldest-first) so batch generation aggregates their tails
+	// into canonical period usage. Replace Meter.
+	FindReplacementAnchorsByRoomsAndMonth(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID][]*meterreading.MeterReading, error)
 }
 
 // MoveOutSource is monthly's consumer-defined port onto moveout. "Source"

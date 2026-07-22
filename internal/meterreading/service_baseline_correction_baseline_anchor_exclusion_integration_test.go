@@ -128,6 +128,7 @@ func TestRecovery_AnchorRowExcludedFromAnalyticsBaseline(t *testing.T) {
 		WaterCurrent:        40,
 		AnchorReason:        &anchorReason,
 		AnchorNote:          &anchorNote,
+		ElectricityReplaced: true, // Replace Meter: a PHYSICAL_REPLACEMENT must replace ≥1 utility (CHECK)
 	}
 	if err := meterRepo.Create(ctx, anchor); err != nil {
 		t.Fatalf("hand-seed Month 4 anchor: %v", err)

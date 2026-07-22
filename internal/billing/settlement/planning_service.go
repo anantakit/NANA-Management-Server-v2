@@ -9,6 +9,7 @@ import (
 	"nana/internal/billing"
 	"nana/internal/billingconfig"
 	"nana/internal/contract"
+	"nana/internal/meterreading"
 	"nana/internal/moveout"
 	"nana/internal/shared/database"
 	"nana/internal/shared/money"
@@ -97,20 +98,27 @@ func (s *Service) prepareSettlementPlan(ctx context.Context, contractID uuid.UUI
 		return nil, err
 	}
 
-	waterUnits := exitReading.WaterUsed()
-	elecUnits := exitReading.ElectricityUsed()
-	// Snapshot the exit reading (previous → current) on each metered line so the
-	// settlement bill shows the same evidence as a monthly bill (migration 00047).
-	wPrev, wCur := exitReading.WaterPrevious, exitReading.WaterCurrent
-	ePrev, eCur := exitReading.ElectricityPrevious, exitReading.ElectricityCurrent
-	waterLine := billing.NewWaterLine(waterUnits, c.WaterRatePerUnit,
-		fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits), order)
-	waterLine.MeterPrevious, waterLine.MeterCurrent = &wPrev, &wCur
+	// Replace Meter — settlement consumes the SAME CanonicalPeriodUsage as Monthly
+	// (parity). A replacement earlier in the settlement period contributes its
+	// old-meter tail; the exit reading is the new-meter segment. ONE result drives
+	// the charge (Total) and the frozen breakdown (Segments).
+	replacements, err := s.meters.FindReplacementAnchorsByRoomAndMonth(ctx, c.RoomID, billingMonth)
+	if err != nil {
+		return nil, fmt.Errorf("find replacement events: %w", err)
+	}
+	if cErr := billing.DetectRecoveryReplacementCollision(exitReading, replacements); cErr != nil {
+		return nil, cErr // R-b guard: surface, never silently under-bill
+	}
+	elecUsage, waterUsage := meterreading.CanonicalPeriodUsage(exitReading, replacements)
+
+	waterLine := billing.NewWaterLine(waterUsage.Total, c.WaterRatePerUnit,
+		fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUsage.Total), order)
+	billing.SetMeteredLineUsage(&waterLine, waterUsage)
 	items = append(items, waterLine)
 	order++
-	elecLine := billing.NewElectricityLine(elecUnits, c.ElectricityRatePerUnit,
-		fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits), order)
-	elecLine.MeterPrevious, elecLine.MeterCurrent = &ePrev, &eCur
+	elecLine := billing.NewElectricityLine(elecUsage.Total, c.ElectricityRatePerUnit,
+		fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUsage.Total), order)
+	billing.SetMeteredLineUsage(&elecLine, elecUsage)
 	items = append(items, elecLine)
 	order++
 

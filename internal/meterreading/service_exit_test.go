@@ -88,6 +88,12 @@ func (m *mockMeterRepo) FindExitByRoomID(_ context.Context, _ uuid.UUID) (*Meter
 	return nil, gorm.ErrRecordNotFound
 }
 func (m *mockMeterRepo) DeleteExitByRoomID(_ context.Context, _ uuid.UUID) error { return nil }
+func (m *mockMeterRepo) FindReplacementAnchorsByRoomAndMonth(_ context.Context, _ uuid.UUID, _ string) ([]*MeterReading, error) {
+	return nil, nil
+}
+func (m *mockMeterRepo) FindReplacementAnchorsByRoomsAndMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID][]*MeterReading, error) {
+	return nil, nil
+}
 
 func (m *mockMeterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
 

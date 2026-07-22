@@ -88,6 +88,10 @@ func (s *service) RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID
 		// unaffected utility's real usage from the coexisting consumption row when
 		// a recovery anchor governs the month. No-op otherwise.
 		reading := billing.ProjectRecoveryUsageOverlay(in.meterMap[contract.RoomID], in.consumptionMap[contract.RoomID])
+		replacements := in.replacementMap[contract.RoomID]
+		if cErr := billing.DetectRecoveryReplacementCollision(reading, replacements); cErr != nil {
+			return nil, cErr // R-b guard: surface, never silently under-bill
+		}
 		recon, rErr := billing.ResolveRecoveryReconciliation(ctx, reading, contract.ContractID, s.bills)
 		if rErr != nil {
 			return nil, fmt.Errorf("resolve recovery reconciliation: %w", rErr)
@@ -98,6 +102,7 @@ func (s *service) RePlanBatchItem(ctx context.Context, batchID, itemID uuid.UUID
 			contract.ElectricityRatePerUnit,
 			contract.WaterRatePerUnit,
 			reading,
+			replacements,
 			recon,
 		)
 	}

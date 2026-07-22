@@ -208,12 +208,22 @@ func (s *service) buildBatchItems(
 			// the unaffected utility bills its real usage from the coexisting
 			// consumption row (owner lock 2026-07-18). No-op otherwise.
 			reading := billing.ProjectRecoveryUsageOverlay(in.meterMap[c.RoomID], in.consumptionMap[c.RoomID])
+			replacements := in.replacementMap[c.RoomID]
+			// R-b guard: a same-utility Recovery×Replacement can't be auto-composed
+			// → SKIP this room (never under-bill); other rooms proceed.
+			if cErr := billing.DetectRecoveryReplacementCollision(reading, replacements); cErr != nil {
+				item.ResultType = billing.ResultSkipped
+				item.ReasonCode = billing.ReasonRecoveryReplacementCollision
+				item.ReasonText = cErr.Error()
+				items = append(items, item)
+				continue
+			}
 			recon, rErr := billing.ResolveRecoveryReconciliation(ctx, reading, c.ContractID, s.bills)
 			if rErr != nil {
 				return nil, fmt.Errorf("resolve recovery reconciliation: %w", rErr)
 			}
 			item.ComputedSnapshot = billing.ComputeMonthlyBillSnapshot(
-				billingMonth, c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, recon,
+				billingMonth, c.MonthlyRent, c.ElectricityRatePerUnit, c.WaterRatePerUnit, reading, replacements, recon,
 			)
 		}
 		items = append(items, item)
