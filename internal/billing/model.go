@@ -760,29 +760,16 @@ func (b *Bill) CalculateTotal() {
 	}
 }
 
-// applyDepositCalculation sets DepositBalance directly.
+// applyDepositCalculation sets DepositBalance from the single-source
+// DepositBreakdown so the signed net can never drift from the itemized
+// refund/amount-due the DTO and payment recording surface.
 // DepositBalance: positive = refund to tenant, negative = tenant owes.
-// This handles negative TotalAmount (credits > charges) correctly.
+// Invariant: DepositBalance == RefundAmount - AmountDue (holds for every
+// deposit mode, and correctly carries surplus recovery credit when the
+// settlement total is negative).
 func (b *Bill) applyDepositCalculation() {
-	switch b.DepositApp {
-	case DepositAppNone:
-		b.DepositBalance = -b.TotalAmount
-	case DepositAppCustom:
-		applied := b.CustomDepositApplied
-		if applied > b.DepositAmount {
-			applied = b.DepositAmount
-		}
-		if applied < 0 {
-			applied = 0
-		}
-		b.DepositBalance = applied - b.TotalAmount
-	default: // FULL (including empty string)
-		if b.DepositForfeited {
-			b.DepositBalance = -b.TotalAmount
-		} else {
-			b.DepositBalance = b.DepositAmount - b.TotalAmount
-		}
-	}
+	bd := b.DepositBreakdown()
+	b.DepositBalance = bd.RefundAmount - bd.AmountDue
 }
 
 // --- Deposit breakdown ---
@@ -805,19 +792,31 @@ func (b *Bill) DepositBreakdown() DepositBreakdownResult {
 		return DepositBreakdownResult{AmountDue: b.TotalAmount}
 	}
 
-	// When credits exceed charges, there's nothing to offset.
-	charges := b.TotalAmount
-	if charges < 0 {
-		charges = 0
+	// A settlement total can be NEGATIVE when recovery credits (refunds for
+	// previously over-charged meter usage) exceed this cycle's charges. That
+	// surplus is money the tenant already overpaid — it must be returned on
+	// top of any deposit refund, never clamped away.
+	//   positiveCharges = the part of the total the deposit can offset
+	//   surplusCredit   = tenant credit that flows straight into the refund
+	// LOCK: Negative settlement total is a legitimate tenant credit. Deposit
+	// application may clamp charges at zero, but the surplus credit must be
+	// added to the tenant's refund and must never disappear.
+	positiveCharges := b.TotalAmount
+	surplusCredit := int64(0)
+	if positiveCharges < 0 {
+		surplusCredit = -positiveCharges
+		positiveCharges = 0
 	}
 
 	switch b.DepositApp {
 	case DepositAppNone:
-		// Admin withholds entire deposit; tenant pays full charges
+		// Admin withholds entire deposit; tenant pays full charges but still
+		// receives any surplus recovery credit.
 		return DepositBreakdownResult{
 			OriginalAmount: b.DepositAmount,
 			WithheldAmount: b.DepositAmount,
-			AmountDue:      charges,
+			RefundAmount:   surplusCredit,
+			AmountDue:      positiveCharges,
 		}
 
 	case DepositAppCustom:
@@ -825,8 +824,8 @@ func (b *Bill) DepositBreakdown() DepositBreakdownResult {
 		if applied > b.DepositAmount {
 			applied = b.DepositAmount
 		}
-		if applied > charges {
-			applied = charges
+		if applied > positiveCharges {
+			applied = positiveCharges
 		}
 		if applied < 0 {
 			applied = 0
@@ -834,28 +833,30 @@ func (b *Bill) DepositBreakdown() DepositBreakdownResult {
 		return DepositBreakdownResult{
 			OriginalAmount: b.DepositAmount,
 			AppliedAmount:  applied,
-			RefundAmount:   b.DepositAmount - applied,
-			AmountDue:      charges - applied,
+			RefundAmount:   b.DepositAmount - applied + surplusCredit,
+			AmountDue:      positiveCharges - applied,
 		}
 
 	default: // FULL (including empty string)
 		if b.DepositForfeited {
-			// Forfeited = withheld by contract terms; tenant pays full charges
+			// Forfeited = deposit withheld by contract terms; tenant pays full
+			// charges but the surplus recovery credit is still their money.
 			return DepositBreakdownResult{
 				OriginalAmount: b.DepositAmount,
 				WithheldAmount: b.DepositAmount,
-				AmountDue:      charges,
+				RefundAmount:   surplusCredit,
+				AmountDue:      positiveCharges,
 			}
 		}
 		applied := b.DepositAmount
-		if applied > charges {
-			applied = charges
+		if applied > positiveCharges {
+			applied = positiveCharges
 		}
 		return DepositBreakdownResult{
 			OriginalAmount: b.DepositAmount,
 			AppliedAmount:  applied,
-			RefundAmount:   b.DepositAmount - applied,
-			AmountDue:      charges - applied,
+			RefundAmount:   b.DepositAmount - applied + surplusCredit,
+			AmountDue:      positiveCharges - applied,
 		}
 	}
 }

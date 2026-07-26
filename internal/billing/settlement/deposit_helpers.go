@@ -61,9 +61,9 @@ type DepositSettlementState struct {
 	OriginalAmount   int64 // deposit held by landlord (contract.DepositAmount)
 	ForfeitedAmount  int64 // deposit lost due to early exit (0 if eligible)
 	AvailableToApply int64 // OriginalAmount - ForfeitedAmount
-	AppliedAmount    int64 // min(AvailableToApply, grossCharges) — offsets charges
-	RefundAmount     int64 // AvailableToApply - AppliedAmount (>0 only if deposit returnable)
-	AmountDue        int64 // grossCharges - AppliedAmount (>0 only if charges exceed available)
+	AppliedAmount    int64 // min(AvailableToApply, positiveCharges) — offsets charges
+	RefundAmount     int64 // (AvailableToApply - AppliedAmount) + surplus recovery credit
+	AmountDue        int64 // positiveCharges - AppliedAmount (>0 only if charges exceed available)
 }
 
 // computeDepositSettlement computes the full deposit state for a settlement.
@@ -80,34 +80,41 @@ func computeDepositSettlement(depositAmount int64, grossCharges int64, returnabl
 		OriginalAmount: depositAmount,
 	}
 
+	// A negative grossCharges means recovery credits exceeded this cycle's
+	// charges. That surplus is the tenant's own overpayment and must be
+	// refunded on top of any deposit return — deposit application clamps at
+	// zero charges, but the surplus credit is never dropped.
+	positiveCharges := grossCharges
+	surplusCredit := int64(0)
+	if positiveCharges < 0 {
+		surplusCredit = -positiveCharges
+		positiveCharges = 0
+	}
+
 	if !returnable {
-		// Early exit: entire deposit forfeited, not applied to charges.
-		// Tenant pays full charges.
+		// Entire deposit forfeited, not applied to charges. Tenant pays full
+		// charges but still receives any surplus recovery credit.
 		s.ForfeitedAmount = depositAmount
 		s.AvailableToApply = 0
-		s.AmountDue = grossCharges
+		s.RefundAmount = surplusCredit
+		s.AmountDue = positiveCharges
 		return s
 	}
 
 	// Returnable: full deposit available to offset charges
 	s.AvailableToApply = depositAmount
 
-	// Apply deposit to charges
+	// Apply deposit to charges (clamped at zero charges)
 	s.AppliedAmount = s.AvailableToApply
-	if grossCharges < s.AppliedAmount {
-		s.AppliedAmount = grossCharges
-	}
-	if s.AppliedAmount < 0 {
-		s.AppliedAmount = 0
+	if positiveCharges < s.AppliedAmount {
+		s.AppliedAmount = positiveCharges
 	}
 
-	// Remaining deposit → refunded to tenant
-	s.RefundAmount = s.AvailableToApply - s.AppliedAmount
+	// Remaining deposit + surplus credit → refunded to tenant
+	s.RefundAmount = s.AvailableToApply - s.AppliedAmount + surplusCredit
 
 	// Amount tenant still owes
-	if grossCharges > s.AppliedAmount {
-		s.AmountDue = grossCharges - s.AppliedAmount
-	}
+	s.AmountDue = positiveCharges - s.AppliedAmount
 
 	return s
 }
@@ -139,15 +146,14 @@ func computeDepositSettlementFromBill(bill *billing.Bill) DepositSettlementState
 
 // toSettlementResult converts deposit state into the moveout result DTO.
 func toSettlementResult(billID uuid.UUID, ds DepositSettlementState) *moveout.SettlementBillResult {
-	netAmount := int64(0)
-	if ds.AmountDue > 0 {
-		netAmount = ds.AmountDue // positive = tenant pays
-	} else if ds.RefundAmount > 0 {
-		netAmount = -ds.RefundAmount // negative = refund to tenant
-	}
+	// NetAmount convention is the inverse of Bill.DepositBalance:
+	//   positive = tenant still owes, negative = refund to tenant.
+	// Derive it as AmountDue - RefundAmount so it stays reconciled with
+	// DepositBalance (= RefundAmount - AmountDue) for every deposit mode,
+	// including negative totals where a surplus recovery credit is refunded.
 	return &moveout.SettlementBillResult{
 		BillID:      billID,
-		NetAmount:   netAmount,
+		NetAmount:   ds.AmountDue - ds.RefundAmount,
 		DepositUsed: ds.AppliedAmount,
 	}
 }
