@@ -298,12 +298,21 @@ func (m *mockContractQuerier) FindByIDSimple(_ context.Context, _ uuid.UUID) (*c
 }
 
 type mockMeterQuerier struct {
-	reading                      *meterreading.MeterReading
-	findByIDSimpleFn             func(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
-	findMonthlyByRoomsAndMonthFn func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	reading                             *meterreading.MeterReading
+	findByIDSimpleFn                    func(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
+	findMonthlyByRoomsAndMonthFn        func(ctx context.Context, roomIDs []uuid.UUID, month string) (map[uuid.UUID]*meterreading.MeterReading, error)
+	findConsumptionMonthlyByRoomMonthFn func(ctx context.Context, roomID uuid.UUID, month string) (*meterreading.MeterReading, error)
+	findReplacementAnchorsFn            func(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error)
 }
 
 var _ MeterReadingQuerier = (*mockMeterQuerier)(nil)
+
+func (m *mockMeterQuerier) FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error) {
+	if m.findReplacementAnchorsFn != nil {
+		return m.findReplacementAnchorsFn(ctx, roomID, month)
+	}
+	return nil, nil
+}
 
 func (m *mockMeterQuerier) FindByIDSimple(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error) {
 	if m.findByIDSimpleFn != nil {
@@ -325,6 +334,12 @@ func (m *mockMeterQuerier) FindMonthlyByRoomsAndMonth(ctx context.Context, roomI
 		return m.findMonthlyByRoomsAndMonthFn(ctx, roomIDs, month)
 	}
 	return map[uuid.UUID]*meterreading.MeterReading{}, nil
+}
+func (m *mockMeterQuerier) FindConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (*meterreading.MeterReading, error) {
+	if m.findConsumptionMonthlyByRoomMonthFn != nil {
+		return m.findConsumptionMonthlyByRoomMonthFn(ctx, roomID, month)
+	}
+	return nil, nil
 }
 
 type mockConfigQuerier struct {

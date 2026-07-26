@@ -138,5 +138,5 @@ func (a *RecoveryAdapter) AttachAdjustmentLine(ctx context.Context, params meter
 // refund is auditable without any external reference. A WAIVE (amount == 0) is
 // tenant-invisible (zero line hidden); its description serves the admin audit.
 func buildAdjustmentDescription(res RecoveryResolution) string {
-	return fmt.Sprintf("จดไว้ %d → จริง %d", res.Recorded, res.Physical)
+	return fmt.Sprintf("ค่าที่จด %d → ค่าที่อ่านได้ %d", res.Recorded, res.Physical)
 }

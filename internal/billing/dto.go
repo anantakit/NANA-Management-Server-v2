@@ -134,6 +134,11 @@ type LineItemResponse struct {
 	// AUTO line's usage. Nil on non-metered lines. See migration 00047.
 	MeterPrevious *int `json:"meter_previous,omitempty"`
 	MeterCurrent  *int `json:"meter_current,omitempty"`
+	// Replace Meter — frozen usage breakdown (unit-count segments) that explains a
+	// metered line whose usage spans a replacement. Passed straight from the
+	// persisted line (bill-time evidence, no recompute). Nil/omitted on ordinary
+	// single-segment lines. G1 contract exposure — mirrors MeterPrevious pass-through.
+	UsageBreakdown UsageBreakdown `json:"usage_breakdown,omitempty"`
 	// Phase 6 — Reading Recovery ADJUSTMENT provenance.
 	// Populated only on ADJUSTMENT line items (omitempty drops them on every
 	// other line type). FK back to the recovery meter row (Phase 5 atomicity).
@@ -348,6 +353,7 @@ func toLineItemResponse(li BillLineItem, overrides OverrideMap) LineItemResponse
 		Overrideable:   overrideable,
 		MeterPrevious:  li.MeterPrevious,
 		MeterCurrent:   li.MeterCurrent,
+		UsageBreakdown: li.UsageBreakdown, // frozen, direct pass-through (no recompute)
 	}
 	// Phase 6 — ADJUSTMENT provenance pass-through. Fields are nil on every
 	// non-ADJUSTMENT line; omitempty drops them from the JSON output.

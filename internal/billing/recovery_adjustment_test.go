@@ -32,7 +32,7 @@ func TestBuildRecoveryAdjustmentLine(t *testing.T) {
 			wantAmount:    -15000,
 			wantQuantity:  300,
 			wantUnitPrice: 50,
-			wantDesc:      "จดไว้ 1500 → จริง 1200",
+			wantDesc:      "ค่าที่จด 1500 → ค่าที่อ่านได้ 1200",
 			wantUtility:   utilPtr(AdjustmentUtilityElectricity),
 		},
 		{
@@ -41,7 +41,7 @@ func TestBuildRecoveryAdjustmentLine(t *testing.T) {
 			wantAmount:    -15000,
 			wantQuantity:  300,
 			wantUnitPrice: 50,
-			wantDesc:      "จดไว้ 1500 → จริง 1200",
+			wantDesc:      "ค่าที่จด 1500 → ค่าที่อ่านได้ 1200",
 			wantUtility:   utilPtr(AdjustmentUtilityWater),
 		},
 		{

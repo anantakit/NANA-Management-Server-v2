@@ -167,14 +167,10 @@ func TestPreviewSettlement_ParityWithCreate_Integration(t *testing.T) {
 
 	// Deposit-derived outcome (what UI computes and shows).
 	// Preview's DepositSettlementState must produce the same net/used as the
-	// SettlementBillResult the mutation returned.
-	wantNet := int64(0)
-	switch {
-	case previewDeposit.AmountDue > 0:
-		wantNet = previewDeposit.AmountDue
-	case previewDeposit.RefundAmount > 0:
-		wantNet = -previewDeposit.RefundAmount
-	}
+	// SettlementBillResult the mutation returned. Net is the canonical signed
+	// result: AmountDue - RefundAmount (= -DepositBalance), which also carries
+	// a surplus recovery credit when charges are fully offset.
+	wantNet := previewDeposit.AmountDue - previewDeposit.RefundAmount
 	if result.NetAmount != wantNet {
 		t.Errorf("result.NetAmount=%d, preview-derived=%d (due=%d refund=%d)",
 			result.NetAmount, wantNet, previewDeposit.AmountDue, previewDeposit.RefundAmount)

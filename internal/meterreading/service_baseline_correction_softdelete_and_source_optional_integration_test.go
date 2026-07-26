@@ -316,7 +316,7 @@ func TestRecovery_SourcedCorrectionProducesRefund(t *testing.T) {
 	// Here F is applicable at rate 800 (the source month was billed).
 	month := time.Now().Format("2006-01")
 	srcRate := int64(800)
-	snap := billing.ComputeMonthlyBillSnapshot(month, 300000, 800, 1800, got,
+	snap := billing.ComputeMonthlyBillSnapshot(month, 300000, 800, 1800, got, nil,
 		&billing.RecoveryReconciliation{Electricity: &srcRate})
 
 	var refund, elec *billing.ComputedLineItem

@@ -25,13 +25,15 @@ func ComputeMonthlyBillSnapshot(
 	billingMonth string,
 	monthlyRent, elecRate, waterRate int64,
 	reading *meterreading.MeterReading,
+	replacements []*meterreading.MeterReading,
 	recon *RecoveryReconciliation,
 ) ComputedSnapshot {
 	nextMonth := advanceMonth(billingMonth)
-	elecUnits := reading.ElectricityUsed()
-	waterUnits := reading.WaterUsed()
-	elecPrev, elecCur := reading.ElectricityPrevious, reading.ElectricityCurrent
-	waterPrev, waterCur := reading.WaterPrevious, reading.WaterCurrent
+	// ONE canonical result drives BOTH the charge (Total) and the frozen breakdown
+	// (Segments) — no re-query, no separate reconstruction (owner invariant
+	// 2026-07-21). With no replacements, Total == reading.Used() and a single
+	// READING segment, so ordinary + recovery bills are byte-identical.
+	elecUsage, waterUsage := meterreading.CanonicalPeriodUsage(reading, replacements)
 
 	lines := []ComputedLineItem{
 		{
@@ -40,26 +42,8 @@ func ComputeMonthlyBillSnapshot(
 			Amount:      monthlyRent,
 			SortOrder:   1,
 		},
-		{
-			Type:          LineItemElectricity,
-			Description:   fmt.Sprintf("ค่าไฟฟ้า %d หน่วย", elecUnits),
-			Amount:        int64(elecUnits) * elecRate,
-			Quantity:      elecUnits,
-			UnitPrice:     elecRate,
-			SortOrder:     2,
-			MeterPrevious: &elecPrev,
-			MeterCurrent:  &elecCur,
-		},
-		{
-			Type:          LineItemWater,
-			Description:   fmt.Sprintf("ค่าน้ำ %d หน่วย", waterUnits),
-			Amount:        int64(waterUnits) * waterRate,
-			Quantity:      waterUnits,
-			UnitPrice:     waterRate,
-			SortOrder:     3,
-			MeterPrevious: &waterPrev,
-			MeterCurrent:  &waterCur,
-		},
+		meteredComputedLine(LineItemElectricity, "ค่าไฟฟ้า", elecUsage, elecRate, 2),
+		meteredComputedLine(LineItemWater, "ค่าน้ำ", waterUsage, waterRate, 3),
 	}
 
 	// Q1.6 — auto-emit a refund ADJUSTMENT line per over-recorded utility (ontology
@@ -104,4 +88,83 @@ func ComputeMonthlyBillSnapshot(
 		TotalAmount: total,
 		ComputedAt:  time.Now().UTC(),
 	}
+}
+
+// meteredComputedLine builds one metered line (ELECTRICITY / WATER) from a single
+// canonical usage result: the charge is Total × rate (ONE line = ONE financial /
+// override authority), and the frozen usage_breakdown carries the same Segments.
+// A single-segment (ordinary/recovery) line keeps meter_previous/meter_current
+// for backward compatibility and leaves the breakdown nil; a replacement line
+// (>1 segment) carries the breakdown instead, since one meter pair cannot span it.
+func meteredComputedLine(t LineItemType, label string, usage meterreading.UtilityCanonicalUsage, rate int64, sortOrder int) ComputedLineItem {
+	li := ComputedLineItem{
+		Type:        t,
+		Description: fmt.Sprintf("%s %d หน่วย", label, usage.Total),
+		Amount:      int64(usage.Total) * rate,
+		Quantity:    usage.Total,
+		UnitPrice:   rate,
+		SortOrder:   sortOrder,
+	}
+	if len(usage.Segments) > 1 {
+		li.UsageBreakdown = usageBreakdownFrom(usage.Segments)
+	} else if len(usage.Segments) == 1 {
+		p, c := usage.Segments[0].Previous, usage.Segments[0].Current
+		li.MeterPrevious, li.MeterCurrent = &p, &c
+	}
+	return li
+}
+
+// SetMeteredLineUsage applies a canonical usage result to an already-built metered
+// BillLineItem: >1 segment (a replacement period) → freeze the breakdown and clear
+// the single meter pair (which cannot span >1 segment); else keep the single pair.
+// Shared so settlement (direct BillLineItem) renders the breakdown identically to
+// monthly (via meteredComputedLine) — same evidence, no drift.
+func SetMeteredLineUsage(li *BillLineItem, usage meterreading.UtilityCanonicalUsage) {
+	if len(usage.Segments) > 1 {
+		li.UsageBreakdown = usageBreakdownFrom(usage.Segments)
+		li.MeterPrevious, li.MeterCurrent = nil, nil
+		return
+	}
+	if len(usage.Segments) == 1 {
+		p, c := usage.Segments[0].Previous, usage.Segments[0].Current
+		li.MeterPrevious, li.MeterCurrent = &p, &c
+	}
+}
+
+// usageBreakdownFrom maps the domain segments into the STABLE billing evidence
+// schema (no domain internals / IDs).
+func usageBreakdownFrom(segs []meterreading.UsageSegment) UsageBreakdown {
+	out := make(UsageBreakdown, len(segs))
+	for i, s := range segs {
+		out[i] = UsageBreakdownSegment{Kind: string(s.Kind), Previous: s.Previous, Current: s.Current, Usage: s.Usage}
+	}
+	return out
+}
+
+// DetectRecoveryReplacementCollision is the R-b guard (owner OD-R 2026-07-21):
+// a period with BOTH a READING_RECOVERY and a PHYSICAL_REPLACEMENT on the SAME
+// utility cannot be composed by the current resolver → surface an actionable
+// error rather than silently under-bill. `winner` is the (possibly recovery)
+// billing input; `replacements` are the period's replacement events. TEMPORARY
+// architecture limitation, NOT a business rule (the event is always recordable);
+// does NOT touch Recovery composition semantics.
+func DetectRecoveryReplacementCollision(winner *meterreading.MeterReading, replacements []*meterreading.MeterReading) error {
+	if winner == nil || len(replacements) == 0 {
+		return nil
+	}
+	recovered := map[string]bool{}
+	for _, u := range winner.AffectedRecoveryUtilities() {
+		recovered[u] = true
+	}
+	if len(recovered) == 0 {
+		return nil
+	}
+	for _, r := range replacements {
+		for _, u := range r.AffectedReplacementUtilities() {
+			if recovered[u] {
+				return ErrRecoveryReplacementCollision
+			}
+		}
+	}
+	return nil
 }

@@ -149,6 +149,39 @@ type ListParams struct {
 	ReadingType string `query:"reading_type" validate:"omitempty,oneof=MONTHLY EXIT"` // MONTHLY or EXIT
 }
 
+// --- Replace Meter (PHYSICAL_REPLACEMENT event) request ---
+
+// ReplacementUtilityRequest is the per-utility input for a meter replacement.
+// Replaced=false → utility untouched. OldFinal optional (nil = old meter
+// unreadable → tail 0). NewInitial required when Replaced (validated in service).
+type ReplacementUtilityRequest struct {
+	Replaced   bool `json:"replaced"`
+	OldFinal   *int `json:"old_final"`
+	NewInitial *int `json:"new_initial"`
+}
+
+func (r ReplacementUtilityRequest) toInput() (ReplacementUtilityInput, error) {
+	if r.Replaced && r.NewInitial == nil {
+		return ReplacementUtilityInput{}, ErrReplacementNewInitialRequired
+	}
+	ni := 0
+	if r.NewInitial != nil {
+		ni = *r.NewInitial
+	}
+	return ReplacementUtilityInput{Replaced: r.Replaced, OldFinal: r.OldFinal, NewInitial: ni}, nil
+}
+
+// CreateReplacementRequest records a physical meter replacement (admin op),
+// decoupled from a monthly/exit reading. replacement_date is the swap date; its
+// month is the billing month the tail is attributed to.
+type CreateReplacementRequest struct {
+	RoomID          string                    `json:"room_id" validate:"required,uuid4"`
+	ReplacementDate string                    `json:"replacement_date" validate:"required"`
+	Note            string                    `json:"note" validate:"required,min=1"`
+	Electricity     ReplacementUtilityRequest `json:"electricity"`
+	Water           ReplacementUtilityRequest `json:"water"`
+}
+
 // --- Response DTOs ---
 
 type MeterReadingResponse struct {
@@ -181,6 +214,14 @@ type MeterReadingResponse struct {
 	AnchorReason            *string `json:"anchor_reason,omitempty"`
 	AnchorNote              *string `json:"anchor_note,omitempty"`
 	RecoverySourceReadingID *string `json:"recovery_source_reading_id,omitempty"`
+
+	// Replace Meter (PHYSICAL_REPLACEMENT event) — omitempty drops on ordinary rows.
+	ElectricityReplaced    bool `json:"electricity_replaced,omitempty"`
+	WaterReplaced          bool `json:"water_replaced,omitempty"`
+	ElectricityOldPrevious *int `json:"electricity_old_previous,omitempty"`
+	ElectricityOldFinal    *int `json:"electricity_old_final,omitempty"`
+	WaterOldPrevious       *int `json:"water_old_previous,omitempty"`
+	WaterOldFinal          *int `json:"water_old_final,omitempty"`
 }
 
 // MeterReadingWithRoom holds joined data from meter_readings + rooms + tenants.
@@ -244,6 +285,10 @@ func ToMeterReadingResponse(m MeterReadingWithRoom) MeterReadingResponse {
 		UpdatedAt:             m.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 	hydrateAnchorFields(&resp.AnchorReason, &resp.AnchorNote, &resp.RecoverySourceReadingID, m.MeterReading)
+	resp.ElectricityReplaced = m.ElectricityReplaced
+	resp.WaterReplaced = m.WaterReplaced
+	resp.ElectricityOldPrevious, resp.ElectricityOldFinal = m.ElectricityOldPrevious, m.ElectricityOldFinal
+	resp.WaterOldPrevious, resp.WaterOldFinal = m.WaterOldPrevious, m.WaterOldFinal
 	return resp
 }
 

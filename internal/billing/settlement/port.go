@@ -210,6 +210,10 @@ type ContractSource interface {
 type MeterReadingSource interface {
 	FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error)
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*meterreading.MeterReading, error)
+	// FindReplacementAnchorsByRoomAndMonth returns PHYSICAL_REPLACEMENT events for
+	// the settlement month so the exit bill consumes the SAME CanonicalPeriodUsage
+	// as Monthly (parity — physical truth is billing-workflow independent).
+	FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error)
 }
 
 // BillingConfigSource is settlement's consumer-defined port onto

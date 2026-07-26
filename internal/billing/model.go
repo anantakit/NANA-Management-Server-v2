@@ -357,6 +357,11 @@ type BillLineItem struct {
 	MeterPrevious *int `gorm:"column:meter_previous" json:"meter_previous,omitempty"`
 	MeterCurrent  *int `gorm:"column:meter_current" json:"meter_current,omitempty"`
 
+	// Replace Meter — frozen usage breakdown (jsonb, migration 00050). Populated
+	// only on metered lines whose usage spans a replacement (>1 segment). Bill-time
+	// evidence; never recomputed for an existing bill.
+	UsageBreakdown UsageBreakdown `gorm:"type:jsonb;column:usage_breakdown" json:"usage_breakdown,omitempty"`
+
 	// Reading Recovery anchor fields (Phase 4). All nullable; populated only
 	// when LineType = ADJUSTMENT. Source MUST = MANUAL when populated (CHECK
 	// constraint bill_line_items_adjustment_source_manual + ValidateAdjustment).
@@ -755,29 +760,16 @@ func (b *Bill) CalculateTotal() {
 	}
 }
 
-// applyDepositCalculation sets DepositBalance directly.
+// applyDepositCalculation sets DepositBalance from the single-source
+// DepositBreakdown so the signed net can never drift from the itemized
+// refund/amount-due the DTO and payment recording surface.
 // DepositBalance: positive = refund to tenant, negative = tenant owes.
-// This handles negative TotalAmount (credits > charges) correctly.
+// Invariant: DepositBalance == RefundAmount - AmountDue (holds for every
+// deposit mode, and correctly carries surplus recovery credit when the
+// settlement total is negative).
 func (b *Bill) applyDepositCalculation() {
-	switch b.DepositApp {
-	case DepositAppNone:
-		b.DepositBalance = -b.TotalAmount
-	case DepositAppCustom:
-		applied := b.CustomDepositApplied
-		if applied > b.DepositAmount {
-			applied = b.DepositAmount
-		}
-		if applied < 0 {
-			applied = 0
-		}
-		b.DepositBalance = applied - b.TotalAmount
-	default: // FULL (including empty string)
-		if b.DepositForfeited {
-			b.DepositBalance = -b.TotalAmount
-		} else {
-			b.DepositBalance = b.DepositAmount - b.TotalAmount
-		}
-	}
+	bd := b.DepositBreakdown()
+	b.DepositBalance = bd.RefundAmount - bd.AmountDue
 }
 
 // --- Deposit breakdown ---
@@ -800,19 +792,31 @@ func (b *Bill) DepositBreakdown() DepositBreakdownResult {
 		return DepositBreakdownResult{AmountDue: b.TotalAmount}
 	}
 
-	// When credits exceed charges, there's nothing to offset.
-	charges := b.TotalAmount
-	if charges < 0 {
-		charges = 0
+	// A settlement total can be NEGATIVE when recovery credits (refunds for
+	// previously over-charged meter usage) exceed this cycle's charges. That
+	// surplus is money the tenant already overpaid — it must be returned on
+	// top of any deposit refund, never clamped away.
+	//   positiveCharges = the part of the total the deposit can offset
+	//   surplusCredit   = tenant credit that flows straight into the refund
+	// LOCK: Negative settlement total is a legitimate tenant credit. Deposit
+	// application may clamp charges at zero, but the surplus credit must be
+	// added to the tenant's refund and must never disappear.
+	positiveCharges := b.TotalAmount
+	surplusCredit := int64(0)
+	if positiveCharges < 0 {
+		surplusCredit = -positiveCharges
+		positiveCharges = 0
 	}
 
 	switch b.DepositApp {
 	case DepositAppNone:
-		// Admin withholds entire deposit; tenant pays full charges
+		// Admin withholds entire deposit; tenant pays full charges but still
+		// receives any surplus recovery credit.
 		return DepositBreakdownResult{
 			OriginalAmount: b.DepositAmount,
 			WithheldAmount: b.DepositAmount,
-			AmountDue:      charges,
+			RefundAmount:   surplusCredit,
+			AmountDue:      positiveCharges,
 		}
 
 	case DepositAppCustom:
@@ -820,8 +824,8 @@ func (b *Bill) DepositBreakdown() DepositBreakdownResult {
 		if applied > b.DepositAmount {
 			applied = b.DepositAmount
 		}
-		if applied > charges {
-			applied = charges
+		if applied > positiveCharges {
+			applied = positiveCharges
 		}
 		if applied < 0 {
 			applied = 0
@@ -829,28 +833,30 @@ func (b *Bill) DepositBreakdown() DepositBreakdownResult {
 		return DepositBreakdownResult{
 			OriginalAmount: b.DepositAmount,
 			AppliedAmount:  applied,
-			RefundAmount:   b.DepositAmount - applied,
-			AmountDue:      charges - applied,
+			RefundAmount:   b.DepositAmount - applied + surplusCredit,
+			AmountDue:      positiveCharges - applied,
 		}
 
 	default: // FULL (including empty string)
 		if b.DepositForfeited {
-			// Forfeited = withheld by contract terms; tenant pays full charges
+			// Forfeited = deposit withheld by contract terms; tenant pays full
+			// charges but the surplus recovery credit is still their money.
 			return DepositBreakdownResult{
 				OriginalAmount: b.DepositAmount,
 				WithheldAmount: b.DepositAmount,
-				AmountDue:      charges,
+				RefundAmount:   surplusCredit,
+				AmountDue:      positiveCharges,
 			}
 		}
 		applied := b.DepositAmount
-		if applied > charges {
-			applied = charges
+		if applied > positiveCharges {
+			applied = positiveCharges
 		}
 		return DepositBreakdownResult{
 			OriginalAmount: b.DepositAmount,
 			AppliedAmount:  applied,
-			RefundAmount:   b.DepositAmount - applied,
-			AmountDue:      charges - applied,
+			RefundAmount:   b.DepositAmount - applied + surplusCredit,
+			AmountDue:      positiveCharges - applied,
 		}
 	}
 }
@@ -1071,6 +1077,9 @@ const (
 	ReasonValidationError     = "VALIDATION_ERROR"
 	ReasonSystemError         = "SYSTEM_ERROR"
 	ReasonCodeCommitError     = "COMMIT_ERROR"
+	// Replace Meter — R-b collision (business/architecture condition → SKIPPED,
+	// per feedback_batch_result_semantics: business rule = SKIPPED, not FAILED).
+	ReasonRecoveryReplacementCollision = "RECOVERY_REPLACEMENT_COLLISION"
 )
 
 // --- Commit status (batch-level) ---
@@ -1093,6 +1102,64 @@ var (
 	ErrSnapshotNegativeTotal      = errors.New("snapshot มียอดรวมติดลบ")
 )
 
+// UsageBreakdownSegment is the STABLE, billing-owned evidence schema for one
+// physical consumption segment behind a metered line's usage (Replace Meter).
+// Deliberately NOT the domain UsageSegment (a bill is a frozen document — its
+// evidence schema must not serialize domain internals or IDs). kind ∈
+// {"READING","REPLACEMENT_OLD_TAIL"}; current = new_current for a reading,
+// old_final for a tail. Utility context lives on the parent BillLineItem.
+type UsageBreakdownSegment struct {
+	Kind     string `json:"kind"`
+	Previous int    `json:"previous"`
+	Current  int    `json:"current"`
+	Usage    int    `json:"usage"`
+}
+
+// UsageBreakdown is the frozen, per-line usage explanation (jsonb). Populated
+// ONLY when a metered line's usage spans a replacement (>1 segment); nil on
+// ordinary lines (which keep meter_previous/meter_current). Bill-time evidence —
+// never recomputed against live meter state for an existing bill.
+type UsageBreakdown []UsageBreakdownSegment
+
+func (b *UsageBreakdown) Scan(value any) error {
+	if value == nil {
+		*b = nil
+		return nil
+	}
+	var data []byte
+	switch v := value.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return fmt.Errorf("usage_breakdown: unsupported scan type %T", value)
+	}
+	if len(data) == 0 {
+		*b = nil
+		return nil
+	}
+	return json.Unmarshal(data, b)
+}
+
+func (b UsageBreakdown) Value() (driver.Value, error) {
+	if len(b) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(b)
+}
+
+// SumUsage returns the total usage across segments — the invariant anchor:
+// SumUsage() MUST equal the line's Quantity (canonical usage), proving the
+// explanation and the amount came from one computation (no drift).
+func (b UsageBreakdown) SumUsage() int {
+	total := 0
+	for _, s := range b {
+		total += s.Usage
+	}
+	return total
+}
+
 type ComputedLineItem struct {
 	Type          LineItemType   `json:"type"`
 	Description   string         `json:"description"`
@@ -1103,6 +1170,9 @@ type ComputedLineItem struct {
 	MeterPrevious *int           `json:"meter_previous,omitempty"`
 	MeterCurrent  *int           `json:"meter_current,omitempty"`
 	Meta          map[string]any `json:"meta,omitempty"`
+
+	// Replace Meter — frozen per-line usage breakdown; nil on ordinary lines.
+	UsageBreakdown UsageBreakdown `json:"usage_breakdown,omitempty"`
 
 	// Q1.6 — recovery refund ADJUSTMENT lines auto-emitted at generation carry
 	// their provenance so ToLineItems can materialize a valid ADJUSTMENT row
@@ -1188,16 +1258,17 @@ func (s *ComputedSnapshot) ToLineItems(billID uuid.UUID) []BillLineItem {
 			continue
 		}
 		items = append(items, BillLineItem{
-			BillID:        billID,
-			LineType:      li.Type,
-			Source:        LineItemSourceAuto,
-			Description:   li.Description,
-			Amount:        li.Amount,
-			Quantity:      li.Quantity,
-			UnitPrice:     li.UnitPrice,
-			SortOrder:     li.SortOrder,
-			MeterPrevious: li.MeterPrevious,
-			MeterCurrent:  li.MeterCurrent,
+			BillID:         billID,
+			LineType:       li.Type,
+			Source:         LineItemSourceAuto,
+			Description:    li.Description,
+			Amount:         li.Amount,
+			Quantity:       li.Quantity,
+			UnitPrice:      li.UnitPrice,
+			SortOrder:      li.SortOrder,
+			MeterPrevious:  li.MeterPrevious,
+			MeterCurrent:   li.MeterCurrent,
+			UsageBreakdown: li.UsageBreakdown,
 		})
 	}
 	return items

@@ -270,8 +270,16 @@ func (m *mockContractSource) FindByIDSimple(ctx context.Context, id uuid.UUID) (
 }
 
 type mockMeterReadingSource struct {
-	findExitFn func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
-	findByIDFn func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
+	findExitFn        func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
+	findByIDFn        func(_ context.Context, _ uuid.UUID) (*meterreading.MeterReading, error)
+	findReplacementFn func(_ context.Context, _ uuid.UUID, _ string) ([]*meterreading.MeterReading, error)
+}
+
+func (m *mockMeterReadingSource) FindReplacementAnchorsByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) ([]*meterreading.MeterReading, error) {
+	if m.findReplacementFn != nil {
+		return m.findReplacementFn(ctx, roomID, month)
+	}
+	return nil, nil
 }
 
 func (m *mockMeterReadingSource) FindExitByRoomID(ctx context.Context, roomID uuid.UUID) (*meterreading.MeterReading, error) {

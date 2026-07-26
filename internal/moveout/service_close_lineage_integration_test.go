@@ -250,6 +250,7 @@ func TestTenantTurnover_ExitToNextMonthly_InheritsExitCurrent(t *testing.T) {
 		contractB.WaterRatePerUnit,
 		&newReading.MeterReading,
 		nil,
+		nil,
 	)
 	var elecQty, waterQty int
 	var sawElec, sawWater bool

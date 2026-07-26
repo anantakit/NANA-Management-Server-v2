@@ -70,6 +70,12 @@ func (m *mockMeterRepo) HasConsumptionMonthlyByRoomAndMonth(ctx context.Context,
 func (m *mockMeterRepo) FindMonthlyByRoomsAndMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*MeterReading, error) {
 	return map[uuid.UUID]*MeterReading{}, nil
 }
+func (m *mockMeterRepo) FindConsumptionMonthlyByRoomsAndMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*MeterReading, error) {
+	return map[uuid.UUID]*MeterReading{}, nil
+}
+func (m *mockMeterRepo) FindConsumptionMonthlyByRoomAndMonth(_ context.Context, _ uuid.UUID, _ string) (*MeterReading, error) {
+	return nil, nil
+}
 func (m *mockMeterRepo) Create(ctx context.Context, reading *MeterReading) error {
 	m.createdReading = reading
 	if m.createFn != nil {
@@ -82,6 +88,12 @@ func (m *mockMeterRepo) FindExitByRoomID(_ context.Context, _ uuid.UUID) (*Meter
 	return nil, gorm.ErrRecordNotFound
 }
 func (m *mockMeterRepo) DeleteExitByRoomID(_ context.Context, _ uuid.UUID) error { return nil }
+func (m *mockMeterRepo) FindReplacementAnchorsByRoomAndMonth(_ context.Context, _ uuid.UUID, _ string) ([]*MeterReading, error) {
+	return nil, nil
+}
+func (m *mockMeterRepo) FindReplacementAnchorsByRoomsAndMonth(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID][]*MeterReading, error) {
+	return nil, nil
+}
 
 func (m *mockMeterRepo) Delete(_ context.Context, _ uuid.UUID) error { return nil }
 

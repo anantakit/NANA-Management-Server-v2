@@ -7,6 +7,67 @@ import (
 	"github.com/google/uuid"
 )
 
+// TestToBillResponse_UsageBreakdownExposed is the G1 contract-exposure guard:
+// a metered line's frozen usage_breakdown must reach the read DTO verbatim
+// (bill-time evidence, no recompute), and ordinary single-segment lines must
+// omit it. Without this the FE cannot render "200 = 120 + 80".
+func TestToBillResponse_UsageBreakdownExposed(t *testing.T) {
+	iptr := func(v int) *int { return &v }
+	b := Bill{
+		ID:           uuid.New(),
+		BillingMonth: "2026-07",
+		LineItems: []BillLineItem{
+			{
+				LineType: LineItemElectricity, Source: LineItemSourceAuto, Quantity: 200, Amount: 160000,
+				UsageBreakdown: UsageBreakdown{
+					{Kind: "REPLACEMENT_OLD_TAIL", Previous: 1000, Current: 1120, Usage: 120},
+					{Kind: "READING", Previous: 350, Current: 430, Usage: 80},
+				},
+			},
+			{ // ordinary line — single meter pair, no breakdown
+				LineType: LineItemWater, Source: LineItemSourceAuto, Quantity: 50, Amount: 90000,
+				MeterPrevious: iptr(40), MeterCurrent: iptr(90),
+			},
+		},
+	}
+
+	resp := ToBillResponse(b)
+	var elec, water *LineItemResponse
+	for i := range resp.LineItems {
+		switch resp.LineItems[i].LineType {
+		case string(LineItemElectricity):
+			elec = &resp.LineItems[i]
+		case string(LineItemWater):
+			water = &resp.LineItems[i]
+		}
+	}
+	if elec == nil || water == nil {
+		t.Fatalf("missing elec/water in response: %+v", resp.LineItems)
+	}
+
+	// Electricity: breakdown exposed verbatim, sums to the line quantity.
+	if len(elec.UsageBreakdown) != 2 {
+		t.Fatalf("elec usage_breakdown = %d segments, want 2 (%+v)", len(elec.UsageBreakdown), elec.UsageBreakdown)
+	}
+	if s := elec.UsageBreakdown[0]; s.Kind != "REPLACEMENT_OLD_TAIL" || s.Previous != 1000 || s.Current != 1120 || s.Usage != 120 {
+		t.Errorf("segment[0] = %+v, want old-tail 1000→1120 = 120", s)
+	}
+	if s := elec.UsageBreakdown[1]; s.Kind != "READING" || s.Usage != 80 {
+		t.Errorf("segment[1] = %+v, want reading = 80", s)
+	}
+	if elec.UsageBreakdown.SumUsage() != elec.Quantity {
+		t.Errorf("breakdown sum %d != line quantity %d (contract-boundary drift)", elec.UsageBreakdown.SumUsage(), elec.Quantity)
+	}
+
+	// Water: ordinary line omits the breakdown (omitempty) and keeps the meter pair.
+	if len(water.UsageBreakdown) != 0 {
+		t.Errorf("ordinary water line must omit usage_breakdown, got %+v", water.UsageBreakdown)
+	}
+	if water.MeterPrevious == nil || water.MeterCurrent == nil {
+		t.Error("ordinary water line must keep meter_previous/meter_current")
+	}
+}
+
 // TestToBillListItemResponse_VoidReason verifies that void_reason flows from
 // the Bill model through the list-item DTO converter.
 //

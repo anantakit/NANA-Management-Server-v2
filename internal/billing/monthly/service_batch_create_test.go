@@ -83,6 +83,57 @@ func TestBatchCreateMonthlyBills_HappyPath(t *testing.T) {
 	}
 }
 
+// Replace Meter (check 2) — a same-utility Recovery×Replacement in a batch must
+// surface as a VISIBLE SKIPPED item carrying the RECOVERY_REPLACEMENT_COLLISION
+// reason code + operator-facing text, never a silent skip or a wrong bill.
+func TestBatchCreateMonthlyBills_RecoveryReplacementCollision_VisibleSkip(t *testing.T) {
+	cwr, c := testContractWithRoom(1, "101")
+	month := "2026-07"
+
+	rr := meterreading.AnchorReasonReadingRecovery
+	recorded := 1500
+	recovery := &meterreading.MeterReading{
+		RoomID: c.RoomID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &month,
+		AnchorReason: &rr, ElectricityPrevious: 1240, ElectricityCurrent: 1240, ElectricityRecorded: &recorded,
+	}
+	pr := meterreading.AnchorReasonPhysicalReplacement
+	replacement := &meterreading.MeterReading{
+		RoomID: c.RoomID, ReadingType: meterreading.ReadingTypeMonthly, BillingMonth: &month,
+		AnchorReason: &pr, ElectricityReplaced: true,
+	}
+
+	store := &mockStore{
+		findActiveContractsByApartmentFn: func(_ context.Context, _ uuid.UUID) ([]billing.ContractWithRoom, error) {
+			return []billing.ContractWithRoom{cwr}, nil
+		},
+	}
+	meters := &mockMeterQuerier{
+		findMonthlyByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID]*meterreading.MeterReading, error) {
+			return map[uuid.UUID]*meterreading.MeterReading{c.RoomID: recovery}, nil
+		},
+		findReplacementAnchorsByRoomsAndMonthFn: func(_ context.Context, _ []uuid.UUID, _ string) (map[uuid.UUID][]*meterreading.MeterReading, error) {
+			return map[uuid.UUID][]*meterreading.MeterReading{c.RoomID: {replacement}}, nil
+		},
+	}
+	svc := batchSvc(store, meters, &mockMoveOutQuerier{})
+	_, items := runBatch(t, svc, store, month)
+
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	it := items[0]
+	if it.ResultType != billing.ResultSkipped || it.ReasonCode != billing.ReasonRecoveryReplacementCollision {
+		t.Errorf("collision must be VISIBLE: result=%s code=%q, want SKIPPED / %q",
+			it.ResultType, it.ReasonCode, billing.ReasonRecoveryReplacementCollision)
+	}
+	if it.ReasonText == "" {
+		t.Error("collision SKIPPED must carry operator-facing reason_text, not a silent skip")
+	}
+	if len(it.ComputedSnapshot.LineItems) != 0 {
+		t.Error("collision item must NOT produce a (wrong) computed bill")
+	}
+}
+
 func TestBatchCreateMonthlyBills_MixedResults(t *testing.T) {
 	cwr1, c1 := testContractWithRoom(1, "101") // will have meter → created
 	cwr2, c2 := testContractWithRoom(2, "201") // existing bill
