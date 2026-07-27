@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-settlement-recovery smoke-settlement-recovery-presentation smoke-recovery-survives-cancel smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-meter-continuity smoke-settlement-recovery smoke-settlement-recovery-presentation smoke-recovery-survives-cancel smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
 
 # Development
 dev:
@@ -136,6 +136,12 @@ smoke-delivery-mode:
 
 smoke-meter-focus-local-first:
 	cd devtools/smoke && node playwright-test-meter-focus-local-first-smoke.js
+
+# Meter Continuity surface (/rooms/:roomId/meter) — apartment resolved from the
+# room read, five room-scoped primitives mounted, return contract across every
+# origin (direct / meter workflow / bill detail / browser back).
+smoke-meter-continuity:
+	cd devtools/smoke && node playwright-test-meter-continuity-surface-smoke.js
 
 smoke-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-draft-settlement-smoke.js && node playwright-test-draft-numeric-smoke.js && node playwright-test-moveout-step23-smoke.js && node playwright-test-moveout-step4-smoke.js && node playwright-test-moveout-detail-smoke.js && node playwright-test-bills-list-smoke.js && node playwright-test-bill-edit-smoke.js && node playwright-test-delivery-mode-smoke.js && node playwright-test-meter-focus-local-first-smoke.js && node playwright-test-settlement-exit-meter-edit-smoke.js

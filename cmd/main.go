@@ -316,6 +316,9 @@ func main() {
 	presetHandler := apartment.NewPresetHandler()
 	presetHandler.RegisterRoutes(admin.Group("/apartments/:id/manual-line-item-presets"))
 	roomHandler.RegisterRoutes(admin.Group("/apartments/:id/rooms"))
+	// Room-addressed read boundary — same service read, addressed by room id so
+	// room-scoped surfaces can resolve their apartment instead of carrying it.
+	roomHandler.RegisterLookupRoutes(admin.Group("/rooms"))
 	tenantHandler.RegisterRoutes(admin.Group("/tenants"))
 	contractHandler.RegisterRoutes(admin.Group("/contracts"))
 	meterHandler.RegisterRoutes(admin.Group("/apartments/:apartmentId/meter-readings"))
