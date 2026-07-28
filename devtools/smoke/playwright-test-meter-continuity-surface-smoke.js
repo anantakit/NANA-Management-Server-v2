@@ -185,7 +185,12 @@ const path = (page) => new URL(page.url()).pathname + new URL(page.url()).search
 
   /* ── TC2 — Entry from the current meter workflow ── */
   console.log('\nTC2 — Entry from the meter workflow')
-  const meterOrigin = `/meter-readings?apartment_id=${apartmentId}`
+  // Include month: the meter workspace mirrors its month into the URL, so a
+  // real caller's location always carries it. Without it the page would
+  // normalize the URL on landing and the round trip would compare a bare origin
+  // against a normalized one.
+  const nowMonth = new Date().toISOString().slice(0, 7)
+  const meterOrigin = `/meter-readings?apartment_id=${apartmentId}&month=${nowMonth}`
   await enterFrom(page, meterOrigin, occupied.id)
   body = await page.textContent('body')
   check('surface renders when routed in from the workflow', body.includes(`ห้อง ${occupied.number}`))
@@ -279,6 +284,67 @@ const path = (page) => new URL(page.url()).pathname + new URL(page.url()).search
     )
   } else {
     skip('recovery management reachable + return', 'no READING_RECOVERY anchor in dev data')
+  }
+
+  /* ── TC7 — Slice 3: the drawer is a read-only projection ──
+   * Opened from the meter spreadsheet, on a room that HAS a recovery anchor so
+   * the delete affordance would render if the drawer still owned it.        */
+  console.log('\nTC7 — RoomHistoryDrawer projection + route-out (Slice 3)')
+  if (recoveryRoom) {
+    await page.goto(`${FRONTEND}/meter-readings`, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(2500)
+    const roomLink = page.getByRole('button', { name: `ดูประวัติห้อง ${recoveryRoom.number}` })
+    if (await roomLink.count()) {
+      await roomLink.first().click()
+      await page.waitForTimeout(1600)
+      const drawer = await page.textContent('body')
+
+      check('drawer still projects the history timeline', drawer.includes('หน่วย'))
+      check('drawer no longer hosts CurrentMeterState', !drawer.includes('ข้อมูลมิเตอร์'))
+      // By ROLE, not by text: "เปลี่ยนมิเตอร์" also appears as a timeline BADGE
+      // on replacement rows, and that badge is content the drawer must keep.
+      check(
+        'drawer no longer hosts the Replace Meter action',
+        (await page.getByRole('button', { name: 'เปลี่ยนมิเตอร์' }).count()) === 0,
+      )
+      check(
+        'replacement badge still readable in the drawer',
+        drawer.includes('เปลี่ยนมิเตอร์'),
+        'lineage content preserved',
+      )
+      check('drawer no longer hosts the recovery delete mutation', !drawer.includes('ลบการแก้ค่านี้'))
+      check('drawer offers exactly one route out to the authority', drawer.includes('จัดการมิเตอร์ห้องนี้'))
+      check('Focus escalation is untouched', drawer.includes('เปิดในโหมดจดเร็ว'))
+
+      await page.getByRole('link', { name: 'จัดการมิเตอร์ห้องนี้' }).first().click()
+      await page.waitForTimeout(1800)
+      check(
+        'route-out lands on the canonical surface for that room',
+        page.url().includes(`/rooms/${recoveryRoom.id}/meter`),
+        path(page),
+      )
+      const surface = await page.textContent('body')
+      check(
+        'the mutation the drawer gave up is available here',
+        surface.includes('ลบการแก้ค่านี้'),
+        'single owner, not duplicated',
+      )
+      check(
+        'Replace Meter is available here',
+        (await page.getByRole('button', { name: 'เปลี่ยนมิเตอร์' }).count()) > 0,
+      )
+
+      await clickBack(page)
+      check(
+        'returns to the meter workflow with its month scope intact',
+        path(page).startsWith('/meter-readings?month='),
+        path(page),
+      )
+    } else {
+      skip('drawer projection cases', `room ${recoveryRoom.number} not visible in the spreadsheet`)
+    }
+  } else {
+    skip('drawer projection cases', 'no READING_RECOVERY anchor in dev data')
   }
 
   await browser.close()
