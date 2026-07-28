@@ -10,9 +10,14 @@
 //   TC3  worst-first — actionable rows precede silent ones; silence has no CTA
 //   TC4  routing — one destination per state, and the operator comes back
 //   TC5  the flush — a draft Focus never submitted is committable FROM Review
+//   TC6  the Building Workspace owns coverage — ADR-0001 items 1 + 3 (B1-c S1)
 //
-// ⏳ TRANSITIONAL: Review lives at /meter-readings/review while the Spreadsheet
-// still owns /meter-readings. At B1-c the route moves and TC1's URL changes.
+// ⏳ TRANSITIONAL: Review lives at /meter-readings/review while the Building
+// Workspace owns /meter-readings. ADR-0001 reversed OD-2 — Review is being
+// retired, not promoted — so TC1-TC5 are the surface's obituary, not its spec.
+// TC6 is the first case written against the workspace instead; B1-c Slice 3
+// deletes TC1-TC5 outright and grows TC6 into the full 9-item conformance
+// table (migration plan §4).
 //
 // Requires: backend :8080 + FE dev :3001 + `make smoke-install`.
 // Run:  cd devtools/smoke && node playwright-test-meter-review-surface-smoke.js
@@ -296,6 +301,74 @@ async function tc5_draftFlush(page, month) {
     !rowStateAfter.startsWith('ยังไม่มีค่าการใช้งาน'), `now "${rowStateAfter}"`)
 }
 
+/* ─── TC6 — the Building Workspace owns coverage (ADR-0001 items 1 + 3) ─── */
+
+async function gotoWorkspace(page, month) {
+  await page.goto(`${FRONTEND}/meter-readings?month=${month}`, { waitUntil: 'networkidle' })
+  await page.locator('[data-room-number]').first().waitFor({ timeout: 15000 })
+  await page.waitForTimeout(250)
+}
+
+/** The workspace's progress chips, as `{ 'ทั้งหมด': n, 'ยังไม่บันทึก': n, ... }`. */
+async function readChips(page) {
+  return page.$$eval(
+    '[role="radiogroup"][aria-label="กรองการแสดงห้อง"] button[role="radio"]',
+    (nodes) =>
+      Object.fromEntries(
+        nodes.map((n) => {
+          const spans = n.querySelectorAll('span')
+          const label = spans[0] ? spans[0].textContent.trim() : ''
+          const count = spans[1] ? Number(spans[1].textContent.trim()) : null
+          return [label, count]
+        }),
+      ),
+  )
+}
+
+async function tc6_workspaceDenominator(page, month) {
+  console.log('\n🧪 TC6 — the workspace answers progress from its own denominator')
+  await gotoWorkspace(page, month)
+
+  // ── ADR item 1 — from a COLD LOAD, with ZERO navigation. Nothing below this
+  //    line may click through to another surface before the question is answered.
+  const chips = await readChips(page)
+  const remaining = chips['ยังไม่บันทึก']
+  const all = chips['ทั้งหมด']
+  const done = chips['บันทึกแล้ว']
+
+  check('TC6.1 "เหลือกี่ห้อง" is answerable on the workspace itself, zero navigation',
+    Number.isInteger(remaining), `ยังไม่บันทึก = ${remaining}`)
+  check('TC6.2 the workspace states its own denominator',
+    Number.isInteger(all) && Number.isInteger(done), `ทั้งหมด=${all} · บันทึกแล้ว=${done}`)
+
+  // ── ADR item 3 — the whole EXPECTED inventory.
+  // The inventory view is asserted explicitly rather than relied on as the
+  // landing view: the workspace auto-switches to "ยังไม่บันทึก" once past the
+  // halfway mark, so a cold load is not guaranteed to BE the inventory view.
+  await page.locator('button[role="radio"]', { hasText: 'ทั้งหมด' }).first().click()
+  await page.waitForTimeout(400)
+  const rendered = await page.locator('[data-room-number]').count()
+
+  check('TC6.3 the inventory view lists every expected room — not only the remaining ones',
+    rendered >= all, `${rendered} row(s) rendered ⊇ ${all} expected`)
+
+  // The defect: `counts.all` was `rooms.length`, so vacant / pending-move-out
+  // rooms sat in the denominator and 100% was unreachable by construction.
+  // Incidental entry is why `rendered` stays the FULL inventory (ADR item 9) —
+  // only the denominator narrows.
+  check('TC6.4 the denominator excludes vacant / pending-move-out rooms',
+    all < rendered,
+    all < rendered
+      ? `${rendered - all} room(s) suppressed from the denominator`
+      : `all=${all} equals rendered=${rendered} — the suppressor is not applied`)
+
+  // Completability: every expected room is either done or still to do, so
+  // done === all is reachable. Catches a half-applied fix (denominator moved
+  // to `expected` while done/remaining still count the raw inventory).
+  check('TC6.5 progress is completable — done + remaining = the denominator',
+    done + remaining === all, `${done} + ${remaining} = ${done + remaining}, denominator ${all}`)
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -311,6 +384,7 @@ async function tc5_draftFlush(page, month) {
     await tc3_worstFirst(page, month)
     await tc4_routing(page, month)
     await tc5_draftFlush(page, month)
+    await tc6_workspaceDenominator(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
