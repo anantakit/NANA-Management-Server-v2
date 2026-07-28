@@ -253,11 +253,23 @@ async function tc5_draftFlush(page, month) {
   // Read each meter's own baseline off the Focus row and step just above it:
   // the values this smoke commits land in the dev database and become next
   // month's `previous`, so a plausible reading matters.
+  // Walk UP from the input until the row's baseline number is found. The
+  // previous scraper only looked at input.parentElement, where Focus does not
+  // put it — so it always fell through to its `|| '0'` default and silently
+  // submitted a value below the real baseline. That made TC5.5/5.6 fail for a
+  // reason that had nothing to do with the flush being tested.
   const previous = await page.$$eval('input[aria-label^="มิเตอร์"]', (inputs) =>
     Object.fromEntries(inputs.map((i) => {
-      const spans = i.parentElement ? Array.from(i.parentElement.querySelectorAll('span')) : []
-      const shown = spans.map((s) => s.textContent.trim()).find((t) => /^[\d,]+$/.test(t)) || '0'
-      return [i.getAttribute('aria-label'), Number(shown.replace(/,/g, ''))]
+      let node = i.parentElement
+      for (let depth = 0; node && depth < 5; depth++) {
+        const shown = Array.from(node.querySelectorAll('span'))
+          .map((s) => s.textContent.trim())
+          .find((t) => /^[\d,]+$/.test(t))
+        if (shown) return [i.getAttribute('aria-label'), Number(shown.replace(/,/g, ''))]
+        node = node.parentElement
+      }
+      // A genuinely new meter shows an em-dash, not a number — baseline 0.
+      return [i.getAttribute('aria-label'), 0]
     })),
   )
   await elec.fill(String((previous['มิเตอร์ไฟฟ้า'] ?? 0) + 7))
@@ -369,6 +381,81 @@ async function tc6_workspaceDenominator(page, month) {
     done + remaining === all, `${done} + ${remaining} = ${done + remaining}, denominator ${all}`)
 }
 
+/* ─── TC7 — EXIT parity: the grid's `previous` IS the backend's lineage ─── */
+
+const BACKEND = process.env.BACKEND || 'http://localhost:8080'
+
+/** Log in against the API directly, to use the backend as the oracle. */
+async function apiToken() {
+  for (const password of [ADMIN_PASS_POST, ADMIN_PASS_FRESH]) {
+    const res = await fetch(`${BACKEND}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: ADMIN_USER, password }),
+    })
+    if (res.ok) return (await res.json()).data.access_token
+  }
+  throw new Error('api login failed')
+}
+
+// D3 (owner decision, 2026-07-28): the frontend's previous-value resolution must
+// agree with backend lineage for every room — the defect was a room whose latest
+// reading is an EXIT row (billing_month NULL), invisible to the month-scoped
+// queries the grid used to derive `previous` from. The operator saw 0, entered
+// against it, and the save was rejected by the baseline the backend actually
+// holds. Comparing the rendered row against the backend's own projection is the
+// only assertion that cannot drift back.
+async function tc7_exitLineageParity(page, month) {
+  console.log('\n🧪 TC7 — the grid renders the backend\'s lineage baseline, not "last month"')
+  const token = await apiToken()
+  const auth = { headers: { Authorization: `Bearer ${token}` } }
+
+  const apartments = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`, auth)).json()).data
+  await gotoWorkspace(page, month)
+  const apartmentName = await page.locator('h1, [class*="breadcrumb"]').first().innerText().catch(() => '')
+  const apartment = apartments.find((a) => apartmentName.includes(a.name)) || apartments[0]
+
+  const latest = (await (await fetch(
+    `${BACKEND}/api/v1/apartments/${apartment.id}/meter-readings/latest`, auth)).json()).data || []
+  const exitLatest = latest.filter((r) => r.reading_type === 'EXIT')
+
+  check('TC7.1 the lineage projection is reachable and non-empty',
+    latest.length > 0, `${latest.length} room(s), ${exitLatest.length} with an EXIT as latest`)
+
+  if (exitLatest.length === 0) {
+    check('TC7.2 SKIPPED — no room in this apartment has an EXIT as its latest row', true,
+      'seed has no re-let room to prove parity against')
+    return
+  }
+
+  // Read what the operator actually sees for those rooms.
+  const rendered = await page.$$eval('[data-room-number]', (nodes) =>
+    Object.fromEntries(nodes.map((n) => [
+      n.getAttribute('data-room-number'),
+      (n.innerText.match(/[\d,]+/g) || []).map((t) => Number(t.replace(/,/g, ''))),
+    ])),
+  )
+
+  const mismatches = []
+  for (const row of exitLatest) {
+    const numbers = rendered[row.room_number]
+    if (!numbers) continue // not rendered under the active filter — not this case's concern
+    // The row prints each utility's baseline; an unread room shows no other
+    // figures, so containment is the honest assertion at this granularity.
+    for (const [utility, expected] of [['ไฟฟ้า', row.electricity_current], ['น้ำ', row.water_current]]) {
+      if (expected > 0 && !numbers.includes(expected)) {
+        mismatches.push(`${row.room_number} ${utility}: backend lineage ${expected}, row shows [${numbers}]`)
+      }
+    }
+  }
+
+  check('TC7.2 every EXIT-latest room shows the backend\'s baseline, never 0',
+    mismatches.length === 0,
+    mismatches.length === 0
+      ? `${exitLatest.length} re-let room(s) verified`
+      : mismatches.slice(0, 3).join(' · '))
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -385,6 +472,7 @@ async function tc6_workspaceDenominator(page, month) {
     await tc4_routing(page, month)
     await tc5_draftFlush(page, month)
     await tc6_workspaceDenominator(page, month)
+    await tc7_exitLineageParity(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {

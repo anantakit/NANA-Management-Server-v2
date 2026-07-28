@@ -40,6 +40,7 @@ type MeterReadingService interface {
 	GetLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	GetRoomHistory(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReadingWithTenant, int64, error)
 	GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error)
+	GetLatestPerRoom(ctx context.Context, apartmentID uuid.UUID) ([]MeterReadingWithRoom, error)
 
 	// CreateBaselineCorrection commits a baseline correction (READING_RECOVERY anchor
 	// row). Phase 7 — meter-only commit; financial reconciliation lives on
@@ -624,6 +625,32 @@ func isDuplicateKeyError(err error) bool {
 }
 
 // --- Baseline computation ---
+
+// GetLatestPerRoom returns each room's latest lineage row for one apartment —
+// the baseline the room's NEXT reading must start from, and the same row
+// Create/BatchCreate validate against. Rooms with no reading at all are simply
+// absent from the result (there is no predecessor to state).
+//
+// Note this is NOT `GetBaselines`: that one is the anomaly comparison baseline
+// (average usage over recent MONTHLY rows). Same word, different question — see
+// the lineage-vs-analytics split.
+func (s *meterReadingService) GetLatestPerRoom(ctx context.Context, apartmentID uuid.UUID) ([]MeterReadingWithRoom, error) {
+	roomIDs, err := s.rooms.FindRoomIDsByApartment(ctx, apartmentID)
+	if err != nil {
+		return nil, fmt.Errorf("find room IDs: %w", err)
+	}
+
+	latestByRoom, err := s.repo.FindLatestPerRoom(ctx, roomIDs)
+	if err != nil {
+		return nil, fmt.Errorf("find latest per room: %w", err)
+	}
+
+	result := make([]MeterReadingWithRoom, 0, len(latestByRoom))
+	for _, m := range latestByRoom {
+		result = append(result, m)
+	}
+	return result, nil
+}
 
 func (s *meterReadingService) GetBaselines(ctx context.Context, apartmentID uuid.UUID) (map[uuid.UUID]RoomBaseline, error) {
 	roomIDs, err := s.rooms.FindRoomIDsByApartment(ctx, apartmentID)

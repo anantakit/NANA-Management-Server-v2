@@ -35,6 +35,7 @@ type MeterReadingRepository interface {
 	FindByIDSimple(ctx context.Context, id uuid.UUID) (*MeterReading, error)
 	FindByRoomID(ctx context.Context, roomID uuid.UUID, params pagination.PaginationParams) ([]MeterReading, int64, error)
 	FindLatestByRoomID(ctx context.Context, roomID uuid.UUID) (*MeterReading, error)
+	FindLatestPerRoom(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]MeterReadingWithRoom, error)
 	FindLatestByRoomIDBeforeDate(ctx context.Context, roomID uuid.UUID, before time.Time, excludeID *uuid.UUID) (*MeterReading, error)
 	FindRecentByRoomIDs(ctx context.Context, roomIDs []uuid.UUID, limit int) (map[uuid.UUID][]MeterReading, error)
 	HasConsumptionMonthlyByRoomAndMonth(ctx context.Context, roomID uuid.UUID, month string) (bool, error)
@@ -223,6 +224,75 @@ func (r *meterReadingRepository) FindLatestByRoomID(ctx context.Context, roomID 
 		return nil, err
 	}
 	return &m, nil
+}
+
+// FindLatestPerRoom is the BATCH form of FindLatestByRoomID: one row per room,
+// the room's latest lineage row under the SAME canonical temporal ordering.
+//
+// It exists so the monthly entry path can show the operator the same `previous`
+// the backend validates against. Create/BatchCreate build `NewReading` on
+// FindLatestByRoomID, which orders over ALL of a room's rows; the frontend was
+// deriving `previous` from two MONTH-SCOPED queries instead, so any predecessor
+// outside that window was invisible and `previous` silently fell back to 0.
+// Two real cases: an EXIT reading (billing_month IS NULL — in no month query at
+// all) and a room that skipped a month. The operator then entered a value on a
+// baseline of 0 and the save was rejected by the very rule this row defines.
+//
+// ⚠️ LINEAGE query, NOT analytics. It must never grow the `anchor_reason IS NULL`
+// / recovery-source NOT EXISTS filters that FindRecentByRoomIDs carries: a
+// PHYSICAL_REPLACEMENT or READING_RECOVERY anchor IS the baseline the next
+// reading starts from (feedback_recovery_lineage_vs_analytics_split, locked
+// 2026-06-22). Pinned against FindLatestByRoomID by
+// service_lineage_latest_per_room_parity_integration_test.go.
+func (r *meterReadingRepository) FindLatestPerRoom(ctx context.Context, roomIDs []uuid.UUID) (map[uuid.UUID]MeterReadingWithRoom, error) {
+	if len(roomIDs) == 0 {
+		return map[uuid.UUID]MeterReadingWithRoom{}, nil
+	}
+
+	// Same ordering key as FindLatestByRoomID, applied per-room via ROW_NUMBER
+	// instead of LIMIT 1 so one round-trip serves a whole apartment.
+	sortExpr := temporalDateExpr("mr")
+	ranked := database.DB(ctx, r.db).
+		Table("meter_readings AS mr").
+		Select(fmt.Sprintf(
+			"mr.*, ROW_NUMBER() OVER (PARTITION BY mr.room_id ORDER BY %s DESC, mr.created_at DESC) AS rn",
+			sortExpr,
+		)).
+		Where("mr.room_id IN ? AND mr.deleted_at IS NULL", roomIDs)
+
+	type joinRow struct {
+		MeterReading
+		RoomNumber string `gorm:"column:room_number"`
+		Floor      int    `gorm:"column:room_floor"`
+		TenantName string `gorm:"column:tenant_name"`
+	}
+
+	var rows []joinRow
+	err := database.DB(ctx, r.db).
+		Table("(?) AS sub", ranked).
+		Joins("JOIN rooms ON rooms.id = sub.room_id AND rooms.deleted_at IS NULL").
+		Joins("LEFT JOIN contracts ON contracts.room_id = rooms.id AND contracts.status = 'ACTIVE' AND contracts.deleted_at IS NULL").
+		Joins("LEFT JOIN tenants ON tenants.id = contracts.tenant_id AND tenants.deleted_at IS NULL").
+		Where("sub.rn = 1").
+		Select(`sub.*,
+			rooms.number AS room_number,
+			rooms.floor AS room_floor,
+			COALESCE(tenants.full_name, '') AS tenant_name`).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[uuid.UUID]MeterReadingWithRoom, len(rows))
+	for _, row := range rows {
+		result[row.RoomID] = MeterReadingWithRoom{
+			MeterReading: row.MeterReading,
+			RoomNumber:   row.RoomNumber,
+			Floor:        row.Floor,
+			TenantName:   row.TenantName,
+		}
+	}
+	return result, nil
 }
 
 // FindLatestByRoomIDBeforeDate finds the latest reading strictly before a given date.
