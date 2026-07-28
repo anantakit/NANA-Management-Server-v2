@@ -287,7 +287,16 @@ async function tc6_reloadShowsBanner(page, apartmentId) {
   await clearDraft(page, apartmentId)
   await gotoMeterReadings(page)
   await enterFocusMode(page)
-  await saveOneInFocus(page, 4001, 2001)
+  // D-1 DIAGNOSIS (2026-07-28, B1-b round). TC6.2 used to assert against a
+  // hard-coded room A108 and had been failing at HEAD since before P2. The
+  // Focus queue is DATA-DEPENDENT — it is the unread rooms in floor/number
+  // order — and on the dev dataset it opens at A110, so A108 was never one of
+  // the two rooms this case drafts. The input it waited for therefore never
+  // carried a value, and the failure said nothing about the recovery path.
+  // Re-anchored to the room `saveOneInFocus` actually drafted. This is
+  // STRICTER, not looser: the assertion is now guaranteed to point at a room
+  // that is in the draft, so a genuine hydration regression fails it.
+  const draftedRoom = await saveOneInFocus(page, 4001, 2001)
   await saveOneInFocus(page, 4002, 2002)
 
   // Simulate "operator closed tab and came back" — full reload, no Focus
@@ -304,14 +313,21 @@ async function tc6_reloadShowsBanner(page, apartmentId) {
     // Confirm the banner's "กู้คืน" still works as expected (recovery flow)
     await page.locator('button', { hasText: 'กู้คืน' }).first().click()
     await page.waitForTimeout(400)
-    const recoveryInput = page.locator('input[aria-label="มิเตอร์ไฟห้อง A108"]').first()
+    const recoveryInput = page
+      .locator(`input[aria-label="มิเตอร์ไฟห้อง ${draftedRoom}"]`)
+      .first()
     let restored = false
+    let seenValue = ''
     try {
       await recoveryInput.waitFor({ state: 'attached', timeout: 3000 })
-      const val = await recoveryInput.inputValue()
-      restored = !!val && val !== ''
+      seenValue = await recoveryInput.inputValue()
+      restored = seenValue === '4001'
     } catch (_) {}
-    check('TC6.2 "กู้คืน" still hydrates inputs in recovery path', restored)
+    check(
+      `TC6.2 "กู้คืน" still hydrates inputs in recovery path (room ${draftedRoom})`,
+      restored,
+      restored ? '' : `expected "4001", got "${seenValue}"`,
+    )
   }
 
   await clearDraft(page, apartmentId)
