@@ -11,6 +11,8 @@
 //   TC4  routing — one destination per state, and the operator comes back
 //   TC5  the flush — a draft Focus never submitted is committable FROM Review
 //   TC6  the Building Workspace owns coverage — ADR-0001 items 1 + 3 (B1-c S1)
+//   TC7  EXIT lineage parity — FE `previous` IS the backend's (D3 gate)
+//   TC8  Slice 2 — two inventories · stable workspace · composed row truth
 //
 // ⏳ TRANSITIONAL: Review lives at /meter-readings/review while the Building
 // Workspace owns /meter-readings. ADR-0001 reversed OD-2 — Review is being
@@ -350,7 +352,7 @@ async function tc6_workspaceDenominator(page, month) {
 
   check('TC6.1 "เหลือกี่ห้อง" is answerable on the workspace itself, zero navigation',
     Number.isInteger(remaining), `ยังไม่บันทึก = ${remaining}`)
-  check('TC6.2 the workspace states its own denominator',
+  check('TC6.2 the workspace states its own counts',
     Number.isInteger(all) && Number.isInteger(done), `ทั้งหมด=${all} · บันทึกแล้ว=${done}`)
 
   // ── ADR item 3 — the whole EXPECTED inventory.
@@ -362,23 +364,37 @@ async function tc6_workspaceDenominator(page, month) {
   const rendered = await page.locator('[data-room-number]').count()
 
   check('TC6.3 the inventory view lists every expected room — not only the remaining ones',
-    rendered >= all, `${rendered} row(s) rendered ⊇ ${all} expected`)
+    rendered >= done + remaining, `${rendered} row(s) rendered ⊇ ${done + remaining} expected`)
 
-  // The defect: `counts.all` was `rooms.length`, so vacant / pending-move-out
-  // rooms sat in the denominator and 100% was unreachable by construction.
-  // Incidental entry is why `rendered` stays the FULL inventory (ADR item 9) —
-  // only the denominator narrows.
-  check('TC6.4 the denominator excludes vacant / pending-move-out rooms',
-    all < rendered,
-    all < rendered
-      ? `${rendered - all} room(s) suppressed from the denominator`
-      : `all=${all} equals rendered=${rendered} — the suppressor is not applied`)
+  // ⚠️ Re-anchored for owner decision D1 (2026-07-28). Slice 1 briefly made the
+  // "ทั้งหมด" CHIP the denominator, which put the chip's count and its own row
+  // list into disagreement. D1 separated them: "ทั้งหมด" is a NAVIGATION count
+  // over the workspace inventory, and the progress denominator is the EXPECTED
+  // inventory. Both are correct simultaneously — 75 rooms, 18 readings expected
+  // — so the denominator is asserted where it actually lives (the progress
+  // readout, TC8.2) rather than on the chip.
+  const token = await apiToken()
+  const apts = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`,
+    { headers: { Authorization: `Bearer ${token}` } })).json()).data
+  const name = await page.locator('h1, [class*="breadcrumb"]').first().innerText().catch(() => '')
+  const apt = apts.find((a) => name.includes(a.name)) || apts[0]
+  const rooms = (await (await fetch(`${BACKEND}/api/v1/apartments/${apt.id}/rooms?limit=500`,
+    { headers: { Authorization: `Bearer ${token}` } })).json()).data
+  const expectedCount = rooms.filter((r) =>
+    r.status === 'OCCUPIED' && r.active_contract && r.active_contract.move_out_status !== 'PENDING').length
+
+  check('TC6.4 the expected inventory is narrower than the rendered one — the suppressor is applied',
+    expectedCount < rendered,
+    expectedCount < rendered
+      ? `${rendered - expectedCount} room(s) suppressed from progress`
+      : `expected=${expectedCount} equals rendered=${rendered} — no suppression`)
 
   // Completability: every expected room is either done or still to do, so
-  // done === all is reachable. Catches a half-applied fix (denominator moved
+  // done === expected is reachable. Catches a half-applied fix (progress moved
   // to `expected` while done/remaining still count the raw inventory).
-  check('TC6.5 progress is completable — done + remaining = the denominator',
-    done + remaining === all, `${done} + ${remaining} = ${done + remaining}, denominator ${all}`)
+  check('TC6.5 progress is completable — done + remaining = the expected inventory',
+    done + remaining === expectedCount,
+    `${done} + ${remaining} = ${done + remaining}, expected ${expectedCount}`)
 }
 
 /* ─── TC7 — EXIT parity: the grid's `previous` IS the backend's lineage ─── */
@@ -456,6 +472,138 @@ async function tc7_exitLineageParity(page, month) {
       : mismatches.slice(0, 3).join(' · '))
 }
 
+/* ─── TC8 — Slice 2: two inventories, a stable workspace, composed row truth ─── */
+
+/** The chip whose label starts with `label`, as a locator. */
+const chip = (page, label) => page.locator('button[role="radio"]', { hasText: label }).first()
+
+async function tc8_sliceTwoContract(page, month) {
+  console.log('\n🧪 TC8 — D1 two inventories · D2 no autonomous narrowing · P-1 composed row truth')
+  const token = await apiToken()
+  const auth = { headers: { Authorization: `Bearer ${token}` } }
+  const apartments = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`, auth)).json()).data
+
+  await gotoWorkspace(page, month)
+  const apartmentName = await page.locator('h1, [class*="breadcrumb"]').first().innerText().catch(() => '')
+  const apartment = apartments.find((a) => apartmentName.includes(a.name)) || apartments[0]
+  const rooms = (await (await fetch(
+    `${BACKEND}/api/v1/apartments/${apartment.id}/rooms?limit=500`, auth)).json()).data
+  const expected = rooms.filter((r) =>
+    r.status === 'OCCUPIED' && r.active_contract && r.active_contract.move_out_status !== 'PENDING')
+  const nonExpected = rooms.filter((r) => !expected.includes(r))
+
+  const chips = await readChips(page)
+  const renderedUnderAll = await page.locator('[data-room-number]').count()
+
+  // ── 5 + 6 — the workspace the operator opens is the one they left it as ──
+  const cold = await page.evaluate(() => {
+    const group = document.querySelector('[role="radiogroup"][aria-label="กรองการแสดงห้อง"]')
+    const active = group.querySelector('button[aria-checked="true"]')
+    return {
+      scrollY: Math.round(window.scrollY),
+      chipBarTop: Math.round(group.getBoundingClientRect().top),
+      activeChip: active ? active.textContent.trim() : '(none)',
+    }
+  })
+  check('TC8.5 cold load stays at the top of the workspace — nothing scrolls itself',
+    cold.scrollY === 0 && cold.chipBarTop >= 0,
+    `scrollY=${cold.scrollY}, chip bar top=${cold.chipBarTop}px`)
+  check('TC8.6 cold load keeps the whole inventory selected — no auto-narrowing',
+    cold.activeChip.startsWith('ทั้งหมด'), `active chip = "${cold.activeChip}"`)
+
+  // ── 1 — "ทั้งหมด" counts what it renders ──
+  check('TC8.1 "ทั้งหมด" equals the rendered whole inventory',
+    chips['ทั้งหมด'] === renderedUnderAll && renderedUnderAll === rooms.length,
+    `chip=${chips['ทั้งหมด']} rendered=${renderedUnderAll} rooms=${rooms.length}`)
+
+  // ── 2 — progress runs on the EXPECTED inventory, which is a different number ──
+  await page.setViewportSize({ width: 375, height: 780 })
+  await page.waitForTimeout(500)
+  const footer = await page.locator('.fixed.bottom-0').innerText().catch(() => '')
+  const progress = footer.match(/(\d+)\s*\/\s*(\d+)/)
+  check('TC8.2 the progress denominator is the expected inventory, not the room count',
+    !!progress && Number(progress[2]) === expected.length && expected.length !== rooms.length,
+    progress ? `${progress[1]} / ${progress[2]}, expected=${expected.length}, rooms=${rooms.length}` : 'no progress readout')
+
+  // ── 8 — the attention chip is reachable at 375 px ──
+  // Not a demand that it fit: the group is a scroll container, so "reachable"
+  // means scrollable to and readable, with the scroll affordance actually
+  // working. Making it fit is a re-presentation decision, not this slice.
+  const attention = await page.evaluate(() => {
+    const group = document.querySelector('[role="radiogroup"][aria-label="กรองการแสดงห้อง"]')
+    const target = Array.from(group.querySelectorAll('button[role="radio"]'))
+      .find((b) => b.textContent.includes('มีปัญหา'))
+    if (!target) return { found: false }
+    group.scrollLeft = group.scrollWidth
+    const gr = group.getBoundingClientRect(), tr = target.getBoundingClientRect()
+    return { found: true, visibleAfterScroll: tr.left >= gr.left - 0.5 && tr.right <= gr.right + 0.5 }
+  })
+  check('TC8.8 the attention chip is reachable at 375 px',
+    attention.found && attention.visibleAfterScroll,
+    attention.found ? '' : 'chip not present at all')
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.waitForTimeout(400)
+
+  // ── 3 + 4 — a non-expected room is reachable, but is not queued as work ──
+  if (nonExpected.length === 0) {
+    check('TC8.3/8.4 SKIPPED — every room in this apartment is expected', true, '')
+  } else {
+    const sample = nonExpected[0].number
+    const underAll = await page.locator(`[data-room-number="${sample}"]`).count()
+    check(`TC8.3 non-expected room ${sample} stays reachable under "ทั้งหมด" (incidental entry)`,
+      underAll === 1, `${underAll} row(s)`)
+
+    await chip(page, 'ยังไม่บันทึก').click()
+    await page.waitForTimeout(400)
+    const underRemaining = await page.locator(`[data-room-number="${sample}"]`).count()
+    const remainingRendered = await page.locator('[data-room-number]').count()
+    check(`TC8.4 non-expected room ${sample} is absent from "ยังไม่บันทึก"`,
+      underRemaining === 0, `${underRemaining} row(s)`)
+    check('TC8.4b …and that chip counts exactly the rows it renders',
+      remainingRendered === chips['ยังไม่บันทึก'],
+      `chip=${chips['ยังไม่บันทึก']} rendered=${remainingRendered}`)
+  }
+
+  // ── 10 + 9 — composed row truth ──
+  await chip(page, 'มีปัญหา').click()
+  await page.waitForTimeout(400)
+  const attentionRendered = await page.locator('[data-room-number]').count()
+  check('TC8.4c "มีปัญหา" counts exactly the rows it renders',
+    attentionRendered === chips['มีปัญหา'], `chip=${chips['มีปัญหา']} rendered=${attentionRendered}`)
+
+  const flagged = await page.$$eval('[data-room-number]', (nodes) =>
+    nodes.map((n) => n.getAttribute('data-room-number')))
+  if (flagged.length === 0) {
+    check('TC8.9/8.10 SKIPPED — no committed attention row this month', true, '')
+    return
+  }
+
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+  const target = page.locator(`[data-room-number="${flagged[0]}"]`)
+  const committedNote = (await target.innerText()).replace(/\s+/g, ' ')
+
+  check(`TC8.10 saved room ${flagged[0]} carries committed truth AND stays read-only`,
+    (await target.locator('input').count()) === 0 && /ผิดปกติ|เปลี่ยนมิเตอร์|แก้ค่ามิเตอร์/.test(committedNote),
+    `inputs=${await target.locator('input').count()} · "${committedNote.slice(-46)}"`)
+
+  // Re-open it: the row must switch to draft truth WHOLESALE, not show both.
+  await target.click()
+  await page.waitForTimeout(500)
+  const afterReEdit = (await target.innerText()).replace(/\s+/g, ' ')
+  check('TC8.9 a row being re-edited speaks draft truth only — never both at once',
+    !/ผิดปกติ|เปลี่ยนมิเตอร์ \d|แก้ค่ามิเตอร์/.test(afterReEdit) && (await target.locator('input').count()) > 0,
+    `inputs=${await target.locator('input').count()} · "${afterReEdit.slice(-46)}"`)
+
+  // ── 7 — an EXPLICIT room-scoped return may still land on its room ──
+  await page.goto(`${FRONTEND}/meter-readings?month=${month}&focus=${
+    (rooms.find((r) => r.number === flagged[0]) || rooms[0]).id}`, { waitUntil: 'networkidle' })
+  await page.waitForTimeout(1500)
+  const focusText = await page.locator('main').innerText().catch(() => '')
+  check('TC8.7 an explicit room-scoped entry still lands on its room',
+    focusText.includes(flagged[0]), `looking for ${flagged[0]}`)
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -473,6 +621,7 @@ async function tc7_exitLineageParity(page, month) {
     await tc5_draftFlush(page, month)
     await tc6_workspaceDenominator(page, month)
     await tc7_exitLineageParity(page, month)
+    await tc8_sliceTwoContract(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
