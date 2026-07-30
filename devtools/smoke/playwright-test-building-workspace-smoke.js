@@ -10,6 +10,7 @@
 //   TC8  two inventories · stable workspace · composed row truth — items 2, 4, 8
 //   TC9  Focus consumes the queue, it never defines one — item 5
 //   TC10 a room-scoped detour restores the ORIGINATING Focus mode (S4 return contract)
+//   TC11 Focus lost the Replace mutation, kept rollover + the route-out (S4.3)
 //
 // Items 6, 7 and 9 land in Slice 4 (migration plan §4). Numbering is kept from
 // the Review-era file on purpose: these cases were written slice by slice and
@@ -610,6 +611,112 @@ async function tc10_detourRestoresMode(page, month) {
     bareSession === 1, `session=${bareSession} room(s)`)
 }
 
+/* ─── TC11 — Focus no longer OWNS meter replacement (S4.3) ─── */
+
+// A physical meter swap is a ROOM fact — it survives a tenant change — so
+// recording it belongs to Meter Continuity, not to this month's observation
+// (Lock C: Replace ≠ Recovery). S4.3 removes the mutation from Focus now that the
+// route-out added in S4.1 gives a real swap somewhere to go.
+//
+// Rollover STAYS: it IS a property of this observation.
+//
+// The round trip itself is TC10's job; the cases here are about what was removed,
+// what survived, and what the save path is now incapable of sending.
+async function tc11_focusLostReplaceOwnership(page, month) {
+  console.log('\n🧪 TC11 — Focus lost the Replace mutation, kept rollover and the route-out')
+
+  const clearDrafts = () => page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+
+  await gotoWorkspace(page, month)
+  await clearDrafts()
+  await gotoWorkspace(page, month)
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+
+  const entry = page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first()
+  if (await entry.isDisabled()) {
+    check('TC11 SKIPPED — no unread room this month to open Focus on', true,
+      'reseed or pick a month with unread rows')
+    return
+  }
+  await entry.click()
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 8000 })
+  const room = await page.locator('p.text-5xl').first().innerText().catch(() => '')
+
+  // ── what was REMOVED ──
+  const replaceInFocus = await page.locator('button', { hasText: 'เปลี่ยนมิเตอร์ใหม่' }).count()
+  check('TC11.1 Focus offers no "เปลี่ยนมิเตอร์ใหม่" — the mutation is gone',
+    replaceInFocus === 0, `${replaceInFocus} toggle(s) found`)
+
+  // ── what SURVIVED ──
+  check('TC11.2 Focus still offers the route-out to the room that owns the swap',
+    await page.locator('button', { hasText: 'จัดการมิเตอร์ห้องนี้' }).first().isVisible().catch(() => false),
+    'round trip itself is TC10')
+
+  const rollover = page.locator('button', { hasText: /^ครบรอบ$/ }).first()
+  check('TC11.3 "ครบรอบ" survives — rollover is a property of THIS observation',
+    await rollover.isVisible().catch(() => false))
+
+  // ── the save path is now incapable of carrying a replacement ──
+  // Toggle rollover so the assertion is two-sided: the flag Focus DOES own must
+  // reach the payload, and the one it lost must be absent. A test that only
+  // proves an absence would also pass if flags stopped working entirely.
+  await rollover.click()
+  await page.waitForTimeout(200)
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().fill('88123')
+  await page.keyboard.press('Enter')
+  await page.locator('input[aria-label="มิเตอร์น้ำ"]').first().fill('8812')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(700)
+
+  // Leave Focus → the workspace auto-restores the draft into the grid, which owns
+  // the submit ("whoever owns the denominator owns the flush").
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(900)
+
+  // Capture the batch payload and ABORT it — this case is about the request shape,
+  // and nothing should be persisted into the dev database to prove it.
+  let payload = null
+  await page.route('**/meter-readings/batch', async (route) => {
+    try { payload = JSON.parse(route.request().postData() || 'null') } catch (_) {}
+    await route.abort()
+  })
+  try {
+    await page.locator('button', { hasText: /^บันทึก$|^บันทึก \(/ }).first().click()
+    await page.waitForTimeout(900)
+    // Rollover usage is large by construction, so the grid raises its
+    // anomaly-confirm toast before submitting. Confirm it — the flag under test
+    // is exactly the reason the usage looks anomalous.
+    const confirm = page.locator('button', { hasText: 'บันทึกต่อ' }).first()
+    if (await confirm.isVisible().catch(() => false)) {
+      await confirm.click()
+      await page.waitForTimeout(1200)
+    }
+  } finally {
+    await page.unroute('**/meter-readings/batch')
+  }
+
+  const items = payload && Array.isArray(payload.items) ? payload.items : []
+  const mine = items.find((i) => i.is_electricity_meter_rollover || i.is_water_meter_rollover) || items[0]
+
+  check('TC11.4 the flag Focus still owns reaches the payload — rollover survived',
+    !!mine && (mine.is_electricity_meter_rollover === true || mine.is_water_meter_rollover === true),
+    mine ? JSON.stringify(mine) : `no batch payload captured (${items.length} item(s))`)
+
+  const anyReplaced = items.some((i) =>
+    'is_electricity_meter_replaced' in i || 'is_water_meter_replaced' in i)
+  check('TC11.5 no is_*_meter_replaced anywhere in a Focus-originated save',
+    items.length > 0 && !anyReplaced,
+    items.length === 0 ? 'no payload captured' : `${items.length} item(s), none carrying a replacement`)
+
+  await clearDrafts()
+  console.log(`     (room used: ${room}; batch aborted, nothing persisted)`)
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -625,6 +732,7 @@ async function tc10_detourRestoresMode(page, month) {
     await tc8_sliceTwoContract(page, month)
     await tc9_focusConsumesTheQueue(page, month)
     await tc10_detourRestoresMode(page, month)
+    await tc11_focusLostReplaceOwnership(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
