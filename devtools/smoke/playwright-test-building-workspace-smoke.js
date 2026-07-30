@@ -1,28 +1,26 @@
-// Review Surface (B1-b) — capability smoke
+// Building Workspace — ADR-0001 conformance smoke
 // ----------------------------------------------------------------------
-// Locks what Review is allowed to be. The vocabulary was settled by
-// REVIEW_STATUS_SELECTOR_AUDIT.md and the row grammar by
-// METER_WORKFLOW_CONVERGENCE_AUDIT.md §7 Lock A; this smoke is the executable
-// half of both.
+// The executable half of ADR-0001's 9-item conformance table. Every case is
+// settled by an OBSERVATION on `/meter-readings`, never by reading intent, so a
+// future re-presentation (card grid, floor sections, anything) can be checked
+// against the ADR without re-reading the audit.
 //
-//   TC1  identity + the one-line test — Review shows state and routes; NO FORM
-//   TC2  vocabulary — only the six admitted names ship; the reject list is absent
-//   TC3  worst-first — actionable rows precede silent ones; silence has no CTA
-//   TC4  routing — one destination per state, and the operator comes back
-//   TC5  the flush — a draft Focus never submitted is committable FROM Review
-//   TC6  the Building Workspace owns coverage — ADR-0001 items 1 + 3 (B1-c S1)
+//   TC6  coverage is answerable without leaving the workspace — items 1 + 3
 //   TC7  EXIT lineage parity — FE `previous` IS the backend's (D3 gate)
-//   TC8  Slice 2 — two inventories · stable workspace · composed row truth
+//   TC8  two inventories · stable workspace · composed row truth — items 2, 4, 8
+//   TC9  Focus consumes the queue, it never defines one — item 5
 //
-// ⏳ TRANSITIONAL: Review lives at /meter-readings/review while the Building
-// Workspace owns /meter-readings. ADR-0001 reversed OD-2 — Review is being
-// retired, not promoted — so TC1-TC5 are the surface's obituary, not its spec.
-// TC6 is the first case written against the workspace instead; B1-c Slice 3
-// deletes TC1-TC5 outright and grows TC6 into the full 9-item conformance
-// table (migration plan §4).
+// Items 6, 7 and 9 land in Slice 4 (migration plan §4). Numbering is kept from
+// the Review-era file on purpose: these cases were written slice by slice and
+// renumbering them would break the trail back to the slice that added each one.
+//
+// 🪦 This file was `playwright-test-meter-review-surface-smoke.js`, and its
+// TC1-TC5 asserted the Review surface. ADR-0001 reversed OD-2 — Review was
+// retired, not promoted — so B1-c Slice 3 deleted those five cases with the page
+// they described, and the file was renamed onto the host that survived.
 //
 // Requires: backend :8080 + FE dev :3001 + `make smoke-install`.
-// Run:  cd devtools/smoke && node playwright-test-meter-review-surface-smoke.js
+// Run:  cd devtools/smoke && node playwright-test-building-workspace-smoke.js
 //       (SMOKE_HEADED=1 to watch)
 const { chromium } = require('playwright')
 
@@ -71,248 +69,6 @@ async function login(page) {
 function currentMonth() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
-async function gotoReview(page, month) {
-  await page.goto(`${FRONTEND}/meter-readings/review?month=${month}`, { waitUntil: 'networkidle' })
-  await page.locator('[data-test="review-row"]').first().waitFor({ timeout: 15000 })
-  await page.waitForTimeout(250)
-}
-
-async function readRows(page) {
-  return page.$$eval('[data-test="review-row"]', (nodes) =>
-    nodes.map((n) => ({
-      room: n.getAttribute('data-room'),
-      state: n.querySelector('[data-test="review-state"]')?.textContent?.trim() ?? '',
-      cta: n.querySelector('button[aria-label^="จดมิเตอร์ห้อง"]')
-        ? 'จด'
-        : n.querySelector('button[aria-label^="ตรวจห้อง"]')
-          ? 'ตรวจ'
-          : null,
-    })),
-  )
-}
-
-/* ─── TC1 — identity, and the one-line test ─── */
-
-async function tc1_identityAndNoForm(page, month) {
-  console.log('\n🧪 TC1 — Review renders as a judgment workspace, not an entry surface')
-  await gotoReview(page, month)
-
-  const heading = await page.locator('h1', { hasText: 'ตรวจมิเตอร์' }).first().isVisible().catch(() => false)
-  check('TC1.1 Review has its own identity chrome', heading)
-
-  const monthNav = await page.locator('[aria-label="ตัวเลือกเดือน"], [role="group"]').first().isVisible().catch(() => false)
-  check('TC1.2 month scope control is present', monthNav)
-
-  // ⛔ THE TEST: ถ้า Review ต้องมี "ฟอร์ม" แปลว่าวางผิดที่.
-  const inputs = await page.locator('main input, main textarea, main select').count()
-  check('TC1.3 no input / form anywhere on Review — it shows state and routes', inputs === 0,
-    inputs === 0 ? '' : `found ${inputs} field(s)`)
-
-  const rows = await readRows(page)
-  check('TC1.4 the month renders as rows', rows.length > 0, `${rows.length} row(s)`)
-}
-
-/* ─── TC2 — the vocabulary, and the reject list ─── */
-
-const ADMITTED = [
-  /^ยังไม่มีค่าการใช้งานของเดือนนี้$/,
-  /^เปลี่ยนมิเตอร์ .+ · ยังไม่มีค่าการใช้งานหลังเปลี่ยน$/,
-  /^ยังไม่มีค่าการใช้งานหลังเปลี่ยนมิเตอร์$/,
-  /^รอบนี้ถูกทำเครื่องหมายว่าใช้สูงผิดปกติ$/,
-  /^มีการแก้ค่ามิเตอร์ที่จดผิดในเดือนนี้$/,
-  /^เปลี่ยนมิเตอร์ .+$/,
-  /^เปลี่ยนมิเตอร์แล้ว$/,
-  // silence: the row shows the month's usage instead of a verdict, or nothing.
-  /^ไฟ [\d,]+ · น้ำ [\d,]+$/,
-  /^$/,
-]
-
-// §5, the explicit reject list — a clock, money, a billing phase, or a ปกติ badge.
-const REJECTED = [
-  'รอค่าปลายเดือน', 'ค้างจด', 'เกินกำหนด', 'เลยรอบ', 'ค้างมา', 'รอตรวจ',
-  'รอปรับยอด', 'ปรับยอดแล้ว', 'คืนเงิน', 'บาท', '฿',
-  'พร้อมสร้างบิล', 'สร้างบิลได้', 'ออกบิล', 'ACTION_REQUIRED', 'READY',
-  'ต้องจัดการเอง', 'ชนกับ Replace',
-]
-
-async function tc2_vocabulary(page, month) {
-  console.log('\n🧪 TC2 — only the six admitted names ship')
-  await gotoReview(page, month)
-  const rows = await readRows(page)
-
-  const unknown = rows.filter((r) => !ADMITTED.some((re) => re.test(r.state)))
-  check('TC2.1 every state line is one of the admitted six (or silence)', unknown.length === 0,
-    unknown.length === 0 ? `${rows.length} row(s) checked` : `e.g. ${unknown[0].room}: "${unknown[0].state}"`)
-
-  const body = await page.locator('main').innerText()
-  const leaked = REJECTED.filter((w) => body.includes(w))
-  check('TC2.2 no clock, money, or billing word on the surface', leaked.length === 0,
-    leaked.length === 0 ? '' : `leaked: ${leaked.join(', ')}`)
-
-  // "ปกติ" may only ever appear inside ผิดปกติ — never as a healthy-row badge.
-  const badBadge = (body.match(/ปกติ/g) || []).length !== (body.match(/ผิดปกติ/g) || []).length
-  check('TC2.3 no ปกติ badge on healthy rows — silence = done', !badBadge)
-}
-
-/* ─── TC3 — worst-first, and silence has no CTA ─── */
-
-async function tc3_worstFirst(page, month) {
-  console.log('\n🧪 TC3 — worst-first ordering, silence carries no action')
-  await gotoReview(page, month)
-  const rows = await readRows(page)
-
-  const lastActionable = rows.map((r) => !!r.cta).lastIndexOf(true)
-  const firstSilent = rows.findIndex((r) => !r.cta)
-  const ordered = lastActionable === -1 || firstSilent === -1 || lastActionable < firstSilent
-  check('TC3.1 rows needing attention sort above silent rows', ordered,
-    ordered ? '' : `actionable row at index ${lastActionable} after silent row at ${firstSilent}`)
-
-  const silentWithCta = rows.filter((r) => !r.state && r.cta)
-  check('TC3.2 a row with nothing to say has no CTA', silentWithCta.length === 0)
-
-  const entryRows = rows.filter((r) => r.state.startsWith('ยังไม่มีค่าการใช้งาน'))
-  check('TC3.3 every "no reading" row offers exactly one action — จด',
-    entryRows.every((r) => r.cta === 'จด'), `${entryRows.length} row(s)`)
-}
-
-/* ─── TC4 — one destination per state, and the operator comes back ─── */
-
-async function tc4_routing(page, month) {
-  console.log('\n🧪 TC4 — routing out, and the return contract')
-  await gotoReview(page, month)
-  const rows = await readRows(page)
-
-  const entryRoom = rows.find((r) => r.cta === 'จด')
-  if (!entryRoom) {
-    check('TC4.1 SKIPPED — no room needs a reading in this month', true, 'nothing to route')
-  } else {
-    await page.locator(`button[aria-label="จดมิเตอร์ห้อง ${entryRoom.room}"]`).first().click()
-    await page.waitForTimeout(900)
-    const onFocus = page.url().includes('/meter-readings') && !page.url().includes('/review')
-    check(`TC4.1 "จด" hands room ${entryRoom.room} to Focus`, onFocus, page.url())
-
-    const focusRoom = await page.locator('main').innerText().catch(() => '')
-    check('TC4.2 Focus opens on the room Review handed it', focusRoom.includes(entryRoom.room))
-
-    // Leaving Focus must return the operator to the surface they were judging on.
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(900)
-    check('TC4.3 leaving Focus returns to Review, month intact',
-      page.url().includes('/meter-readings/review') && page.url().includes(month), page.url())
-  }
-
-  await gotoReview(page, month)
-  const rows2 = await readRows(page)
-  const inspectRoom = rows2.find((r) => r.cta === 'ตรวจ')
-  if (!inspectRoom) {
-    check('TC4.4 SKIPPED — no committed event to inspect this month', true, 'nothing to route')
-    return
-  }
-
-  await page.locator(`button[aria-label="ตรวจห้อง ${inspectRoom.room}"]`).first().click()
-  await page.waitForTimeout(400)
-  const openLink = page.locator('button', { hasText: 'เปิดห้อง' }).first()
-  check('TC4.4 "ตรวจ" expands in place and offers ONE link out', await openLink.isVisible().catch(() => false))
-
-  const expandInputs = await page.locator('main input, main textarea').count()
-  check('TC4.5 the expand is facts + a link, never a form', expandInputs === 0)
-
-  await openLink.click()
-  await page.waitForTimeout(1200)
-  check('TC4.6 the link lands on Meter Continuity for that room',
-    /\/rooms\/[0-9a-f-]+\/meter/.test(page.url()), page.url())
-
-  await page.locator('a,button', { hasText: 'กลับ' }).first().click()
-  await page.waitForTimeout(900)
-  check('TC4.7 Continuity returns to Review with its month intact',
-    page.url().includes('/meter-readings/review') && page.url().includes(month), page.url())
-}
-
-/* ─── TC5 — the flush: what Focus deferred, Review commits ─── */
-
-async function tc5_draftFlush(page, month) {
-  console.log('\n🧪 TC5 — a draft Focus never submitted is committable FROM Review')
-  await gotoReview(page, month)
-  const rows = await readRows(page)
-  const target = rows.find((r) => r.cta === 'จด')
-  if (!target) {
-    check('TC5 SKIPPED — every room already has a reading this month', true, 'nothing to flush')
-    return
-  }
-
-  // Produce the draft the way an operator does: Review hands the room to Focus,
-  // Focus saves LOCALLY and defers the submit. Seeding localStorage directly
-  // would prove less — the point is that the real local-first path lands here.
-  await page.locator(`button[aria-label="จดมิเตอร์ห้อง ${target.room}"]`).first().click()
-  await page.waitForTimeout(1000)
-
-  const elec = page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first()
-  const water = page.locator('input[aria-label="มิเตอร์น้ำ"]').first()
-  await elec.waitFor({ timeout: 8000 })
-
-  // Read each meter's own baseline off the Focus row and step just above it:
-  // the values this smoke commits land in the dev database and become next
-  // month's `previous`, so a plausible reading matters.
-  // Walk UP from the input until the row's baseline number is found. The
-  // previous scraper only looked at input.parentElement, where Focus does not
-  // put it — so it always fell through to its `|| '0'` default and silently
-  // submitted a value below the real baseline. That made TC5.5/5.6 fail for a
-  // reason that had nothing to do with the flush being tested.
-  const previous = await page.$$eval('input[aria-label^="มิเตอร์"]', (inputs) =>
-    Object.fromEntries(inputs.map((i) => {
-      let node = i.parentElement
-      for (let depth = 0; node && depth < 5; depth++) {
-        const shown = Array.from(node.querySelectorAll('span'))
-          .map((s) => s.textContent.trim())
-          .find((t) => /^[\d,]+$/.test(t))
-        if (shown) return [i.getAttribute('aria-label'), Number(shown.replace(/,/g, ''))]
-        node = node.parentElement
-      }
-      // A genuinely new meter shows an em-dash, not a number — baseline 0.
-      return [i.getAttribute('aria-label'), 0]
-    })),
-  )
-  await elec.fill(String((previous['มิเตอร์ไฟฟ้า'] ?? 0) + 7))
-  await page.keyboard.press('Enter')
-  await water.fill(String((previous['มิเตอร์น้ำ'] ?? 0) + 3))
-  await page.keyboard.press('Enter')
-  await page.waitForTimeout(1400)
-
-  // Focus was entered in single-room mode, so the save exits and the return
-  // contract brings the operator back to Review.
-  check('TC5.1 Focus returns to Review after the save', page.url().includes('/meter-readings/review'), page.url())
-  await page.waitForTimeout(800)
-
-  const band = page.locator('[data-test="review-draft-band"]')
-  check('TC5.2 Review surfaces the unflushed draft as its own band',
-    await band.isVisible().catch(() => false))
-
-  const rowStateBeforeFlush = await page.$eval(
-    `[data-test="review-row"][data-room="${target.room}"] [data-test="review-state"]`,
-    (n) => n.textContent.trim(),
-  ).catch(() => '')
-  check('TC5.3 the ROW still reads committed state — draft presence is not a verdict',
-    rowStateBeforeFlush.startsWith('ยังไม่มีค่าการใช้งาน'), `"${rowStateBeforeFlush}"`)
-
-  const commitBtn = band.locator('button', { hasText: 'บันทึกค่ามิเตอร์' }).first()
-  const commitLabel = await commitBtn.innerText().catch(() => '')
-  check('TC5.4 the terminal CTA commits METER READINGS, never bills',
-    commitLabel.includes('บันทึกค่ามิเตอร์') && !commitLabel.includes('บิล'), `"${commitLabel}"`)
-
-  await commitBtn.click()
-  await page.waitForTimeout(3000)
-
-  check('TC5.5 the band clears once the draft is committed',
-    !(await band.isVisible().catch(() => false)))
-
-  const rowStateAfter = await page.$eval(
-    `[data-test="review-row"][data-room="${target.room}"] [data-test="review-state"]`,
-    (n) => n.textContent.trim(),
-  ).catch(() => '')
-  check('TC5.6 the row re-derives from the server — no hand-patching',
-    !rowStateAfter.startsWith('ยังไม่มีค่าการใช้งาน'), `now "${rowStateAfter}"`)
 }
 
 /* ─── TC6 — the Building Workspace owns coverage (ADR-0001 items 1 + 3) ─── */
@@ -604,6 +360,147 @@ async function tc8_sliceTwoContract(page, month) {
     focusText.includes(flagged[0]), `looking for ${flagged[0]}`)
 }
 
+/* ─── TC9 — Focus consumes the queue; it never defines one (ADR item 5) ─── */
+
+/** True while the Focus screen is mounted (its two inputs are unlabelled by room). */
+const focusIsActive = (page) =>
+  page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().isVisible().catch(() => false)
+
+/** `ยังไม่ได้จด N ห้อง` → N. The session's own remaining count. */
+async function readSessionRemaining(page) {
+  const text = await page.locator('main').innerText().catch(() => '')
+  const m = text.match(/ยังไม่ได้จด\s+(\d+)\s+ห้อง/)
+  return m ? Number(m[1]) : null
+}
+
+async function tc9_focusConsumesTheQueue(page, month) {
+  console.log('\n🧪 TC9 — the workspace defines the queue, Focus only consumes it')
+  const token = await apiToken()
+  const auth = { headers: { Authorization: `Bearer ${token}` } }
+  const apartments = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`, auth)).json()).data
+
+  // A local draft narrows the queue at click time (local-first), so clear it —
+  // this case is about WHO computes the set, not about draft exclusion (which
+  // `smoke-meter-focus-local-first` TC4 already owns).
+  await gotoWorkspace(page, month)
+  await page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+  await gotoWorkspace(page, month)
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+
+  // Every row still carrying an editable input is a room the workspace considers
+  // unread. This is the whole WORKSPACE inventory, deliberately wider than the
+  // expected-only "ยังไม่บันทึก" chip — Focus's queue is the same wide set, which
+  // is what keeps incidental entry reachable (ADR item 9).
+  //
+  // Read the SET here, while the grid is mounted: once Focus takes over, these
+  // per-room inputs are gone and a later re-read would silently see zero.
+  const editable = new Set(await page.$$eval('input[aria-label^="มิเตอร์ไฟห้อง"]',
+    (nodes) => nodes.map((n) => (n.getAttribute('aria-label') || '').replace('มิเตอร์ไฟห้อง ', '').trim())))
+  const unread = editable.size
+  const entry = page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first()
+  const entryDisabled = await entry.isDisabled()
+
+  check('TC9.1 entry into Focus is gated by the workspace\'s own room list',
+    entryDisabled === (unread === 0),
+    `${unread} unread row(s), entry ${entryDisabled ? 'disabled' : 'enabled'}`)
+
+  if (entryDisabled) {
+    check('TC9.2 SKIPPED — no unread room this month to size a queue against', true,
+      'every expected room is already read')
+  } else {
+    await entry.click()
+    await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 8000 })
+    const remaining = await readSessionRemaining(page)
+    check('TC9.2 the session is exactly the set the workspace computed',
+      remaining === unread, `session=${remaining}, workspace unread=${unread}`)
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(400)
+  }
+
+  // ── A room-scoped entry stays one room. `?focus=` is a resume primitive, not a
+  //    queue builder — if it ever grew into one, Focus would be defining scope.
+  const apartmentName = await page.locator('h1, [class*="breadcrumb"]').first().innerText().catch(() => '')
+  const apartment = apartments.find((a) => apartmentName.includes(a.name)) || apartments[0]
+  const rooms = (await (await fetch(
+    `${BACKEND}/api/v1/apartments/${apartment.id}/rooms?limit=500`, auth)).json()).data
+  const anyRoom = rooms[0]
+  await page.goto(`${FRONTEND}/meter-readings?month=${month}&focus=${anyRoom.id}`,
+    { waitUntil: 'networkidle' })
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 8000 })
+  const single = await readSessionRemaining(page)
+  check('TC9.3 a room-scoped entry opens one room, never a queue',
+    single === 1, `session=${single} room(s)`)
+
+  // ── Focus carries no filter of its own: the chip group is the workspace's, and
+  //    it is not mounted while Focus is.
+  const filterWhileFocused = await page
+    .locator('[role="radiogroup"][aria-label="กรองการแสดงห้อง"]').count()
+  check('TC9.4 Focus renders no filter control of its own',
+    filterWhileFocused === 0, `${filterWhileFocused} filter group(s) visible`)
+
+  // ── The snapshot gate (B1-c Slice 3). `enterFocusMode` hands the room OBJECT to
+  //    `session.enter()`, which stores it; Focus never re-reads the projection. A
+  //    `?focus=` consumed before the lineage query resolved therefore FROZE
+  //    `previous = 0` for the whole session, and the operator could not save
+  //    because the backend validates against the real baseline. Before the fix
+  //    this was masked by whichever caller happened to warm the cache; the effect
+  //    now waits for the projection to resolve. Focus prints `—` for a zero
+  //    baseline, so the regression is directly visible.
+  //
+  //    ⚠️ The race is NOT reproducible by simply visiting the URL — a cold visit
+  //    starts every query together and lineage usually wins (verified 3/3 both
+  //    before and after the fix). It only appeared when a CALLER had warmed the
+  //    rooms cache but not the lineage cache, and the caller that did that (the
+  //    Review surface) no longer exists. So the condition is created here on
+  //    purpose: hold `/meter-readings/latest` open while rooms resolve normally.
+  //    That is precisely the state any future entry point can produce, and it
+  //    makes this case fail against the old room-count readiness proxy instead of
+  //    passing under both.
+  const latest = (await (await fetch(
+    `${BACKEND}/api/v1/apartments/${apartment.id}/meter-readings/latest`, auth)).json()).data || []
+  const probe = latest.find((r) => r.electricity_current > 0 && editable.has(r.room_number))
+
+  if (!probe) {
+    check('TC9.5 SKIPPED — no unread room with a non-zero lineage baseline to probe', true,
+      `${latest.length} lineage row(s), ${editable.size} unread room(s), no overlap`)
+  } else {
+    const probeRoom = rooms.find((r) => r.number === probe.room_number)
+    await page.route('**/meter-readings/latest', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      await route.continue()
+    })
+    try {
+      await page.goto(`${FRONTEND}/meter-readings?month=${month}&focus=${probeRoom.id}`,
+        { waitUntil: 'domcontentloaded' })
+      await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 15000 })
+      const shown = (await page.locator('main').innerText().catch(() => '')).replace(/\s+/g, ' ')
+      const expected = probe.electricity_current.toLocaleString('th-TH')
+      check(`TC9.5 Focus is entered only from a RESOLVED projection — baseline never freezes at 0 (${probe.room_number} ไฟฟ้า ${expected})`,
+        shown.includes(expected), shown.includes(expected) ? '' : `Focus shows "${shown.slice(0, 90)}"`)
+    } finally {
+      await page.unroute('**/meter-readings/latest')
+    }
+  }
+
+  // ── Scope belongs to the workspace, and moving it EVICTS Focus. This is the
+  //    positive form of "Focus has no month or apartment of its own": not that
+  //    the control is hidden, but that Focus does not survive a scope change.
+  if (await focusIsActive(page)) {
+    await page.locator('button[aria-label="เดือนก่อนหน้า"]').first().click()
+    await page.waitForTimeout(1200)
+    check('TC9.6 changing the workspace\'s month evicts Focus — scope is not Focus\'s',
+      (await focusIsActive(page)) === false,
+      (await focusIsActive(page)) ? 'Focus survived a scope change' : 'returned to the workspace')
+  } else {
+    check('TC9.6 SKIPPED — Focus is not active, nothing to evict', true, '')
+  }
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -614,14 +511,10 @@ async function tc8_sliceTwoContract(page, month) {
     console.log(`🔗 FRONTEND = ${FRONTEND}`)
     console.log(`📅 month = ${month}`)
     await login(page)
-    await tc1_identityAndNoForm(page, month)
-    await tc2_vocabulary(page, month)
-    await tc3_worstFirst(page, month)
-    await tc4_routing(page, month)
-    await tc5_draftFlush(page, month)
     await tc6_workspaceDenominator(page, month)
     await tc7_exitLineageParity(page, month)
     await tc8_sliceTwoContract(page, month)
+    await tc9_focusConsumesTheQueue(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
