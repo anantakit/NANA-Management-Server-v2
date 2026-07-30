@@ -9,6 +9,7 @@
 //   TC7  EXIT lineage parity — FE `previous` IS the backend's (D3 gate)
 //   TC8  two inventories · stable workspace · composed row truth — items 2, 4, 8
 //   TC9  Focus consumes the queue, it never defines one — item 5
+//   TC10 a room-scoped detour restores the ORIGINATING Focus mode (S4 return contract)
 //
 // Items 6, 7 and 9 land in Slice 4 (migration plan §4). Numbering is kept from
 // the Review-era file on purpose: these cases were written slice by slice and
@@ -501,6 +502,114 @@ async function tc9_focusConsumesTheQueue(page, month) {
   }
 }
 
+/* ─── TC10 — a room-scoped detour restores the ORIGINATING mode ─── */
+
+// Owner ruling 2026-07-29: the return primitive carries an explicit Focus mode,
+// and a queue sweep must come back a queue sweep.
+//
+//   Focus(queue, A207) → Continuity(A207) → Focus(queue, resume=A207)   ✅
+//   Focus(queue)       → Continuity       → Focus(single-room)          ❌
+//
+// The second destroys the sweep the operator only meant to pause. "Leave to do
+// room-scoped work, then return immediately" is not satisfied by landing on the
+// right URL in the wrong workflow — which is why these cases assert the MODE and
+// the surviving queue, not just the room.
+async function tc10_detourRestoresMode(page, month) {
+  console.log('\n🧪 TC10 — Focus → Continuity → Focus restores the mode, not just the room')
+
+  await gotoWorkspace(page, month)
+  await page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+  await gotoWorkspace(page, month)
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+
+  const entry = page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first()
+  if (await entry.isDisabled()) {
+    check('TC10 SKIPPED — no unread room this month, cannot start a queue sweep', true,
+      'reseed or pick a month with unread rows to exercise this')
+    return
+  }
+
+  // ── 1. start a QUEUE sweep ──
+  await entry.click()
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 8000 })
+  const queueSizeBefore = await readSessionRemaining(page)
+  const roomBefore = await page.locator('p.text-5xl').first().innerText().catch(() => '')
+  check('TC10.1 a queue sweep is running',
+    queueSizeBefore !== null && queueSizeBefore > 1 && !!roomBefore,
+    `${queueSizeBefore} room(s), standing on ${roomBefore}`)
+
+  // ── 2. route out to Continuity for the room we are standing on ──
+  const routeOut = page.locator('button', { hasText: 'จัดการมิเตอร์ห้องนี้' }).first()
+  check('TC10.2 Focus offers a route out to the room\'s meter surface',
+    await routeOut.isVisible().catch(() => false))
+  await routeOut.click()
+  await page.waitForTimeout(1200)
+  check('TC10.3 it lands on Meter Continuity for that room',
+    /\/rooms\/[0-9a-f-]+\/meter/.test(page.url()), page.url())
+
+  // ── 3. come back the way the operator would: the surface's own back ──
+  await page.getByRole('button', { name: 'กลับ' }).first().click()
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 12000 })
+
+  // ── 4/5. the mode survived, and we are standing where we left ──
+  const queueSizeAfter = await readSessionRemaining(page)
+  const roomAfter = await page.locator('p.text-5xl').first().innerText().catch(() => '')
+  check('TC10.4 the restored session is still a QUEUE, not one borrowed room',
+    queueSizeAfter !== null && queueSizeAfter > 1,
+    `session=${queueSizeAfter} room(s) (was ${queueSizeBefore})`)
+  check('TC10.5 it resumes on the room that was lent',
+    roomAfter === roomBefore, `left ${roomBefore}, returned to ${roomAfter}`)
+  check('TC10.6 the month came back with it — the detour did not reset scope',
+    page.url().includes(`month=${month}`), page.url())
+
+  // ── 6/7. save one room: a queue does NOT auto-exit, and the rest survives ──
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().fill('91234')
+  await page.keyboard.press('Enter')
+  await page.locator('input[aria-label="มิเตอร์น้ำ"]').first().fill('9123')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(700)
+
+  const stillInFocus = await focusIsActive(page)
+  check('TC10.7 saving one room does not auto-exit — that is single-room behaviour',
+    stillInFocus === true, stillInFocus ? '' : 'Focus exited after one save')
+  const roomAfterSave = await page.locator('p.text-5xl').first().innerText().catch(() => '')
+  check('TC10.8 the rest of the queue is still there, advanced to the next room',
+    stillInFocus && !!roomAfterSave && roomAfterSave !== roomAfter,
+    `${roomAfter} → ${roomAfterSave}`)
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(600)
+  await page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+
+  // ── 8. the fallback: a bare `?focus=` with NO hint stays single-room ──
+  // This is the compatibility half of the contract. Widening the default would
+  // silently turn every one-room detour into a sweep.
+  const token = await apiToken()
+  const auth = { headers: { Authorization: `Bearer ${token}` } }
+  const apartments = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`, auth)).json()).data
+  await gotoWorkspace(page, month)
+  const apartmentName = await page.locator('h1, [class*="breadcrumb"]').first().innerText().catch(() => '')
+  const apartment = apartments.find((a) => apartmentName.includes(a.name)) || apartments[0]
+  const rooms = (await (await fetch(
+    `${BACKEND}/api/v1/apartments/${apartment.id}/rooms?limit=500`, auth)).json()).data
+
+  await page.goto(`${FRONTEND}/meter-readings?month=${month}&focus=${rooms[0].id}`,
+    { waitUntil: 'networkidle' })
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ timeout: 10000 })
+  const bareSession = await readSessionRemaining(page)
+  check('TC10.9 a bare ?focus= with no mode hint is still single-room',
+    bareSession === 1, `session=${bareSession} room(s)`)
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -515,6 +624,7 @@ async function tc9_focusConsumesTheQueue(page, month) {
     await tc7_exitLineageParity(page, month)
     await tc8_sliceTwoContract(page, month)
     await tc9_focusConsumesTheQueue(page, month)
+    await tc10_detourRestoresMode(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
