@@ -11,6 +11,8 @@
 //   TC9  Focus consumes the queue, it never defines one — item 5
 //   TC10 a room-scoped detour restores the ORIGINATING Focus mode (S4 return contract)
 //   TC11 Focus lost the Replace mutation, kept rollover + the route-out (S4.3)
+//   TC12 the workspace ROW lost it too — no FE monthly surface can create,
+//        persist, or depend on a replacement flag (S4.4)
 //
 // Items 6, 7 and 9 land in Slice 4 (migration plan §4). Numbering is kept from
 // the Review-era file on purpose: these cases were written slice by slice and
@@ -717,6 +719,197 @@ async function tc11_focusLostReplaceOwnership(page, month) {
   console.log(`     (room used: ${room}; batch aborted, nothing persisted)`)
 }
 
+/* ─── TC12 — the WORKSPACE ROW lost the Replace mutation too (S4.4) ─── */
+
+// TC11 took the mutation out of Focus; this takes it out of the grid, after which
+// no frontend monthly-entry surface can create, persist, or depend on a
+// replacement flag — it can only route to Room Meter Detail to perform one.
+//
+// Two writers died here, not one: the kebab item AND `Ctrl+M`, which was
+// undiscoverable and in nobody's list. Case 1 is two-sided precisely because of
+// that: `Ctrl+Shift+M` (rollover) must still work, or "the shortcut does nothing"
+// would also pass if keyboard toggles had broken altogether.
+//
+// Case 5 is the one worth writing first — a draft written by the PREVIOUS build
+// outlives this change, and rehydrating it would create a replacement from the
+// frontend with no writer anywhere in the code.
+const ACTIVE_KEBAB = 'bg-surface-subtle'
+
+async function tc12_gridLostReplaceOwnership(page, month) {
+  console.log('\n🧪 TC12 — the workspace row lost Replace, kept rollover and the route-out')
+
+  const clearDrafts = () => page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+
+  await gotoWorkspace(page, month)
+  await clearDrafts()
+  await gotoWorkspace(page, month)
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+
+  // First row still carrying an editable input = a room this month has not read.
+  const elec = page.locator('input[aria-label^="มิเตอร์ไฟห้อง"]').first()
+  if (!(await elec.isVisible().catch(() => false))) {
+    check('TC12 SKIPPED — no unread room this month to type into', true,
+      'reseed or pick a month with unread rows')
+    return
+  }
+  const room = (await elec.getAttribute('aria-label')).replace('มิเตอร์ไฟห้อง ', '').trim()
+  const kebab = page.locator(`button[aria-label="ตัวเลือกมิเตอร์ไฟห้อง ${room}"]`).first()
+
+  // ── 1 — what the row OFFERS ──
+  await elec.click()          // desktop discloses the kebab on row focus
+  await page.waitForTimeout(200)
+  await kebab.click()
+  await page.waitForTimeout(250)
+
+  const items = await page.locator('[role="menuitem"]').allInnerTexts()
+  check('TC12.1 the row offers no "เปลี่ยนมิเตอร์ใหม่" — the last FE writer is gone',
+    !items.some((t) => t.includes('เปลี่ยนมิเตอร์ใหม่')), JSON.stringify(items))
+  // Two-sided: the kebab still OPENS and still carries the flag the row owns.
+  check('TC12.2 the kebab still opens and still lists "มิเตอร์ครบรอบ"',
+    items.length === 1 && items[0].includes('มิเตอร์ครบรอบ'), JSON.stringify(items))
+  check('TC12.3 the dead shortcut hint died with its writer; rollover\'s survives',
+    !items.join(' ').includes('Ctrl+M') && items.join(' ').includes('Ctrl+Shift+M'),
+    JSON.stringify(items))
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
+
+  // ── 1b — Ctrl+M is dead, Ctrl+Shift+M is not ──
+  // The kebab wears an active pill while a flag on its meter is set, so the
+  // trigger's own class is the honest read of "did the shortcut do anything".
+  await elec.click()
+  await page.keyboard.press('Control+m')
+  await page.waitForTimeout(250)
+  check('TC12.4 Ctrl+M does nothing — the second, undiscoverable writer is gone',
+    !((await kebab.getAttribute('class')) || '').includes(ACTIVE_KEBAB))
+
+  await page.keyboard.press('Control+Shift+M')
+  await page.waitForTimeout(250)
+  check('TC12.5 Ctrl+Shift+M still toggles rollover — keyboard toggles are not broken',
+    ((await kebab.getAttribute('class')) || '').includes(ACTIVE_KEBAB))
+
+  // ── 2 — the row still routes OUT to the surface that owns the swap ──
+  await page.locator(`button[aria-label="ดูประวัติห้อง ${room}"]`).first().click()
+  await page.waitForTimeout(700)
+  const routeOut = page.locator('a', { hasText: 'จัดการมิเตอร์ห้องนี้' }).first()
+  const href = await routeOut.getAttribute('href').catch(() => null)
+  check('TC12.6 the row still routes out to the room that owns replacement',
+    !!href && /\/rooms\/[0-9a-f-]{36}\/meter/.test(href), href || 'no route-out found')
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(500)
+
+  // ── 3 + 4 — the payload, on the SAME captured POST ──
+  await elec.fill('88123')
+  await page.locator(`input[aria-label="มิเตอร์น้ำห้อง ${room}"]`).first().fill('8812')
+  await page.waitForTimeout(400)
+
+  const payload = await captureBatch(page)
+  const sent = payload && Array.isArray(payload.items) ? payload.items : []
+
+  check('TC12.7 rollover — the flag the row still owns — reaches the payload',
+    sent.some((i) => i.is_electricity_meter_rollover === true || i.is_water_meter_rollover === true),
+    sent.length ? JSON.stringify(sent[0]) : 'no batch payload captured')
+  check('TC12.8 no is_*_meter_replaced anywhere in a grid-originated save',
+    sent.length > 0 && !sent.some((i) =>
+      'is_electricity_meter_replaced' in i || 'is_water_meter_replaced' in i),
+    sent.length === 0 ? 'no payload captured' : `${sent.length} item(s), none carrying a replacement`)
+
+  // ── 5 — hazard 2: a draft written by the PREVIOUS build ──
+  // Seeded in the pre-S4.4 shape. It must break nothing, keep its values, and
+  // leak nothing onto the wire.
+  await clearDrafts()
+  const roomId = href.match(/\/rooms\/([0-9a-f-]{36})\/meter/)[1]
+  // The workspace's apartment is committed scope, NOT a URL param, so the draft
+  // key has to be rebuilt from the rendered scope — same resolution TC8 uses.
+  const apartmentId = await resolveApartmentId(page, roomId)
+  if (!apartmentId) {
+    check('TC12.9 apartment scope could not be resolved — hazard-2 case did not run',
+      false, 'the stale-draft gate is the most valuable case here; it must not silently skip')
+  } else {
+    await page.evaluate(([apt, m, rid]) => {
+      localStorage.setItem(`nana-meter-draft:${apt}:${m}`, JSON.stringify({
+        apartmentId: apt, month: m, updatedAt: Date.now(),
+        rooms: { [rid]: { electricity: 77123, water: 7712, isElectricityMeterReplaced: true } },
+      }))
+    }, [apartmentId, month, roomId])
+
+    await gotoWorkspace(page, month)
+    await chip(page, 'ทั้งหมด').click()
+    await page.waitForTimeout(400)
+    const restore = page.locator('button', { hasText: /กู้คืน|ใช้ข้อมูลที่บันทึกไว้/ }).first()
+    if (await restore.isVisible().catch(() => false)) {
+      await restore.click()
+      await page.waitForTimeout(500)
+    }
+
+    const restored = page.locator(`input[aria-label="มิเตอร์ไฟห้อง ${room}"]`).first()
+    check('TC12.9 a stale draft carrying the removed flag still renders its row',
+      await restored.isVisible().catch(() => false))
+    // Two-sided: dropping the field must not be a clear — the reading survives.
+    check('TC12.10 the operator\'s in-progress value survived the drop',
+      (await restored.inputValue().catch(() => '')) === '77123',
+      `got "${await restored.inputValue().catch(() => '')}" (expected 77123)`)
+
+    const stale = await captureBatch(page)
+    const staleItems = stale && Array.isArray(stale.items) ? stale.items : []
+    check('TC12.11 a rehydrated stale draft leaks no replacement onto the wire',
+      staleItems.length > 0 && !staleItems.some((i) =>
+        'is_electricity_meter_replaced' in i || 'is_water_meter_replaced' in i),
+      staleItems.length === 0 ? 'no payload captured' : `${staleItems.length} item(s), none carrying a replacement`)
+  }
+
+  await clearDrafts()
+  console.log(`     (room used: ${room}; every batch aborted, nothing persisted)`)
+}
+
+/**
+ * The apartment the workspace is currently scoped to. Resolved by asking the API
+ * which apartment owns the room the page just routed out to — the workspace
+ * carries its apartment as committed scope, not in the URL, and matching on the
+ * rendered name would break the moment the heading changes.
+ */
+async function resolveApartmentId(page, roomId) {
+  const token = await apiToken()
+  const auth = { headers: { Authorization: `Bearer ${token}` } }
+  const apartments = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`, auth)).json()).data
+  for (const a of apartments) {
+    const rooms = (await (await fetch(
+      `${BACKEND}/api/v1/apartments/${a.id}/rooms?limit=500`, auth)).json()).data
+    if (rooms.some((r) => r.id === roomId)) return a.id
+  }
+  return null
+}
+
+/**
+ * Submit the grid and return the batch payload WITHOUT persisting it — the cases
+ * above are about request shape, so the request is aborted in flight. Rollover
+ * usage is large by construction, so the anomaly-confirm toast is expected and
+ * clicked through: rollover does NOT suppress anomaly.
+ */
+async function captureBatch(page) {
+  let payload = null
+  await page.route('**/meter-readings/batch', async (route) => {
+    try { payload = JSON.parse(route.request().postData() || 'null') } catch (_) {}
+    await route.abort()
+  })
+  try {
+    await page.locator('button', { hasText: /^บันทึก$|^บันทึก \(/ }).first().click()
+    await page.waitForTimeout(900)
+    const confirm = page.locator('button', { hasText: 'บันทึกต่อ' }).first()
+    if (await confirm.isVisible().catch(() => false)) {
+      await confirm.click()
+      await page.waitForTimeout(1200)
+    }
+  } finally {
+    await page.unroute('**/meter-readings/batch')
+  }
+  return payload
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -733,6 +926,7 @@ async function tc11_focusLostReplaceOwnership(page, month) {
     await tc9_focusConsumesTheQueue(page, month)
     await tc10_detourRestoresMode(page, month)
     await tc11_focusLostReplaceOwnership(page, month)
+    await tc12_gridLostReplaceOwnership(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
