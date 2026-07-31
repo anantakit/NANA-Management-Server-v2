@@ -13,9 +13,10 @@
 //   TC11 Focus lost the Replace mutation, kept rollover + the route-out (S4.3)
 //   TC12 the workspace ROW lost it too — no FE monthly surface can create,
 //        persist, or depend on a replacement flag (S4.4)
+//   TC13 Generate REPORTS meter blockers but cannot resolve them — items 7 + 9.
+//        MonthlyMeterDrawer was deleted, not converted to a route-out (step 7)
 //
-// Items 6, 7 and 9 land in Slice 4 (migration plan §4). Numbering is kept from
-// the Review-era file on purpose: these cases were written slice by slice and
+// Numbering is kept from the Review-era file on purpose: these cases were written slice by slice and
 // renumbering them would break the trail back to the slice that added each one.
 //
 // 🪦 This file was `playwright-test-meter-review-surface-smoke.js`, and its
@@ -910,6 +911,101 @@ async function captureBatch(page) {
   return payload
 }
 
+/* ─── TC13 — conformance item 7 + item 9 (B1-c step 7) ─── */
+
+// Owner ruling 2026-07-31: **MonthlyBillsPage has NO right to START a meter
+// workflow.** Reconciliation REPORTS that a room's meter data blocks a bill; it
+// does not resolve it. `MonthlyMeterDrawer` was therefore DELETED, not converted
+// into a room-scoped route-out — a route-out preserves the same drift under a
+// different mechanism, because the page would still be choosing which room to
+// read and when to leave for it.
+//
+// Item 7 is two-sided by construction: removing the way IN must not remove the
+// INFORMATION. A row that no longer says why a bill cannot be made would pass an
+// absence-only assertion and be a worse product.
+//
+// Item 9 rides along: with the billing-side entry gone, incidental entry must
+// still be reachable from the surface that owns it.
+async function tc13_generateIsNotAMeterEntrySurface(page, month) {
+  console.log('\n🧪 TC13 — Generate reports meter blockers, it does not resolve them (items 7 + 9)')
+
+  await page.goto(`${FRONTEND}/monthly-bills/${month}`, { waitUntil: 'networkidle' })
+  await page.waitForTimeout(1200)
+
+  const rows = page.locator('[data-test="reconciliation-row"]')
+  const rowCount = await rows.count()
+  if (rowCount === 0) {
+    check('TC13 SKIPPED — reconciliation rendered no rows for this month', true,
+      'pick a month with rooms, or reseed')
+    return
+  }
+
+  // ── item 7 — no way IN ──
+  const actions = await rows.evaluateAll((nodes) => nodes.map((n) => n.getAttribute('data-action')))
+  check('TC13.1 no reconciliation row opens a meter-entry surface',
+    !actions.includes('open-meter'), `actions seen: ${JSON.stringify([...new Set(actions)])}`)
+  check('TC13.2 the "บันทึกมิเตอร์" affordance is gone from the billing surface',
+    (await page.locator('[data-test="reconciliation-row"]', { hasText: 'บันทึกมิเตอร์' }).count()) === 0)
+
+  // ── two-sided: the row still REPORTS, and other row actions still work ──
+  const bodyText = await page.locator('main').innerText().catch(() => '')
+  const blocked = page.locator('[data-test="reconciliation-row"]', { hasText: 'ยังไม่ได้จดมิเตอร์' })
+  const blockedCount = await blocked.count()
+  if (blockedCount > 0) {
+    check('TC13.3 a blocked room still STATES its blocker — the reason survived the removal',
+      true, `${blockedCount} row(s) reading "ยังไม่ได้จดมิเตอร์"`)
+    check('TC13.4 …and that row is now inert — reporting, not an entry point',
+      (await blocked.first().getAttribute('data-action')) !== 'open-meter',
+      `data-action=${await blocked.first().getAttribute('data-action')}`)
+  } else {
+    // Not a silent pass: say plainly that this month could not exercise it.
+    check('TC13.3 SKIPPED — no MISSING_METER_READING row this month to prove the reason survives',
+      true, 'the blocker-reason assertion did not run')
+  }
+  check('TC13.5 the surface still functions as reconciliation — buckets are rendered',
+    bodyText.includes('ต้องตรวจสอบ') || bodyText.includes('พร้อมออกบิล') || rowCount > 0,
+    `${rowCount} row(s)`)
+
+  // ── item 7's other half — Generate is not the source of coverage awareness ──
+  const coverage = bodyText.match(/เหลือ\s*\d+\s*ห้อง/)
+  check('TC13.6 Generate names no whole-building meter coverage of its own',
+    !coverage, coverage ? `found "${coverage[0]}"` : 'no meter denominator on the billing surface')
+
+  // ── item 9 — incidental entry is still reachable from the surface that OWNS it ──
+  await gotoWorkspace(page, month)
+  await page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+  await gotoWorkspace(page, month)
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+
+  const elec = page.locator('input[aria-label^="มิเตอร์ไฟห้อง"]').first()
+  if (!(await elec.isVisible().catch(() => false))) {
+    check('TC13.7 SKIPPED — no unread room to prove incidental entry', true)
+    return
+  }
+  const room = (await elec.getAttribute('aria-label')).replace('มิเตอร์ไฟห้อง ', '').trim()
+  await elec.fill('55123')
+  await page.locator(`input[aria-label="มิเตอร์น้ำห้อง ${room}"]`).first().fill('5512')
+  await page.waitForTimeout(400)
+
+  const payload = await captureBatch(page)
+  const items = payload && Array.isArray(payload.items) ? payload.items : []
+  check('TC13.7 incidental entry still reaches the wire from the workspace (item 9)',
+    items.some((i) => i.electricity_current === 55123 && i.water_current === 5512),
+    items.length ? JSON.stringify(items[0]) : 'no batch payload captured')
+
+  await page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+  console.log(`     (room used: ${room}; batch aborted, nothing persisted)`)
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -927,6 +1023,7 @@ async function captureBatch(page) {
     await tc10_detourRestoresMode(page, month)
     await tc11_focusLostReplaceOwnership(page, month)
     await tc12_gridLostReplaceOwnership(page, month)
+    await tc13_generateIsNotAMeterEntrySurface(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {

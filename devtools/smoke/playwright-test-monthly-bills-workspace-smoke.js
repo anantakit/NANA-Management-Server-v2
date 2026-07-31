@@ -9,8 +9,8 @@
 //   A. Page identity   — h1 "ออกบิลเดือน {month}" (workspace identity,
 //                        not "กระทบยอดการออกบิล" or "บิลร่างเดือน")
 //   B. DRAFT row click — E101 (TC26) → BillEditDrawer opens
-//   C. Meter row click — D105 (TC28) → MonthlyMeterDrawer → save →
-//                        row detaches from "open-meter" DOM node
+//   C. Meter row       — D105 (TC28) REPORTS its blocker and is inert;
+//                        no row offers "open-meter" (B1-c step 7 deleted it)
 //   D. Finalized row   — A101 → BillDrawer view (readonly) — no
 //                        "ยืนยันรับชำระ" / "ยืนยันคืนเงิน" CTA visible
 //   E. Filter chips    — "บิลร่าง" chip ≥ 2, "ออกบิลแล้ว" chip ≥ 5
@@ -155,57 +155,42 @@ async function readChipCount(chip) {
     await drawerB.waitFor({ state: 'hidden', timeout: 3000 })
     console.log('  drawer closed cleanly ✅')
 
-    // ── C: Meter row → MonthlyMeterDrawer → save → rebucket ──────────
-    console.log(`\n🧪 C — Meter row click → MonthlyMeterDrawer → save (${ROOM_METER})`)
+    // ── C: the meter row is REPORTING ONLY ───────────────────────────
+    // 🪦 This case used to click a MISSING_METER row, fill `MonthlyMeterDrawer`,
+    // save, and assert the row rebucketed. B1-c step 7 deleted that capability:
+    // **MonthlyBillsPage has no right to START a meter workflow** (owner,
+    // 2026-07-31). Reconciliation reports that a room's meter data blocks a
+    // bill; the Building Workspace owns resolving it.
+    //
+    // The drawer was deleted, not converted into a route-out — a route-out
+    // would preserve the same drift under a different mechanism.
+    //
+    // What replaced this case: `playwright-test-building-workspace-smoke.js`
+    // TC13, which asserts BOTH halves — no way in, and the blocker reason
+    // still stated. Only the inert-row half is kept here, where the row lives.
+    console.log(`\n🧪 C — the meter row REPORTS, it is not a way in (${ROOM_METER})`)
 
-    const meterRow = page.locator(
-      `[data-test="reconciliation-row"][data-action="open-meter"][data-room-number="${ROOM_METER}"]`,
-    )
-    await meterRow.waitFor({ state: 'visible', timeout: 8000 })
-    console.log(`  row found: data-action="open-meter" data-room-number="${ROOM_METER}" ✅`)
-
-    await meterRow.click()
-
-    const drawerC = page.locator('[role="dialog"]')
-    await drawerC.waitFor({ state: 'visible', timeout: 5000 })
-    await drawerC.locator('h2', { hasText: `บันทึกมิเตอร์ห้อง ${ROOM_METER}` }).waitFor({ timeout: 5000 })
-    console.log(`  MonthlyMeterDrawer opened: "บันทึกมิเตอร์ห้อง ${ROOM_METER}" ✅`)
-
-    // Wait for form to be ready (skeleton gone)
-    await drawerC.locator('[data-testid="monthly-meter-ready"]').waitFor({ timeout: 8000 })
-
-    // D105 has no previous readings (createMissingMeterScenario = contract only).
-    // elecPrev=0, waterPrev=0, no baseline → isAnomalous=false for any positive value.
-    await drawerC.locator('input[name="electricity_current"]').fill('100')
-    await drawerC.locator('input[name="water_current"]').fill('50')
-    await page.waitForTimeout(200)
-
-    await page.screenshot({ path: '/tmp/workspace-smoke-C-meter-filled.png', fullPage: true })
-
-    // Submit via the form's save button
-    await drawerC.locator('button[type="submit"][form="monthly-meter-form"]').click()
-
-    // If anomaly review phase appears (shouldn't for D105 with no baseline), confirm it.
-    const confirmAnomaly = page.locator('[role="dialog"] button', { hasText: 'ยืนยัน' })
-    const isAnomalyStep = await confirmAnomaly.isVisible().catch(() => false)
-    if (isAnomalyStep) {
-      console.log('  anomaly review step appeared — confirming')
-      await confirmAnomaly.click()
+    const meterRowGone = await page.locator(
+      `[data-test="reconciliation-row"][data-action="open-meter"]`,
+    ).count()
+    if (meterRowGone !== 0) {
+      throw new Error(`C: ${meterRowGone} row(s) still offer data-action="open-meter"`)
     }
+    console.log('  no row offers data-action="open-meter" ✅')
 
-    // Drawer closes on save success (onSaveSuccess → setActiveDrawer(null))
-    await drawerC.waitFor({ state: 'hidden', timeout: 8000 })
-    console.log('  meter saved, drawer closed ✅')
-
-    // Reconciliation report invalidated → refetch in flight.
-    // Wait for D105 to leave the "open-meter" DOM node (rebucketed to READY).
-    await page.waitForSelector(
-      `[data-test="reconciliation-row"][data-action="open-meter"][data-room-number="${ROOM_METER}"]`,
-      { state: 'detached', timeout: 10000 },
+    // Two-sided: the row must still EXIST and still state its blocker, or this
+    // would also pass if the room had silently vanished from reconciliation.
+    const blockedRow = page.locator(
+      `[data-test="reconciliation-row"][data-room-number="${ROOM_METER}"]`,
     )
-    console.log(`  ${ROOM_METER} row rebucketed (detached from open-meter DOM node) ✅`)
+    await blockedRow.waitFor({ state: 'visible', timeout: 8000 })
+    const blockedText = await blockedRow.innerText()
+    if (!blockedText.includes('ยังไม่ได้จดมิเตอร์')) {
+      throw new Error(`C: ${ROOM_METER} row no longer states its blocker — got: ${blockedText}`)
+    }
+    console.log(`  ${ROOM_METER} still listed and still states "ยังไม่ได้จดมิเตอร์" ✅`)
 
-    await page.screenshot({ path: '/tmp/workspace-smoke-C-rebucketed.png', fullPage: true })
+    await page.screenshot({ path: '/tmp/workspace-smoke-C-meter-reporting.png', fullPage: true })
 
     // ── D: Finalized row → BillDrawer readonly ────────────────────────
     console.log(`\n🧪 D — Finalized row click → BillDrawer readonly (${ROOM_FINAL})`)
