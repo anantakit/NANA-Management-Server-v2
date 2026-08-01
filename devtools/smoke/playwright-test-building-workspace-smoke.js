@@ -7,7 +7,10 @@
 //
 //   TC6  coverage is answerable without leaving the workspace — items 1 + 3
 //   TC7  EXIT lineage parity — FE `previous` IS the backend's (D3 gate)
-//   TC8  two inventories · stable workspace · composed row truth — items 2, 4, 8
+//   TC8  two inventories · stable workspace · composed row truth — item 8
+//        (it long CLAIMED items 2 and 4 as well; every room read in it is a count
+//         or an order-discarding map, so item 4's evidence is TC14 and item 2's
+//         is TC15 — both added 2026-08-01)
 //   TC9  Focus consumes the queue, it never defines one — item 5
 //   TC10 a room-scoped detour restores the ORIGINATING Focus mode (S4 return contract)
 //   TC11 Focus lost the Replace mutation, kept rollover + the route-out (S4.3)
@@ -1130,10 +1133,14 @@ async function tc14_onePhysicalWalk(page, month) {
   const STEPS = divergeAt === -1
     ? Math.min(6, queueExpected.length)
     : Math.min(divergeAt + 2, queueExpected.length, 16)
+  // Red, not a silent pass, when the data stops discriminating: a traversal that
+  // cannot tell the two orders apart proves nothing, and reporting it green is
+  // how a gate quietly stops guarding. (The general case is locked at unit level
+  // in `roomRowProjection.test.ts`, so this failing means "re-seed", not "bug".)
   check('TC14.3 the traversal reaches the point where a floor-major sweep would diverge',
     divergeAt !== -1 && STEPS > divergeAt,
     divergeAt === -1
-      ? "this month's queue orders identically either way — traversal checked, walking order not discriminated"
+      ? "this month's queue orders identically either way — this case cannot discriminate walking order"
       : `diverges at #${divergeAt} (canonical ${queueExpected[divergeAt]} vs floor-major ${floorMajorQueue[divergeAt]}), walking ${STEPS}`)
 
   const walked = []
@@ -1174,13 +1181,22 @@ async function tc15_smallScreenLegibility(page, month) {
   check('TC15.1 the progress readout is present at 375 px', !!readout,
     readout ? readout[0] : 'no N / M readout found')
 
-  const pageScroll = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    clientWidth: document.documentElement.clientWidth,
-  }))
-  check('TC15.2 the PAGE does not scroll sideways to show it',
-    pageScroll.scrollWidth <= pageScroll.clientWidth + 1,
-    `scrollWidth=${pageScroll.scrollWidth} clientWidth=${pageScroll.clientWidth}`)
+  // ⚠️ Measured on the CONTENT PANE, not on documentElement. The app shell is
+  // `h-screen overflow-hidden` (Layout.tsx), so documentElement.scrollWidth can
+  // never exceed its clientWidth on any page — an assertion against it is
+  // unfalsifiable and would report green while the workspace overflowed.
+  // The pane below is the element that actually scrolls the workspace's content.
+  const pane = await page.evaluate(() => {
+    const main = document.querySelector('main')
+    const scroller = main ? main.querySelector('.overflow-y-auto') || main : null
+    if (!scroller) return null
+    return { scrollWidth: scroller.scrollWidth, clientWidth: scroller.clientWidth }
+  })
+  check('TC15.2 the workspace content does not overflow sideways at 375 px',
+    pane !== null && pane.scrollWidth <= pane.clientWidth + 1,
+    pane === null
+      ? 'content pane not found — selector is stale, assertion could not run'
+      : `scrollWidth=${pane.scrollWidth} clientWidth=${pane.clientWidth}`)
 
   // The selector may overflow — but every option must be reachable AND selectable,
   // which is what makes the overflow acceptable rather than a hidden capability.

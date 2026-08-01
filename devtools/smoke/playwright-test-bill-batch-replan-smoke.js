@@ -22,16 +22,24 @@
 //      lone READY room) → toast "สร้างบิลแล้ว 1 ห้อง" → D105 becomes edit-draft.
 //
 //      ⚠️ The finalize half is CONDITIONAL, and says so out loud when it does not
-//      run. Known pre-existing defect `monthly-bills-workspace` case F hides the
-//      Finalize CTA once readyCount > 0 — and recording D105's meter is exactly
-//      what makes readyCount 1. So on today's build Scenario B exercises generate
-//      only. That is a real coverage loss; it is stated rather than skipped
-//      silently, and it belongs to case F, not to this file.
+//      run. Recording D105's meter makes readyCount 1, and Generate outranks
+//      Finalize while ready rooms remain — documented as INTENTIONAL at
+//      MonthlyBillsPage.tsx:140-146. The long-recorded `monthly-bills-workspace`
+//      "case F failure" is that smoke's expectation disagreeing with this
+//      decision; which side is stale is a billing-lane question, unresolved and
+//      deliberately not decided here. Either way Scenario B exercises generate
+//      only on this seed — a real coverage loss, stated rather than skipped.
 //
-// This pins the CTA state machine (finalize ↔ generate switch at draftCount=0)
-// and the full MISSING_METER → record → READY → generate → DRAFT cycle.
-// Not covered by playlist-test-monthly-bills-workspace-smoke.js Scenario C
-// which only asserts row detachment, not the subsequent CTA flip + generate.
+// This file is NOT reachable from `npm run smoke:all`: that chain is `&&`-joined
+// and halts earlier at bill-edit's legacy login-helper race. Run it directly, or
+// via `npm run smoke:batch-replan`.
+//
+// This pins the CTA state machine (the swap happens at readyCount = 0, not
+// draftCount = 0 — see MonthlyBillsPage.tsx:147-149) and the full
+// MISSING_METER → record → READY → generate → DRAFT cycle.
+// `playwright-test-monthly-bills-workspace-smoke.js` case C covers the row's
+// side of step 7 — that it REPORTS a blocker and offers no way in — not the
+// subsequent generate.
 //
 // Pre-state (cleanup + seed):
 //   D105 (TC28) → ACTIVE contract + no MONTHLY meter (no bill)
@@ -41,7 +49,9 @@
 // Selector contract:
 //   Rows:     [data-test="reconciliation-row"][data-action="..."][data-room-number="..."]
 //   READY row (non-actionable): div[data-test="reconciliation-row"][data-room-number="..."]
-//   Drawer:   [role="dialog"]
+//   Meter entry (Building Workspace): input[aria-label="มิเตอร์ไฟห้อง {room}"] / "มิเตอร์น้ำห้อง {room}",
+//     submitted via the `main`-scoped button matching /^บันทึก \(\d+\)/ — the sidebar's own
+//     "บันทึกมิเตอร์" nav entry is also a button, so an unscoped match clicks that and never saves
 //   Finalize CTA: button matching /ยืนยันบิล \d+ ใบ/
 //   FinalizeAllModal: [aria-labelledby="finalize-all-confirm-title"]
 //   Generate CTA: button matching /ออกบิล \d+ ห้อง/
@@ -256,15 +266,23 @@ async function parseCountFromButton(btn) {
         `  finalize CTA still "ยืนยันบิล ${finalizeCountStill} ใบ" — READY rows do not inflate draft count ✅`,
       )
     } else {
-      // ⚠️ KNOWN PRE-EXISTING DEFECT — `monthly-bills-workspace` case F: the
-      // Finalize CTA is hidden once readyCount > 0, even with drafts outstanding.
-      // Recording D105's meter is what makes readyCount 1, so this scenario walks
-      // straight into it. It is NOT caused by the entry-point rewrite and is
-      // explicitly out of scope for this round — but it is stated loudly here
-      // rather than skipped quietly, because it costs the finalize half of
-      // Scenario B's coverage.
-      console.log('  ⚠️ finalize CTA is HIDDEN while readyCount > 0 — known case F defect')
-      console.log('     the finalize → CTA-flip half of Scenario B cannot run until case F is fixed')
+      // ⚠️ The finalize CTA is absent because readyCount > 0, and recording
+      // D105's meter is exactly what makes readyCount 1.
+      //
+      // Be careful how this is described. `MonthlyBillsPage.tsx:140-146`
+      // documents the priority as INTENTIONAL — Generate is the primary action
+      // while ready rooms remain, and the toolbar swaps to Finalize only once
+      // every ready room has a bill ("one primary CTA per execution phase"). So
+      // the long-recorded "case F failure" is a SMOKE EXPECTATION that
+      // contradicts a deliberate product decision, not a proven product defect.
+      // Which side is stale is a billing-lane question and is NOT decided here.
+      //
+      // Either way the finalize half of this scenario is unreachable on this
+      // seed, and that is stated rather than skipped silently.
+      console.log('  ⚠️ finalize CTA absent — Generate outranks Finalize while readyCount > 0')
+      console.log('     (documented as intentional at MonthlyBillsPage.tsx:140-146; the smoke case F')
+      console.log('      expectation disagrees — unresolved, and out of scope for this round)')
+      console.log('     ⇒ Scenario B runs its generate half only')
     }
 
     await page.screenshot({ path: '/tmp/batch-replan-A-ready.png', fullPage: true })
