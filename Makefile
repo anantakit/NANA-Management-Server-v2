@@ -144,9 +144,12 @@ smoke-meter-continuity:
 	cd devtools/smoke && node playwright-test-meter-continuity-surface-smoke.js
 
 # Building Workspace — the executable half of ADR-0001's 9-item conformance
-# table: coverage without leaving the surface, physical order, committed row
-# truth, EXIT lineage parity, and Focus-consumes-the-queue. Items 6/7/9 land in
-# B1-c Slice 4. Needs backend (:8080) + FE dev (:3001) + `make smoke-install`.
+# table: coverage without leaving the surface, EXIT lineage parity, committed row
+# truth, Focus-consumes-the-queue, and (since 2026-08-01) the three that had no
+# gate before closure — ONE physical walking order shared by the grid and the
+# sweep (TC14), 375 px legibility as the amended item 2 words it (TC15), and the
+# workspace naming no bucket, bill or money (TC16).
+# Needs backend (:8080) + FE dev (:3001) + `make smoke-install`.
 # (Was `smoke-meter-review` — the Review surface it asserted is gone.)
 smoke-building-workspace:
 	cd devtools/smoke && node playwright-test-building-workspace-smoke.js

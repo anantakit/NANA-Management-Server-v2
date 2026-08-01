@@ -15,6 +15,9 @@
 //        persist, or depend on a replacement flag (S4.4)
 //   TC13 Generate REPORTS meter blockers but cannot resolve them — items 7 + 9.
 //        MonthlyMeterDrawer was deleted, not converted to a route-out (step 7)
+//   TC14 ONE physical walk — the grid, every chip and Focus's sweep share it — item 4
+//   TC15 375 px: progress reads without page-scroll; every chip stays reachable — item 2
+//   TC16 the workspace names no bucket, no bill, no money — item 7's other half
 //
 // Numbering is kept from the Review-era file on purpose: these cases were written slice by slice and
 // renumbering them would break the trail back to the slice that added each one.
@@ -1006,6 +1009,231 @@ async function tc13_generateIsNotAMeterEntrySurface(page, month) {
   console.log(`     (room used: ${room}; batch aborted, nothing persisted)`)
 }
 
+/* ─── TC14 — item 4: ONE physical walk, rendered and swept ─── */
+//
+// The contract restated here as an ORACLE, derived from the API rather than from
+// the frontend's own list. It must agree with `comparePhysicalOrder` in
+// `frontend/src/shared/utils/buildingGroup.ts`; if these two ever disagree, one
+// of them is wrong and this case is what says so.
+//
+// Why it exists: item 4 had no executable evidence at all, and the gap was not
+// theoretical. The projection sorted floor-major while building-major order was
+// re-established only at render time, so on นานาคอร์ท (5 building prefixes) the
+// grid showed A101…A110, A201… while Focus swept A101…A110, B101… — the operator
+// read one walk and the sweep walked another, from room 12 onward.
+
+function buildingPrefixOf(roomNumber) {
+  const m = String(roomNumber).match(/^([A-Za-z])(\d)/)
+  return m ? m[1].toUpperCase() : ''
+}
+
+function comparePhysicalOrder(a, b) {
+  const pa = buildingPrefixOf(a.number)
+  const pb = buildingPrefixOf(b.number)
+  if (pa !== pb) {
+    if (pa === '') return 1
+    if (pb === '') return -1
+    return pa.localeCompare(pb)
+  }
+  if (a.floor !== b.floor) return a.floor - b.floor
+  return String(a.number).localeCompare(String(b.number), undefined, { numeric: true })
+}
+
+/** The apartment the workspace is currently scoped to, resolved from its chrome. */
+async function currentApartment(page, auth) {
+  const apartments = (await (await fetch(`${BACKEND}/api/v1/apartments?limit=50`, auth)).json()).data
+  const chrome = await page.locator('h1, [class*="breadcrumb"]').first().innerText().catch(() => '')
+  return apartments.find((a) => chrome.includes(a.name)) || apartments[0]
+}
+
+const domOrder = (page) =>
+  page.$$eval('[data-room-number]', (nodes) => nodes.map((n) => n.getAttribute('data-room-number')))
+
+async function tc14_onePhysicalWalk(page, month) {
+  console.log('\n🧪 TC14 — the workspace and Focus walk the same building (item 4)')
+  const token = await apiToken()
+  const auth = { headers: { Authorization: `Bearer ${token}` } }
+
+  await gotoWorkspace(page, month)
+  await page.evaluate(() => {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nana-meter-draft:')) localStorage.removeItem(k)
+    }
+  })
+  await gotoWorkspace(page, month)
+  const apartment = await currentApartment(page, auth)
+  const rooms = (await (await fetch(
+    `${BACKEND}/api/v1/apartments/${apartment.id}/rooms?limit=500`, auth)).json()).data
+
+  const prefixes = [...new Set(rooms.map((r) => buildingPrefixOf(r.number)))]
+  const buildings = prefixes.filter((p) => p !== '')
+  check('TC14.0 this apartment can discriminate a building-order mistake',
+    buildings.length > 1,
+    buildings.length > 1
+      ? `${apartment.name}: ${buildings.length} buildings [${buildings.join(',')}]`
+      : `${apartment.name} spans one building — the building dimension is covered only by the unit test`)
+
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+
+  const canonical = [...rooms].sort(comparePhysicalOrder).map((r) => String(r.number))
+  const rendered = await domOrder(page)
+  const firstDiff = canonical.findIndex((v, i) => v !== rendered[i])
+  check('TC14.1 the grid renders every room in canonical walking order',
+    rendered.length === canonical.length && firstDiff === -1,
+    firstDiff === -1
+      ? `${rendered.length} rooms, อาคาร → ชั้น → เลขห้อง`
+      : `first divergence at #${firstDiff}: rendered ${rendered[firstDiff]}, expected ${canonical[firstDiff]}`)
+
+  // ── status must never reorder: each chip renders a SUBSEQUENCE of the walk ──
+  for (const label of ['ยังไม่บันทึก', 'บันทึกแล้ว']) {
+    const c = chip(page, label)
+    if (!(await c.count())) continue
+    await c.click()
+    await page.waitForTimeout(350)
+    const filtered = await domOrder(page)
+    const asSubsequence = canonical.filter((n) => filtered.includes(n))
+    check(`TC14.2 "${label}" refines the walk, it does not re-sort it`,
+      JSON.stringify(filtered) === JSON.stringify(asSubsequence),
+      `${filtered.length} row(s)`)
+  }
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(350)
+
+  // ── the sweep queue traverses that same list, in that same order ──
+  // Editable rows ARE the workspace's queue members, read in DOM order (TC9 reads
+  // the same set; order is what item 4 adds).
+  const queueExpected = await page.$$eval('input[aria-label^="มิเตอร์ไฟห้อง"]',
+    (nodes) => nodes.map((n) => (n.getAttribute('aria-label') || '').replace('มิเตอร์ไฟห้อง ', '').trim()))
+
+  const entry = page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first()
+  if (await entry.isDisabled()) {
+    check('TC14.3 SKIPPED — nothing unread this month, no queue to traverse', true,
+      'the traversal-order assertion did not run')
+    return
+  }
+
+  await entry.click()
+  await page.waitForTimeout(500)
+  const focusRoom = () =>
+    page.locator('p[class*="text-5xl"]').first().innerText().then((t) => t.trim()).catch(() => null)
+
+  // Walk PAST the point where the two orders disagree. The first rooms of a
+  // sweep are identical under both, so a fixed short walk would be a vacuous
+  // check — it is the floor-major order's own list that says how far is far
+  // enough, so compute it and step beyond it.
+  const floorOf = new Map(rooms.map((r) => [String(r.number), r.floor]))
+  const floorMajorQueue = [...queueExpected].sort((a, b) =>
+    (floorOf.get(a) ?? 0) - (floorOf.get(b) ?? 0) ||
+    a.localeCompare(b, undefined, { numeric: true }))
+  const divergeAt = queueExpected.findIndex((n, i) => n !== floorMajorQueue[i])
+  const STEPS = divergeAt === -1
+    ? Math.min(6, queueExpected.length)
+    : Math.min(divergeAt + 2, queueExpected.length, 16)
+  check('TC14.3 the traversal reaches the point where a floor-major sweep would diverge',
+    divergeAt !== -1 && STEPS > divergeAt,
+    divergeAt === -1
+      ? "this month's queue orders identically either way — traversal checked, walking order not discriminated"
+      : `diverges at #${divergeAt} (canonical ${queueExpected[divergeAt]} vs floor-major ${floorMajorQueue[divergeAt]}), walking ${STEPS}`)
+
+  const walked = []
+  for (let i = 0; i < STEPS; i++) {
+    walked.push(await focusRoom())
+    // Shift+Enter = skip. Advances the session WITHOUT saving, so the traversal
+    // is observed without writing a reading.
+    await page.keyboard.press('Shift+Enter')
+    await page.waitForTimeout(220)
+  }
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+
+  const expectedWalk = queueExpected.slice(0, STEPS)
+  check('TC14.4 Focus traverses the workspace queue in the workspace\'s order',
+    JSON.stringify(walked) === JSON.stringify(expectedWalk),
+    `focus=[${walked.join(' ')}] workspace=[${expectedWalk.join(' ')}]`)
+}
+
+/* ─── TC15 — item 2: what must be readable at 375 px, and what may scroll ─── */
+//
+// Asserted as the ADR words it AFTER the 2026-08-01 amendment, which was made to
+// match the P-2 decision that was actually taken: progress must be readable
+// without scrolling the PAGE sideways; the status selector is allowed to overflow
+// horizontally, but every option must remain reachable and selectable. The
+// pre-amendment wording ("readable without horizontal scrolling", unqualified)
+// described a product decision nobody had taken — TC8.8 already scrolled the chip
+// group itself before measuring, and said so in its own comment.
+
+async function tc15_smallScreenLegibility(page, month) {
+  console.log('\n🧪 TC15 — 375 px: progress reads without page-scroll, every chip stays reachable')
+  await gotoWorkspace(page, month)
+  await page.setViewportSize({ width: 375, height: 780 })
+  await page.waitForTimeout(500)
+
+  const progress = await page.locator('.fixed.bottom-0').innerText().catch(() => '')
+  const readout = progress.match(/(\d+)\s*\/\s*(\d+)/)
+  check('TC15.1 the progress readout is present at 375 px', !!readout,
+    readout ? readout[0] : 'no N / M readout found')
+
+  const pageScroll = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  check('TC15.2 the PAGE does not scroll sideways to show it',
+    pageScroll.scrollWidth <= pageScroll.clientWidth + 1,
+    `scrollWidth=${pageScroll.scrollWidth} clientWidth=${pageScroll.clientWidth}`)
+
+  // The selector may overflow — but every option must be reachable AND selectable,
+  // which is what makes the overflow acceptable rather than a hidden capability.
+  const labels = await page.$$eval(
+    '[role="radiogroup"][aria-label="กรองการแสดงห้อง"] button[role="radio"]',
+    (nodes) => nodes.map((n) => (n.querySelector('span')?.textContent || '').trim()),
+  )
+  let selectable = 0
+  for (const label of labels) {
+    const c = chip(page, label)
+    await c.scrollIntoViewIfNeeded().catch(() => {})
+    await c.click({ timeout: 3000 }).catch(() => {})
+    await page.waitForTimeout(250)
+    if ((await c.getAttribute('aria-checked')) === 'true') selectable++
+  }
+  check('TC15.3 every status option is reachable and selectable at 375 px',
+    labels.length > 0 && selectable === labels.length,
+    `${selectable}/${labels.length} selectable [${labels.join(', ')}]`)
+
+  await chip(page, 'ทั้งหมด').click().catch(() => {})
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.waitForTimeout(400)
+}
+
+/* ─── TC16 — item 7's other half: the workspace is not a billing surface ─── */
+//
+// TC13.6 asserts Generate holds no meter coverage. This asserts the mirror, which
+// is the half that decays quietly: coverage and reconciliation read the same
+// rooms in the same month, so every "while we're here, show the bill state too"
+// lands here first. The static half lives in
+// `frontend/src/features/meter-readings/pages/billingBoundary.test.ts`; this is
+// the rendered half, so the boundary cannot be satisfied by renaming a symbol.
+
+async function tc16_workspaceIsNotABillingSurface(page, month) {
+  console.log('\n🧪 TC16 — the workspace names no bucket, no bill, no money (item 7)')
+  await gotoWorkspace(page, month)
+  await chip(page, 'ทั้งหมด').click()
+  await page.waitForTimeout(400)
+  const body = await page.locator('main').innerText().catch(() => '')
+
+  const buckets = ['ต้องตรวจสอบ', 'พร้อมออกบิล'].filter((w) => body.includes(w))
+  check('TC16.1 no reconciliation bucket vocabulary on the workspace',
+    buckets.length === 0, buckets.length ? `found ${JSON.stringify(buckets)}` : '')
+
+  const billing = ['บิลร่าง', 'ออกบิลแล้ว', 'ยืนยันบิล'].filter((w) => body.includes(w))
+  check('TC16.2 no bill count or bill status on the workspace',
+    billing.length === 0, billing.length ? `found ${JSON.stringify(billing)}` : '')
+
+  const money = body.match(/฿|บาท/)
+  check('TC16.3 no money presented on the workspace',
+    !money, money ? `found "${money[0]}"` : '')
+}
+
 /* ─── Runner ─── */
 
 ;(async () => {
@@ -1024,6 +1252,9 @@ async function tc13_generateIsNotAMeterEntrySurface(page, month) {
     await tc11_focusLostReplaceOwnership(page, month)
     await tc12_gridLostReplaceOwnership(page, month)
     await tc13_generateIsNotAMeterEntrySurface(page, month)
+    await tc14_onePhysicalWalk(page, month)
+    await tc15_smallScreenLegibility(page, month)
+    await tc16_workspaceIsNotABillingSurface(page, month)
   } catch (err) {
     check('FATAL', false, err.message)
   } finally {
