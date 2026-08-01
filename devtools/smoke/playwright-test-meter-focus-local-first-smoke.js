@@ -430,6 +430,85 @@ async function tc5_drawerEscalationRoundtrip(page, apartmentId) {
   await clearDraft(page, apartmentId)
 }
 
+/**
+ * TC10 — return contract clause 3: POSITION RESTORED.
+ *
+ * The written commitment is *"the operator returns to where they were
+ * (row/scroll), not to the top."* Until WF-1 it was UNMET: the only code that
+ * claimed to implement it captured `window.scrollY` and called `window.scrollTo`,
+ * and the document does not scroll — `Layout` is `h-screen overflow-hidden` and
+ * the real scroll container is an inner `overflow-y-auto`. Both numbers were
+ * therefore always 0, so the pair restored nothing.
+ *
+ * TC5 could not have caught that: it escalates from the FIRST row, which is at
+ * the top whether or not anything is restored. This case escalates from a row
+ * deep enough that "restored" and "reset to the top" are different answers.
+ */
+async function tc10_escalationRestoresPosition(page, apartmentId) {
+  console.log('\n🧪 TC10 — clause 3: escalate from far down the grid → save → return to the same row')
+  await clearDraft(page, apartmentId)
+  await gotoMeterReadings(page)
+
+  const labels = await page.locator('input[aria-label^="มิเตอร์ไฟห้อง"]').evaluateAll((els) =>
+    els.map((el) => (el.getAttribute('aria-label') || '').replace('มิเตอร์ไฟห้อง ', '').trim()),
+  )
+  const DEEP = 25
+  if (labels.length <= DEEP) {
+    check(`TC10.0 grid has more than ${DEEP} rooms to scroll through (got ${labels.length})`, false)
+    return
+  }
+  const roomNumber = labels[DEEP]
+
+  // Read the row's geometry through its own scroll container, not the window —
+  // the same distinction that made the old implementation inert.
+  const rowGeometry = () =>
+    page.evaluate((n) => {
+      const input = document.querySelector(`input[aria-label="มิเตอร์ไฟห้อง ${n}"]`)
+      const row = input && input.closest('[id^="room-"]')
+      if (!row) return { found: false }
+      let sc = row.parentElement
+      while (sc && sc.scrollHeight <= sc.clientHeight) sc = sc.parentElement
+      const r = row.getBoundingClientRect()
+      const c = sc ? sc.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
+      return {
+        found: true,
+        inView: r.top >= c.top - 1 && r.bottom <= c.bottom + 1,
+        scrollTop: sc ? Math.round(sc.scrollTop) : 0,
+      }
+    }, roomNumber)
+
+  await page.locator(`input[aria-label="มิเตอร์ไฟห้อง ${roomNumber}"]`).first()
+    .evaluate((el) => el.closest('[id^="room-"]').scrollIntoView({ block: 'center' }))
+  await page.waitForTimeout(300)
+  const before = await rowGeometry()
+  check(`TC10.1 row ${roomNumber} is scrolled into view before escalating (scrollTop ${before.scrollTop})`,
+    before.found && before.inView && before.scrollTop > 0,
+    JSON.stringify(before))
+
+  await page.locator(`button:has-text("${roomNumber}")`).first().click()
+  await page.waitForTimeout(400)
+  const drawerVisible = await page.locator('text=เปิดในโหมดจดเร็ว').isVisible().catch(() => false)
+  check(`TC10.2 RoomHistoryDrawer opens for the deep row ${roomNumber}`, drawerVisible)
+  if (!drawerVisible) return
+
+  await page.locator('button', { hasText: 'เปิดในโหมดจดเร็ว' }).first().click()
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().waitFor({ state: 'visible', timeout: 5000 })
+  await page.locator('input[aria-label="มิเตอร์ไฟฟ้า"]').first().fill('8123')
+  await page.keyboard.press('Enter')
+  await page.locator('input[aria-label="มิเตอร์น้ำ"]').first().fill('4123')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(900)
+
+  const after = await rowGeometry()
+  check('TC10.3 the operator returns to the row they escalated from, not to the top',
+    after.found && after.inView,
+    after.found ? `scrollTop ${after.scrollTop}, inView=${after.inView}` : 'row not found')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
+  await clearDraft(page, apartmentId)
+}
+
 async function tc7_shiftEnterSkips(page, apartmentId, month) {
   console.log('\n🧪 TC7 — Shift+Enter skips current room without writing a draft')
   await clearDraft(page, apartmentId)
@@ -635,6 +714,7 @@ async function tc9_inputErgonomics(page, apartmentId) {
     await tc7_shiftEnterSkips(page, apt.id, month)
     await tc8_arrowButtonsAndJumpHydration(page, apt.id, month)
     await tc9_inputErgonomics(page, apt.id)
+    await tc10_escalationRestoresPosition(page, apt.id)
   } finally {
     await browser.close()
   }

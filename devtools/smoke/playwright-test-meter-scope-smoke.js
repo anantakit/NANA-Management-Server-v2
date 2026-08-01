@@ -109,6 +109,30 @@ function currentBillingMonth() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
+/** Where `เดือนก่อนหน้า` lands from the default month. */
+function previousBillingMonth() {
+  const now = new Date()
+  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+/**
+ * Writes a draft slot directly, so a scope can be ARRIVED AT with one already
+ * in it. Seeding rather than typing is the point: the operator must not have
+ * made this draft during this session, which is what makes it creator-unaware.
+ */
+async function seedDraft(page, apartmentId, month, roomId, water) {
+  await page.evaluate(
+    ({ apartmentId, month, roomId, water }) => {
+      localStorage.setItem(
+        `nana-meter-draft:${apartmentId}:${month}`,
+        JSON.stringify({ apartmentId, month, updatedAt: Date.now(), rooms: { [roomId]: { water } } }),
+      )
+    },
+    { apartmentId, month, roomId, water },
+  )
+}
+
 /** Chrome shows the COMMITTED apartment, so the breadcrumb IS the active scope. */
 async function readActiveScopeName(page) {
   return page.evaluate(() => {
@@ -517,7 +541,7 @@ async function caseR3_restoredDraftStillHoldsTheScope(page, apartments) {
 
 const focusIsActive = (page) => page.locator('input[aria-label="มิเตอร์น้ำ"]').first().isVisible().catch(() => false)
 
-async function case5_focusEvictedOnMonthChange(page, apartments) {
+async function case5_focusEvictedOnMonthChange(page, apartments, roomId) {
   console.log('\n🧪 CASE 5 — changing the month while a Focus session is running evicts it')
   const [aptA] = apartments
   const month = currentBillingMonth()
@@ -525,6 +549,9 @@ async function case5_focusEvictedOnMonthChange(page, apartments) {
   await openWorkspace(page, month)
   await selectApartmentViaSidebar(page, aptA.name)
   await clearAllMeterDrafts(page)
+  // The month the eviction lands in already holds a draft, and the operator did
+  // NOT make it in this session — see C5.4.
+  await seedDraft(page, aptA.id, previousBillingMonth(), roomId, 4242)
   await openWorkspace(page, month)
 
   await page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first().click()
@@ -537,6 +564,27 @@ async function case5_focusEvictedOnMonthChange(page, apartments) {
   check('C5.2 Focus evicted by the month change', !(await focusIsActive(page)))
   check('C5.3 the workspace is back on the grid for the new month',
     await page.locator('button', { hasText: 'จดมิเตอร์เร็ว' }).first().isVisible().catch(() => false))
+
+  // ─── C5.4 — an eviction is not a handoff ───
+  //
+  // The scope the operator is thrown into is one they have not been working in,
+  // so its draft is creator-UNAWARE and must meet the recovery banner like any
+  // other cold arrival. That is what the scope effect always MEANT ("a new scope
+  // must go through the normal banner gate") and could not enforce: the exit
+  // edge fires a render AFTER that effect clears the handoff flags, so the
+  // auto-restore flag came straight back up and the new month hydrated silently
+  // — suppressing a recovery prompt for work the operator had never seen.
+  //
+  // A boolean could not hold the difference; `resolveFocusExit` can, because the
+  // eviction declares itself at the call site instead of being inferred from an
+  // `isActive` transition that looks identical to a finished sweep.
+  const bannerShown = await page
+    .locator('text=พบร่างที่ยังไม่ได้บันทึก')
+    .first()
+    .isVisible()
+    .catch(() => false)
+  check('C5.4 the evicted-into scope still meets the recovery banner (eviction ≠ handoff)',
+    bannerShown, bannerShown ? '' : 'banner suppressed — an eviction was treated as a workflow handoff')
 
   await clearAllMeterDrafts(page)
 }
@@ -682,7 +730,7 @@ async function case3_noDualSelector(page) {
   await caseR1_dirtyInputStorageCannotRepresent(page, apartments)
   await caseR2_noRelianceOnDebounceTiming(page, apartments)
   await caseR3_restoredDraftStillHoldsTheScope(page, apartments)
-  await case5_focusEvictedOnMonthChange(page, apartments)
+  await case5_focusEvictedOnMonthChange(page, apartments, focusRoomId)
   await case6_focusParamNotConsumedInTheWrongScope(page, apartments, focusRoomId)
   await case7_noStaleScopeFlash(page, apartments)
   await case3_noDualSelector(page)
