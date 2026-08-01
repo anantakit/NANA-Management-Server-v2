@@ -23,6 +23,7 @@ func NewMeterReadingHandler(svc MeterReadingService) *MeterReadingHandler {
 func (h *MeterReadingHandler) RegisterRoutes(router fiber.Router) {
 	router.Get("/", h.List)
 	router.Get("/baselines", h.GetBaselines)
+	router.Get("/latest", h.GetLatestPerRoom)
 	router.Post("/", h.Create)
 	router.Post("/exit", h.CreateExitReading)
 	router.Post("/batch", h.BatchCreate)
@@ -175,6 +176,23 @@ func (h *MeterReadingHandler) Update(c fiber.Ctx) error {
 		return respond.Error(c, err)
 	}
 	return respond.Success(c, "อัปเดตมิเตอร์แล้ว", ToMeterReadingResponse(*reading))
+}
+
+// GetLatestPerRoom — one row per room: the latest lineage row, i.e. the
+// baseline the room's next reading starts from. The monthly entry path reads
+// this so its `previous` matches what BatchCreate validates against.
+func (h *MeterReadingHandler) GetLatestPerRoom(c fiber.Ctx) error {
+	apartmentID, err := uuid.Parse(c.Params("apartmentId"))
+	if err != nil {
+		return respond.ValidationError(c, []string{"รหัสอาคารไม่ถูกต้อง"})
+	}
+
+	readings, err := h.svc.GetLatestPerRoom(c.Context(), apartmentID)
+	if err != nil {
+		return respond.Error(c, err)
+	}
+
+	return respond.Success(c, "สำเร็จ", ToMeterReadingResponseList(readings))
 }
 
 func (h *MeterReadingHandler) GetBaselines(c fiber.Ctx) error {

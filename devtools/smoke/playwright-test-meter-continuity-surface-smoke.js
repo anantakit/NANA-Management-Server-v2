@@ -293,7 +293,14 @@ const path = (page) => new URL(page.url()).pathname + new URL(page.url()).search
   if (recoveryRoom) {
     await page.goto(`${FRONTEND}/meter-readings`, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
-    const roomLink = page.getByRole('button', { name: `ดูประวัติห้อง ${recoveryRoom.number}` })
+    // `exact: true` matters. Playwright matches accessible names by SUBSTRING
+    // by default, and a saved row is itself `role="button"` (click = re-edit)
+    // whose accessible name contains this one. Without exact matching, `.first()`
+    // resolves to the ROW and re-opens it for editing instead of opening the
+    // drawer — silently, since both are legitimate buttons. It only bites once
+    // the target room has been read, which is why it surfaced the first time a
+    // smoke run committed a reading for this room.
+    const roomLink = page.getByRole('button', { name: `ดูประวัติห้อง ${recoveryRoom.number}`, exact: true })
     if (await roomLink.count()) {
       await roomLink.first().click()
       await page.waitForTimeout(1600)
@@ -303,9 +310,16 @@ const path = (page) => new URL(page.url()).pathname + new URL(page.url()).search
       check('drawer no longer hosts CurrentMeterState', !drawer.includes('ข้อมูลมิเตอร์'))
       // By ROLE, not by text: "เปลี่ยนมิเตอร์" also appears as a timeline BADGE
       // on replacement rows, and that badge is content the drawer must keep.
+      //
+      // Scoped to the DIALOG, which is what the claim was always about. Page-wide,
+      // this now matches the workspace rows BEHIND the drawer: a saved row is
+      // itself `role="button"`, and since B1-c Slice 2 its accessible name
+      // includes the committed note ("เปลี่ยนมิเตอร์ 22 ก.ค. 69"). Playwright
+      // matches names by substring, so an un-scoped negative assertion reads a
+      // row's state as if it were a drawer action.
       check(
         'drawer no longer hosts the Replace Meter action',
-        (await page.getByRole('button', { name: 'เปลี่ยนมิเตอร์' }).count()) === 0,
+        (await page.locator('[role="dialog"]').getByRole('button', { name: 'เปลี่ยนมิเตอร์' }).count()) === 0,
       )
       check(
         'replacement badge still readable in the drawer',

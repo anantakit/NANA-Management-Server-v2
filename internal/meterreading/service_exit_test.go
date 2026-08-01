@@ -55,6 +55,9 @@ func (m *mockMeterRepo) FindLatestByRoomID(ctx context.Context, roomID uuid.UUID
 	}
 	return nil, gorm.ErrRecordNotFound
 }
+func (m *mockMeterRepo) FindLatestPerRoom(_ context.Context, _ []uuid.UUID) (map[uuid.UUID]MeterReadingWithRoom, error) {
+	return map[uuid.UUID]MeterReadingWithRoom{}, nil
+}
 func (m *mockMeterRepo) FindLatestByRoomIDBeforeDate(_ context.Context, _ uuid.UUID, _ time.Time, _ *uuid.UUID) (*MeterReading, error) {
 	return nil, gorm.ErrRecordNotFound
 }

@@ -1,5 +1,5 @@
 .PHONY: dev build run migrate seed test test-integration test-integration-setup lint clean \
-       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-meter-continuity smoke-settlement-recovery smoke-settlement-recovery-presentation smoke-recovery-survives-cancel smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
+       smoke-settlement smoke-settlement-preview smoke-settlement-all smoke-draft smoke-moveout-step23 smoke-moveout-step4 smoke-moveout-detail smoke-bills-list smoke-bill-edit smoke-delivery-mode smoke-meter-focus-local-first smoke-meter-continuity smoke-building-workspace smoke-settlement-recovery smoke-settlement-recovery-presentation smoke-recovery-survives-cancel smoke-operator-overread smoke-exit-meter-flags smoke-exit-meter-flags-ui smoke-settlement-exit-meter-edit smoke-moveout-exit-meter-e2e smoke-all smoke-install
 
 # Development
 dev:
@@ -142,6 +142,17 @@ smoke-meter-focus-local-first:
 # origin (direct / meter workflow / bill detail / browser back).
 smoke-meter-continuity:
 	cd devtools/smoke && node playwright-test-meter-continuity-surface-smoke.js
+
+# Building Workspace — the executable half of ADR-0001's 9-item conformance
+# table: coverage without leaving the surface, EXIT lineage parity, committed row
+# truth, Focus-consumes-the-queue, and (since 2026-08-01) the three that had no
+# gate before closure — ONE physical walking order shared by the grid and the
+# sweep (TC14), 375 px legibility as the amended item 2 words it (TC15), and the
+# workspace naming no bucket, bill or money (TC16).
+# Needs backend (:8080) + FE dev (:3001) + `make smoke-install`.
+# (Was `smoke-meter-review` — the Review surface it asserted is gone.)
+smoke-building-workspace:
+	cd devtools/smoke && node playwright-test-building-workspace-smoke.js
 
 smoke-all:
 	cd devtools/smoke && node playwright-test-settlement-preview-smoke.js && node playwright-test-settlement-scenario-smoke.js && node playwright-test-draft-settlement-smoke.js && node playwright-test-draft-numeric-smoke.js && node playwright-test-moveout-step23-smoke.js && node playwright-test-moveout-step4-smoke.js && node playwright-test-moveout-detail-smoke.js && node playwright-test-bills-list-smoke.js && node playwright-test-bill-edit-smoke.js && node playwright-test-delivery-mode-smoke.js && node playwright-test-meter-focus-local-first-smoke.js && node playwright-test-settlement-exit-meter-edit-smoke.js
